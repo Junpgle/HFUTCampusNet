@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import WebKit
 
-public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
+public class LoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate {
     public static let shared = LoginWebViewController()
 
     private var webView: WKWebView!
@@ -11,12 +11,12 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRange(location: 0, length: 0).toRect(width: 860, height: 600),
+            contentRect: NSRange(location: 0, length: 0).toRect(width: 900, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "合肥工业大学校园网自服务 - 授权登录"
+        window.title = "合肥工业大学校园网自服务 - 授权登录 (获取可用流量与消费保护)"
         window.center()
         super.init(window: window)
         setupUI()
@@ -31,34 +31,42 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
         let containerView = NSView(frame: window.contentView!.bounds)
         containerView.autoresizingMask = [.width, .height]
 
-        // 配置 Web 视图
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        webView = WKWebView(frame: NSRect(x: 0, y: 44, width: 860, height: 556), configuration: config)
+        // 允许跨域与证书
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
+
+        webView = WKWebView(frame: NSRect(x: 0, y: 48, width: 900, height: 572), configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
         containerView.addSubview(webView)
 
         // 底部工具条
-        let bottomBar = NSView(frame: NSRect(x: 0, y: 0, width: 860, height: 44))
+        let bottomBar = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 48))
         bottomBar.autoresizingMask = [.width, .maxYMargin]
         bottomBar.wantsLayer = true
         bottomBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-        progressIndicator = NSProgressIndicator(frame: NSRect(x: 16, y: 14, width: 16, height: 16))
+        progressIndicator = NSProgressIndicator(frame: NSRect(x: 16, y: 16, width: 16, height: 16))
         progressIndicator.style = .spinning
         progressIndicator.controlSize = .small
         bottomBar.addSubview(progressIndicator)
 
-        statusLabel = NSTextField(labelWithString: "正在加载校园网自服务登录页面...")
-        statusLabel.frame = NSRect(x: 40, y: 12, width: 450, height: 20)
+        statusLabel = NSTextField(labelWithString: "正在连接校园网自服务平台...")
+        statusLabel.frame = NSRect(x: 42, y: 14, width: 620, height: 20)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = NSFont.systemFont(ofSize: 12)
         bottomBar.addSubview(statusLabel)
 
-        let manualButton = NSButton(title: "手动设置 Cookie", target: self, action: #selector(promptManualCookie))
+        let reloadBtn = NSButton(title: "重新加载", target: self, action: #selector(reloadPage))
+        reloadBtn.bezelStyle = .rounded
+        reloadBtn.frame = NSRect(x: 670, y: 9, width: 85, height: 30)
+        bottomBar.addSubview(reloadBtn)
+
+        let manualButton = NSButton(title: "手动填Cookie", target: self, action: #selector(promptManualCookie))
         manualButton.bezelStyle = .rounded
-        manualButton.frame = NSRect(x: 700, y: 7, width: 140, height: 28)
+        manualButton.frame = NSRect(x: 760, y: 9, width: 125, height: 30)
         bottomBar.addSubview(manualButton)
 
         containerView.addSubview(bottomBar)
@@ -71,31 +79,18 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
-        let request = URLRequest(url: url)
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
-        statusLabel.stringValue = "请在下方网页中正常登录，登录成功将自动捕获凭证并开启监控..."
+        statusLabel.stringValue = "请在下方网页输入学号与密码登录，成功后将自动获取可用流量与保护配额..."
+        statusLabel.textColor = .secondaryLabelColor
         webView.load(request)
     }
 
-    // 网页加载完成回调
-    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        progressIndicator.stopAnimation(nil)
-        checkAndCaptureSession()
+    @objc private func reloadPage() {
+        showLoginWindow()
     }
 
-    // 网页重定向与路由检测
-    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url?.absoluteString {
-            if url.contains("dashboard") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.checkAndCaptureSession()
-                }
-            }
-        }
-        decisionHandler(.allow)
-    }
-
-    // 忽略 SSL 自签名证书错误
+    // 处理自签名证书信任（关键：确保 HTTPS 8443 不报错白屏）
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
            let serverTrust = challenge.protectionSpace.serverTrust {
@@ -105,29 +100,87 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
         }
     }
 
-    // 捕获 Cookie 并保存
+    public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        progressIndicator.startAnimation(nil)
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        progressIndicator.stopAnimation(nil)
+        statusLabel.stringValue = "❌ 页面连接失败: \(error.localizedDescription) (请确认已连上校园网)"
+        statusLabel.textColor = .systemRed
+    }
+
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        progressIndicator.stopAnimation(nil)
+        statusLabel.stringValue = "❌ 加载异常: \(error.localizedDescription)"
+        statusLabel.textColor = .systemRed
+    }
+
+    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        progressIndicator.stopAnimation(nil)
+        checkAndCaptureSession()
+    }
+
+    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url?.absoluteString {
+            if url.contains("dashboard") || url.contains("navlist") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    self?.checkAndCaptureSession()
+                }
+            }
+        }
+        decisionHandler(.allow)
+    }
+
+    // 捕获 Cookie 并就地直接提取页面数据！
     private func checkAndCaptureSession() {
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+        // 先检查 HTML 内容
+        webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak self] result, _ in
             guard let self = self else { return }
-            for cookie in cookies {
-                if cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
-                    // 确认页面是否进入了控制台
-                    self.webView.evaluateJavaScript("document.body.innerText") { result, _ in
-                        let text = (result as? String) ?? ""
-                        if text.contains("已用流量") || text.contains("可用流量") || text.contains("退出") || text.contains("账户余额") {
-                            // 登录成功！
-                            SettingsManager.shared.sessionCookie = cookie.value
-                            self.statusLabel.stringValue = "✓ 登录成功！已自动保存会话，正在开启后台监控..."
-                            self.statusLabel.textColor = .systemGreen
-                            
-                            CampusNetworkClient.shared.fetchData()
-                            
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                                self.window?.close()
+            let text = (result as? String) ?? ""
+
+            // 如果页面中包含了自服务的特征词
+            if text.contains("可用流量") || text.contains("已用流量") || text.contains("消费保护") || text.contains("账户余额") {
+                self.webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML : ''") { htmlResult, _ in
+                    if let fullHtml = htmlResult as? String {
+                        // 直接通过解析器提取
+                        if let parsed = CampusNetworkClient.shared.parseDashboardHTML(fullHtml) {
+                            var data = CampusNetworkClient.shared.latestData
+                            if parsed.availableFlow != "-- M" {
+                                data.availableFlow = parsed.availableFlow
                             }
+                            if parsed.flowProtection != "-- 元" {
+                                data.flowProtection = parsed.flowProtection
+                            }
+                            if parsed.balance != "-- 元" {
+                                data.balance = parsed.balance
+                            }
+                            if parsed.usedFlow != "-- M" {
+                                data.usedFlow = parsed.usedFlow
+                            }
+                            data.lastUpdated = Date()
+                            data.isLoggedIn = true
+                            CampusNetworkClient.shared.delegate?.clientDidUpdate(data: data)
                         }
                     }
-                    break
+                }
+
+                // 提取最新的 JSESSIONID Cookie
+                self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                    for cookie in cookies {
+                        if cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
+                            SettingsManager.shared.sessionCookie = cookie.value
+                            break
+                        }
+                    }
+                }
+
+                self.statusLabel.stringValue = "✓ 授权成功！可用流量与保护配额已同步至小组件！"
+                self.statusLabel.textColor = .systemGreen
+
+                // 延时 1.5 秒自动关闭窗口
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.window?.close()
                 }
             }
         }
@@ -135,15 +188,16 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate {
 
     @objc private func promptManualCookie() {
         let alert = NSAlert()
-        alert.messageText = "手动输入 JSESSIONID"
-        alert.informativeText = "如果您已经在外部浏览器中登录，可以打开开发者工具(F12) -> Application -> Cookies，复制 JSESSIONID 的值填入下方："
+        alert.messageText = "手动填入自服务 JSESSIONID"
+        alert.informativeText = "若你已在浏览器中打开了自服务网页，可按 F12 -> Application -> Cookies 复制 JSESSIONID 的值填入下方："
         alert.alertStyle = .informational
 
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 330, height: 24))
         input.stringValue = SettingsManager.shared.sessionCookie ?? ""
+        input.placeholderString = "例如 22DE9FAF763DF1022CFE7C3923309937"
         alert.accessoryView = input
 
-        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "保存并刷新")
         alert.addButton(withTitle: "取消")
 
         if alert.runModal() == .alertFirstButtonReturn {

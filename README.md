@@ -1,4 +1,4 @@
-# 📶 HFUTCampusNet (合肥工业大学校园网小助手)
+# 📶 HFUTCampusNet
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-macOS%2012%2B-blue.svg?style=flat-square" alt="Platform">
@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/HFUT-合肥工业大学-red.svg?style=flat-square" alt="HFUT">
 </p>
 
-专为**合肥工业大学（HFUT）**师生量身打造的 macOS 校园网桌面伴侣。告别频繁登录网页查看流量与频繁重登 Wi-Fi 的痛点，集 **Dr.COM 网关认证自动重连**、**自服务自适应流量监控** 与 **实时网络吞吐速率轮播** 于一身。
+macOS 校园网桌面伴侣。告别频繁登录网页查看流量与频繁重登 Wi-Fi 的痛点，集 **Dr.COM 网关认证自动重连**、**自服务自适应流量监控** 与 **实时网络吞吐速率轮播** 于一身。
 
 ---
 

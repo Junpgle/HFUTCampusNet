@@ -117,25 +117,29 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         usedFlowUnitLabel = unit1
         visualEffectView.addSubview(card1)
 
-        // 卡片 2: 可用流量 (右上)
+        // 卡片 2: 可用流量 (右上 - 支持点击授权)
         let (card2, num2, unit2) = makeMetricCard(
             frame: NSRect(x: marginX + cardW + 12, y: row1Y, width: cardW, height: cardH),
-            label: "可用流量",
+            label: "可用流量 (点此授权)",
             defaultNum: "--",
-            defaultUnit: "M"
+            defaultUnit: "M",
+            action: #selector(openSelfLogin)
         )
+        card2.toolTip = "点击打开自服务登录窗口，授权后即可获取可用流量与保护配额"
         availFlowNumLabel = num2
         availFlowUnitLabel = unit2
         visualEffectView.addSubview(card2)
 
-        // 卡片 3: 消费保护 (左下)
+        // 卡片 3: 消费保护 (左下 - 支持点击授权)
         let (card3, num3, unit3) = makeMetricCard(
             frame: NSRect(x: marginX, y: row2Y, width: cardW, height: cardH),
             label: "消费保护",
             defaultNum: "--",
             defaultUnit: "元",
-            hasHelpIcon: true
+            hasHelpIcon: true,
+            action: #selector(openSelfLogin)
         )
+        card3.toolTip = "点击授权自服务获取保护额度"
         protNumLabel = num3
         protUnitLabel = unit3
         visualEffectView.addSubview(card3)
@@ -159,7 +163,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         progressBar.doubleValue = 0.0
         visualEffectView.addSubview(progressBar)
 
-        // 底部轮播文本栏：轮播展示更新时间 / 实时上下行网速
+        // 底部轮播文本栏
         updateTimeLabel = NSTextField(labelWithString: "等待更新...")
         updateTimeLabel.frame = NSRect(x: marginX, y: 3, width: width - marginX * 2, height: 14)
         updateTimeLabel.font = NSFont.systemFont(ofSize: 9.5)
@@ -167,8 +171,17 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         visualEffectView.addSubview(updateTimeLabel)
     }
 
-    private func makeMetricCard(frame: NSRect, label: String, defaultNum: String, defaultUnit: String, hasHelpIcon: Bool = false) -> (NSView, NSTextField, NSTextField) {
-        let card = NSView(frame: frame)
+    private func makeMetricCard(frame: NSRect, label: String, defaultNum: String, defaultUnit: String, hasHelpIcon: Bool = false, action: Selector? = nil) -> (NSView, NSTextField, NSTextField) {
+        let card: NSView
+        if let act = action {
+            let button = ClickableCardButton(frame: frame)
+            button.target = self
+            button.action = act
+            card = button
+        } else {
+            card = NSView(frame: frame)
+        }
+
         card.wantsLayer = true
         card.layer?.cornerRadius = 10
         card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
@@ -197,7 +210,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
         let title = NSTextField(labelWithString: label)
         title.frame = NSRect(x: 0, y: 6, width: frame.width, height: 16)
-        title.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        title.font = NSFont.systemFont(ofSize: 11.5, weight: .regular)
         title.textColor = .secondaryLabelColor
         title.alignment = .center
         card.addSubview(title)
@@ -251,12 +264,22 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             return
         }
 
+        if currentData.availableFlow == "-- M" {
+            // 自服务未登录提示
+            if carouselToggle {
+                updateTimeLabel.stringValue = "💡 提示: 点击【可用流量】卡片登录自服务"
+                updateTimeLabel.textColor = NSColor.systemOrange
+            } else {
+                updateTimeLabel.stringValue = "🚀 实时速率: \(currentSpeedString)"
+                updateTimeLabel.textColor = NSColor.systemTeal
+            }
+            return
+        }
+
         if carouselToggle {
-            // 轮播屏 A: 实时网络上下行速率
             updateTimeLabel.stringValue = "🚀 实时速率: \(currentSpeedString)"
             updateTimeLabel.textColor = NSColor.systemTeal
         } else {
-            // 轮播屏 B: 上次抓取时间与已用百分比
             let timeStr: String
             if let time = currentData.lastUpdated {
                 let formatter = DateFormatter()
@@ -282,6 +305,10 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         let num = numRange != nil ? String(text[numRange!]) : text
         let unit = (unitRange != nil && !text[unitRange!].isEmpty) ? String(text[unitRange!]) : fallbackUnit
         return (num, unit)
+    }
+
+    @objc private func openSelfLogin() {
+        LoginWebViewController.shared.showLoginWindow()
     }
 
     @objc private func refreshClicked() {
@@ -311,5 +338,21 @@ class CustomDraggableWindow: NSWindow {
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
         SettingsManager.shared.widgetOrigin = self.frame.origin
+    }
+}
+
+// 可点击的卡片按钮
+class ClickableCardButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.isBordered = false
+        self.title = ""
+    }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
