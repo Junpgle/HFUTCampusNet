@@ -16,6 +16,8 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private var updateTimeLabel: NSTextField!
     private var speedBadgeLabel: NSTextField!
     private var progressBar: NSProgressIndicator!
+    private var courseTitleLabel: NSTextField!
+    private var courseDetailLabel: NSTextField!
 
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedString: String = "↓ 0B/s  ↑ 0B/s"
@@ -24,7 +26,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
     private init() {
         let width: CGFloat = 340
-        let height: CGFloat = 205
+        let height: CGFloat = 256
 
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let savedOrigin = SettingsManager.shared.widgetOrigin
@@ -49,6 +51,14 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
         NetworkSpeedMonitor.shared.start()
         startSpeedCarousel()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onCourseScheduleUpdated),
+            name: .courseScheduleDidUpdate,
+            object: nil
+        )
+        updateCourseDisplay()
     }
 
     required init?(coder: NSCoder) {
@@ -155,6 +165,16 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         balUnitLabel = unit4
         visualEffectView.addSubview(card4)
 
+        // 课程卡片区域 (横跨两列)
+        let courseCardH: CGFloat = 44
+        let courseCardY: CGFloat = 34
+        let (cardCourse, cTitle, cDetail) = makeCourseCard(
+            frame: NSRect(x: marginX, y: courseCardY, width: width - marginX * 2, height: courseCardH)
+        )
+        courseTitleLabel = cTitle
+        courseDetailLabel = cDetail
+        visualEffectView.addSubview(cardCourse)
+
         // 底部进度条
         progressBar = NSProgressIndicator(frame: NSRect(x: marginX, y: 19, width: width - marginX * 2, height: 4))
         progressBar.isIndeterminate = false
@@ -218,6 +238,90 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         return (card, numLabel, unitLabel)
     }
 
+    private func makeCourseCard(frame: NSRect) -> (NSView, NSTextField, NSTextField) {
+        let button = ClickableCardButton(frame: frame)
+        button.target = self
+        button.action = #selector(courseCardClicked)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 10
+        button.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
+        button.layer?.borderWidth = 0.5
+        button.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+
+        let icon = NSImageView(frame: NSRect(x: 10, y: 14, width: 16, height: 16))
+        icon.image = NSImage(systemSymbolName: "book.closed.fill", accessibilityDescription: nil)
+        icon.contentTintColor = NSColor.systemIndigo
+        button.addSubview(icon)
+
+        let titleLabel = NSTextField(labelWithString: "📚 正在加载今日课程...")
+        titleLabel.frame = NSRect(x: 32, y: 22, width: frame.width - 40, height: 18)
+        titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .bold)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        button.addSubview(titleLabel)
+
+        let detailLabel = NSTextField(labelWithString: "点击查看完整周课表")
+        detailLabel.frame = NSRect(x: 32, y: 5, width: frame.width - 40, height: 15)
+        detailLabel.font = NSFont.systemFont(ofSize: 10)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        button.addSubview(detailLabel)
+
+        return (button, titleLabel, detailLabel)
+    }
+
+    @objc private func onCourseScheduleUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateCourseDisplay()
+        }
+    }
+
+    private func updateCourseDisplay() {
+        guard let titleLabel = courseTitleLabel, let detailLabel = courseDetailLabel else { return }
+
+        guard let schedule = CourseScheduleService.shared.currentSchedule, !schedule.lessons.isEmpty else {
+            titleLabel.stringValue = "📚 教务课表: 点击同步课程"
+            titleLabel.textColor = NSColor.systemBlue
+            detailLabel.stringValue = "支持合工大 EAMS 5.0 课表自动读取与提醒"
+            detailLabel.textColor = .secondaryLabelColor
+            return
+        }
+
+        let now = Date()
+        let todayLessons = schedule.todayLessons(at: now)
+        let currentWeek = schedule.currentWeek(at: now) ?? 1
+        let weekStr = "第 \(currentWeek) 周"
+
+        if let ongoing = schedule.currentLesson(at: now) {
+            titleLabel.stringValue = "🟢 上课中: \(ongoing.courseName)"
+            titleLabel.textColor = NSColor.systemGreen
+            let room = ongoing.classroom.map { "@ \($0)" } ?? ""
+            detailLabel.stringValue = "\(ongoing.formattedTime) \(room) | 教师: \(ongoing.teacher ?? "--")"
+            detailLabel.textColor = .labelColor
+        } else if let next = schedule.nextLesson(at: now) {
+            titleLabel.stringValue = "📚 下一节: \(next.formattedStartTime) \(next.courseName)"
+            titleLabel.textColor = NSColor.systemIndigo
+            let room = next.classroom.map { "@ \($0)" } ?? "待定"
+            detailLabel.stringValue = "地点: \(room) | \(next.formattedTime)"
+            detailLabel.textColor = .secondaryLabelColor
+        } else if !todayLessons.isEmpty {
+            titleLabel.stringValue = "🎉 今日课程已全部结束"
+            titleLabel.textColor = .labelColor
+            detailLabel.stringValue = "今日共 \(todayLessons.count) 节课 · \(weekStr) · 点击查看完整课表"
+            detailLabel.textColor = .secondaryLabelColor
+        } else {
+            titleLabel.stringValue = "🎉 今日暂无排课"
+            titleLabel.textColor = .labelColor
+            detailLabel.stringValue = "\(weekStr) · 周\(CourseCalendarHelper.weekday(from: now)) · 点击查看完整周课表"
+            detailLabel.textColor = .secondaryLabelColor
+        }
+    }
+
+    @objc private func courseCardClicked() {
+        CourseScheduleWindowController.shared.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func startSpeedCarousel() {
         carouselTimer?.invalidate()
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
@@ -252,6 +356,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         let percentage = data.usagePercentage * 100.0
         progressBar.doubleValue = min(max(percentage, 0.0), 100.0)
 
+        updateCourseDisplay()
         renderBottomLabel()
     }
 

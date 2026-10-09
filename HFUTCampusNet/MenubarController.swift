@@ -15,6 +15,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var balMenuItem: NSMenuItem!
     private var updateTimeMenuItem: NSMenuItem!
     private var toggleWidgetMenuItem: NSMenuItem!
+    private var courseParentMenuItem: NSMenuItem!
 
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedCompact: String = "↓ 0B/s  ↑ 0B/s"
@@ -30,6 +31,13 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         startCarousel()
         NetworkSpeedMonitor.shared.delegate = self
         NetworkSpeedMonitor.shared.start()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onCourseScheduleUpdated),
+            name: .courseScheduleDidUpdate,
+            object: nil
+        )
     }
 
     private func setupStatusItem() {
@@ -80,6 +88,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         updateTimeMenuItem = NSMenuItem(title: "上次更新: 等待初次抓取", action: nil, keyEquivalent: "")
         updateTimeMenuItem.isEnabled = false
         menu.addItem(updateTimeMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        courseParentMenuItem = NSMenuItem(title: "📚 今日课程: 加载中...", action: nil, keyEquivalent: "")
+        let courseSubmenu = NSMenu()
+        courseParentMenuItem.submenu = courseSubmenu
+        menu.addItem(courseParentMenuItem)
+        updateCourseSubmenu()
 
         menu.addItem(NSMenuItem.separator())
 
@@ -254,6 +270,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     public func menuWillOpen(_ menu: NSMenu) {
         updateWidgetMenuState()
+        updateCourseSubmenu()
     }
 
     private func updateWidgetMenuState() {
@@ -336,6 +353,94 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func openWebAction() {
         if let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/dashboard") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - 课程表更新与交互
+
+    @objc private func onCourseScheduleUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateCourseSubmenu()
+        }
+    }
+
+    private func updateCourseSubmenu() {
+        guard let courseParent = courseParentMenuItem, let submenu = courseParent.submenu else { return }
+        submenu.removeAllItems()
+
+        let schedule = CourseScheduleService.shared.currentSchedule
+        let todayLessons = schedule?.todayLessons() ?? []
+
+        if let schedule = schedule, !schedule.lessons.isEmpty {
+            if todayLessons.isEmpty {
+                courseParent.title = "📚 今日课程 (今日无课 🎉)"
+                let noClassItem = NSMenuItem(title: "🎉 今日暂无排课，享受轻松时光！", action: nil, keyEquivalent: "")
+                noClassItem.isEnabled = false
+                submenu.addItem(noClassItem)
+            } else {
+                courseParent.title = "📚 今日课程 (\(todayLessons.count) 节)"
+                for lesson in todayLessons {
+                    let ongoing = lesson.isOngoing() ? "🟢 " : ""
+                    let room = lesson.classroom.map { "@ \($0)" } ?? ""
+                    let teacher = lesson.teacher.map { "(\($0))" } ?? ""
+                    let title = "\(ongoing)\(lesson.formattedTime)  \(lesson.courseName) \(room) \(teacher)"
+                    let item = NSMenuItem(title: title, action: #selector(openCourseTableAction), keyEquivalent: "")
+                    item.target = self
+                    submenu.addItem(item)
+                }
+            }
+        } else {
+            courseParent.title = "📚 教务课表 (未同步)"
+            let promptItem = NSMenuItem(title: "点击登录教务系统同步课表...", action: #selector(openCourseLoginAction), keyEquivalent: "")
+            promptItem.target = self
+            submenu.addItem(promptItem)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let openTableItem = NSMenuItem(title: "📅 查看完整周课表...", action: #selector(openCourseTableAction), keyEquivalent: "k")
+        openTableItem.target = self
+        submenu.addItem(openTableItem)
+
+        let refreshCourseItem = NSMenuItem(title: "🔄 立即刷新教务课表", action: #selector(refreshCourseAction), keyEquivalent: "")
+        refreshCourseItem.target = self
+        submenu.addItem(refreshCourseItem)
+
+        let authCourseItem = NSMenuItem(title: "🔑 教务系统登录/授权 (网页)...", action: #selector(openCourseLoginAction), keyEquivalent: "")
+        authCourseItem.target = self
+        submenu.addItem(authCourseItem)
+    }
+
+    @objc private func openCourseTableAction() {
+        CourseScheduleWindowController.shared.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openCourseLoginAction() {
+        CourseLoginWebViewController.shared.showLoginWindow()
+    }
+
+    @objc private func refreshCourseAction() {
+        CourseScheduleService.shared.syncSchedule { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let schedule):
+                    NotificationHelper.sendNotification(
+                        title: "🎉 课表刷新成功",
+                        body: "已同步 \(schedule.lessons.count) 节课程安排"
+                    )
+                case .failure(let error):
+                    if let syncErr = error as? CourseScheduleService.CourseSyncError, case .needLogin = syncErr {
+                        CourseLoginWebViewController.shared.showLoginWindow()
+                    } else {
+                        let alert = NSAlert()
+                        alert.messageText = "课表同步失败"
+                        alert.informativeText = error.localizedDescription
+                        alert.alertStyle = .warning
+                        alert.runModal()
+                    }
+                }
+            }
         }
     }
 

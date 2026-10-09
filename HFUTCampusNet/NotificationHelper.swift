@@ -33,6 +33,10 @@ public class NotificationHelper: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    public static func sendNotification(title: String, subtitle: String? = nil, body: String) {
+        showNotification(title: title, subtitle: subtitle, body: body)
+    }
+
     public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         if #available(macOS 14.0, *) {
             completionHandler([.banner, .sound, .list])

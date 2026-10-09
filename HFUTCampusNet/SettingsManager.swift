@@ -18,6 +18,12 @@ public class SettingsManager {
         static let portalUsername = "campus_portal_username"
         static let portalPassword = "campus_portal_password"
         static let autoLoginPortal = "campus_auto_login_portal"
+        static let courseStudentId = "campus_course_student_id"
+        static let courseSemesterId = "campus_course_semester_id"
+        static let courseBizTypeId = "campus_course_biz_type_id"
+        static let courseSessionCookie = "campus_course_session_cookie"
+        static let courseTableEnabled = "campus_course_table_enabled"
+        static let courseShowOnWidget = "campus_course_show_on_widget"
     }
 
     private init() {
@@ -108,5 +114,35 @@ public class SettingsManager {
     public var autoLoginPortal: Bool {
         get { defaults.bool(forKey: Keys.autoLoginPortal) }
         set { defaults.set(newValue, forKey: Keys.autoLoginPortal) }
+    }
+
+    public var courseStudentId: String {
+        get { defaults.string(forKey: Keys.courseStudentId) ?? "178506" }
+        set { defaults.set(newValue, forKey: Keys.courseStudentId) }
+    }
+
+    public var courseSemesterId: String {
+        get { defaults.string(forKey: Keys.courseSemesterId) ?? String(CourseCalendarHelper.inferSemesterId()) }
+        set { defaults.set(newValue, forKey: Keys.courseSemesterId) }
+    }
+
+    public var courseBizTypeId: String {
+        get { defaults.string(forKey: Keys.courseBizTypeId) ?? "2" }
+        set { defaults.set(newValue, forKey: Keys.courseBizTypeId) }
+    }
+
+    public var courseSessionCookie: String? {
+        get { defaults.string(forKey: Keys.courseSessionCookie) }
+        set { defaults.set(newValue, forKey: Keys.courseSessionCookie) }
+    }
+
+    public var courseTableEnabled: Bool {
+        get { defaults.object(forKey: Keys.courseTableEnabled) == nil ? true : defaults.bool(forKey: Keys.courseTableEnabled) }
+        set { defaults.set(newValue, forKey: Keys.courseTableEnabled) }
+    }
+
+    public var courseShowOnWidget: Bool {
+        get { defaults.object(forKey: Keys.courseShowOnWidget) == nil ? true : defaults.bool(forKey: Keys.courseShowOnWidget) }
+        set { defaults.set(newValue, forKey: Keys.courseShowOnWidget) }
     }
 }
