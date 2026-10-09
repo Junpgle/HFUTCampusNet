@@ -1,0 +1,28 @@
+# macOS 系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Xcode / Swift 编译缓存
+.swift_cache/
+*.swiftdoc
+*.swiftmodule
+*.swiftsourceinfo
+build/
+DerivedData/
+
+# 应用程序 Bundle (推荐在 Releases 中下载，也可根据需要自行构建)
+HFUTCampusNet.app/
+*.zip
+
+# 本地个人凭据与配置文件
+*.json
+!package.json
+.env
+.hfut_campusnet.json
+
+# 临时文件与脚本
+/tmp/
+*.log
