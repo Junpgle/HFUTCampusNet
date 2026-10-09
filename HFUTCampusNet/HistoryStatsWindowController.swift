@@ -12,6 +12,8 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
     private var cardSubLabels: [NSTextField] = []
 
     private var currentMode: Int = 0 // 0: 校园网流量, 1: 宿舍电费
+    private var currentFlowRecords: [DailyFlowRecord] = []
+    private var currentElectricityRecords: [DailyElectricityRecord] = []
 
     private init() {
         let window = NSWindow(
@@ -29,6 +31,12 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             self,
             selector: #selector(reloadData),
             name: .historyStatsDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(reloadData),
+            name: .dormElectricityDidUpdate,
             object: nil
         )
     }
@@ -51,7 +59,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         contentView.addSubview(topBar)
 
         segmentedControl = NSSegmentedControl(labels: ["📶 校园网流量统计", "⚡ 宿舍用电与电费"], trackingMode: .selectOne, target: self, action: #selector(onSegmentChanged(_:)))
-        segmentedControl.selectedSegment = 0
+        segmentedControl.selectedSegment = currentMode
         segmentedControl.frame = NSRect(x: 20, y: 12, width: 280, height: 30)
         topBar.addSubview(segmentedControl)
 
@@ -71,6 +79,10 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         let gap: CGFloat = 13
         let startX: CGFloat = 20
         let cardY: CGFloat = 640 - 54 - 12 - cardH
+
+        cardViews.removeAll()
+        cardValueLabels.removeAll()
+        cardSubLabels.removeAll()
 
         for i in 0..<4 {
             let card = NSView(frame: NSRect(x: startX + CGFloat(i) * (cardW + gap), y: cardY, width: cardW, height: cardH))
@@ -125,8 +137,6 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
 
         tableView = NSTableView(frame: scrollTable.bounds)
         tableView.autoresizingMask = [.width, .height]
-        tableView.dataSource = self
-        tableView.delegate = self
         tableView.rowHeight = 24
         tableView.usesAlternatingRowBackgroundColors = true
 
@@ -136,11 +146,18 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         reloadData()
     }
 
-    public override func showWindow(_ sender: Any?) {
-        super.showWindow(sender)
+    public func showWindow(mode: Int) {
+        currentMode = mode
+        if let seg = segmentedControl {
+            seg.selectedSegment = mode
+        }
         self.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         reloadData()
+    }
+
+    public override func showWindow(_ sender: Any?) {
+        showWindow(mode: currentMode)
     }
 
     @objc private func onSegmentChanged(_ sender: NSSegmentedControl) {
@@ -163,6 +180,9 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
     @objc public func reloadData() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            self.currentFlowRecords = CampusHistoryManager.shared.getPastDaysFlowRecords(days: 90).reversed()
+            self.currentElectricityRecords = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 90).reversed()
+
             self.updateCards()
             self.updateChart()
             self.setupTableColumns()
@@ -177,7 +197,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             setCard(index: 1, title: "近 7 天累计消耗", value: formatMB(CampusHistoryManager.shared.past7DaysFlowTotalMB), sub: "近一周网络流量总计", color: NSColor.systemIndigo)
             setCard(index: 2, title: "近 7 天日均消耗", value: formatMB(CampusHistoryManager.shared.past7DaysFlowDailyAverageMB) + "/天", sub: "每日平均使用水平", color: NSColor.systemTeal)
 
-            let peak = CampusHistoryManager.shared.getPastDaysFlowRecords(days: 7).map { $0.peakSpeedMBs }.max() ?? 0.0
+            let peak = currentFlowRecords.map { $0.peakSpeedMBs }.max() ?? 0.0
             setCard(index: 3, title: "近日峰值网速", value: String(format: "%.2f MB/s", peak), sub: "网络传输峰值测速", color: NSColor.systemGreen)
         } else {
             // 宿舍电费模式
@@ -215,22 +235,27 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             let records = CampusHistoryManager.shared.getPastDaysFlowRecords(days: 7)
             let items: [BarChartItem] = records.map {
                 let shortDate = String($0.dateString.suffix(5))
-                return BarChartItem(label: shortDate, value: $0.dailyDeltaMB, displayValue: formatMB($0.dailyDeltaMB))
+                return BarChartItem(label: shortDate, value: max(0.0, $0.dailyDeltaMB), displayValue: formatMB($0.dailyDeltaMB))
             }
             chartView.setData(items: items, barColor: NSColor.systemBlue, unit: "MB")
         } else {
             let records = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 7)
             let items: [BarChartItem] = records.map {
                 let shortDate = String($0.dateString.suffix(5))
-                return BarChartItem(label: shortDate, value: $0.dailyCostRMB, displayValue: String(format: "%.2f元", $0.dailyCostRMB))
+                return BarChartItem(label: shortDate, value: max(0.0, $0.dailyCostRMB), displayValue: String(format: "%.2f元", $0.dailyCostRMB))
             }
             chartView.setData(items: items, barColor: NSColor.systemOrange, unit: "元")
         }
     }
 
     private func setupTableColumns() {
-        while !tableView.tableColumns.isEmpty {
-            tableView.removeTableColumn(tableView.tableColumns.last!)
+        guard let tv = tableView else { return }
+        // 关键防护：在移除和重新添加列前，临时解除代理与数据源，彻底杜绝 re-entrant viewForTableColumn 越界崩溃！
+        tv.dataSource = nil
+        tv.delegate = nil
+
+        while !tv.tableColumns.isEmpty {
+            tv.removeTableColumn(tv.tableColumns.last!)
         }
 
         if currentMode == 0 {
@@ -247,7 +272,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
-                tableView.addTableColumn(col)
+                tv.addTableColumn(col)
             }
         } else {
             let cols: [(String, String, CGFloat)] = [
@@ -262,18 +287,21 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
-                tableView.addTableColumn(col)
+                tv.addTableColumn(col)
             }
         }
+
+        tv.dataSource = self
+        tv.delegate = self
     }
 
     // MARK: - NSTableViewDataSource & Delegate
 
     public func numberOfRows(in tableView: NSTableView) -> Int {
         if currentMode == 0 {
-            return CampusHistoryManager.shared.getPastDaysFlowRecords(days: 90).count
+            return currentFlowRecords.count
         } else {
-            return CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 90).count
+            return currentElectricityRecords.count
         }
     }
 
@@ -281,16 +309,23 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         guard let col = tableColumn else { return nil }
         let cid = col.identifier.rawValue
 
-        let cell = NSTextField(labelWithString: "")
-        cell.font = NSFont.systemFont(ofSize: 11)
-        cell.alignment = .left
+        let cell = (tableView.makeView(withIdentifier: col.identifier, owner: self) as? NSTextField) ?? {
+            let tf = NSTextField(labelWithString: "")
+            tf.identifier = col.identifier
+            tf.isEditable = false
+            tf.isBordered = false
+            tf.backgroundColor = .clear
+            tf.font = NSFont.systemFont(ofSize: 11.5)
+            tf.alignment = .left
+            return tf
+        }()
 
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH:mm:ss"
 
         if currentMode == 0 {
-            let records = CampusHistoryManager.shared.getPastDaysFlowRecords(days: 90).reversed()
-            let record = Array(records)[row]
+            guard row >= 0 && row < currentFlowRecords.count else { return nil }
+            let record = currentFlowRecords[row]
 
             switch cid {
             case "date": cell.stringValue = record.dateString
@@ -303,8 +338,8 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             default: break
             }
         } else {
-            let records = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 90).reversed()
-            let record = Array(records)[row]
+            guard row >= 0 && row < currentElectricityRecords.count else { return nil }
+            let record = currentElectricityRecords[row]
 
             switch cid {
             case "date": cell.stringValue = record.dateString
@@ -376,9 +411,10 @@ public class HistoryBarChartView: NSView {
         let maxVal = max(items.map { $0.value }.max() ?? 1.0, 1.0)
         let chartBottom: CGFloat = 30
         let chartTop: CGFloat = bounds.height - 30
-        let chartHeight = chartTop - chartBottom
-        let barWidth: CGFloat = min(42.0, (bounds.width - 60) / CGFloat(items.count * 2))
-        let slotWidth = (bounds.width - 40) / CGFloat(items.count)
+        let chartHeight = max(10.0, chartTop - chartBottom)
+        let count = max(1, items.count)
+        let barWidth: CGFloat = min(42.0, max(8.0, (bounds.width - 60) / CGFloat(count * 2)))
+        let slotWidth = (bounds.width - 40) / CGFloat(count)
 
         // 绘制刻度参考虚线
         context.saveGState()
@@ -395,7 +431,7 @@ public class HistoryBarChartView: NSView {
         for (i, item) in items.enumerated() {
             let centerX = 20 + slotWidth * CGFloat(i) + slotWidth / 2
             let barX = centerX - barWidth / 2
-            let ratio = CGFloat(item.value / maxVal)
+            let ratio = max(0.0, CGFloat(item.value / maxVal))
             let bH = max(4.0, chartHeight * ratio)
             let barRect = NSRect(x: barX, y: chartBottom, width: barWidth, height: bH)
 

@@ -418,7 +418,8 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     @objc private func bottomLabelClicked() {
-        HistoryStatsWindowController.shared.showWindow(nil)
+        let mode = (carouselIndex == 2) ? 1 : 0
+        HistoryStatsWindowController.shared.showWindow(mode: mode)
     }
 
     private func splitNumAndUnit(_ text: String, fallbackUnit: String) -> (String, String) {

@@ -104,7 +104,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu.addItem(courseParentMenuItem)
         updateCourseSubmenu()
 
-        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openHistoryStatsAction), keyEquivalent: "")
+        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openElectricityStatsAction), keyEquivalent: "")
         dormElectricityMenuItem.target = self
         menu.addItem(dormElectricityMenuItem)
         updateDormElectricityMenu()
@@ -324,8 +324,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         UnifiedLoginWebViewController.shared.showLoginWindow()
     }
 
+    @objc private func openElectricityStatsAction() {
+        HistoryStatsWindowController.shared.showWindow(mode: 1)
+    }
+
     @objc private func openHistoryStatsAction() {
-        HistoryStatsWindowController.shared.showWindow(nil)
+        HistoryStatsWindowController.shared.showWindow(mode: 0)
     }
 
     @objc private func changeDisplayStyle(_ sender: NSMenuItem) {
