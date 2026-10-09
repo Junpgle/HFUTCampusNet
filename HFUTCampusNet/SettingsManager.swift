@@ -24,6 +24,15 @@ public class SettingsManager {
         static let courseSessionCookie = "campus_course_session_cookie"
         static let courseTableEnabled = "campus_course_table_enabled"
         static let courseShowOnWidget = "campus_course_show_on_widget"
+        static let huixinAuthToken = "campus_huixin_auth_token"
+        static let casTgcCookie = "campus_cas_tgc_cookie"
+        static let dormCampus = "campus_dorm_campus"
+        static let dormBuilding = "campus_dorm_building"
+        static let dormRoom = "campus_dorm_room"
+        static let dormEndNumber = "campus_dorm_end_number"
+        static let dormRoomName = "campus_dorm_room_name"
+        static let electricityLowWarningThreshold = "campus_electricity_low_threshold"
+        static let lastNotifiedLowElectricityDate = "campus_last_notified_low_electricity_date"
     }
 
     private init() {
@@ -45,8 +54,22 @@ public class SettingsManager {
         if defaults.object(forKey: Keys.autoLoginPortal) == nil {
             defaults.set(true, forKey: Keys.autoLoginPortal)
         }
+        if defaults.object(forKey: Keys.dormCampus) == nil {
+            defaults.set("宣城校区", forKey: Keys.dormCampus)
+        }
+        if defaults.object(forKey: Keys.dormBuilding) == nil {
+            defaults.set("7", forKey: Keys.dormBuilding)
+        }
+        if defaults.object(forKey: Keys.dormRoom) == nil {
+            defaults.set("315", forKey: Keys.dormRoom)
+        }
+        if defaults.object(forKey: Keys.dormEndNumber) == nil {
+            defaults.set("11", forKey: Keys.dormEndNumber) // 11: 南边照明, 12: 南边空调, 21: 北边照明, 22: 北边空调
+        }
+        if defaults.object(forKey: Keys.electricityLowWarningThreshold) == nil {
+            defaults.set(10.0, forKey: Keys.electricityLowWarningThreshold)
+        }
         // 账号默认留空，由用户首次在设置中填写
-
     }
 
     public var sessionCookie: String? {
@@ -145,4 +168,70 @@ public class SettingsManager {
         get { defaults.object(forKey: Keys.courseShowOnWidget) == nil ? true : defaults.bool(forKey: Keys.courseShowOnWidget) }
         set { defaults.set(newValue, forKey: Keys.courseShowOnWidget) }
     }
+
+    public var huixinAuthToken: String? {
+        get { defaults.string(forKey: Keys.huixinAuthToken) }
+        set { defaults.set(newValue, forKey: Keys.huixinAuthToken) }
+    }
+
+    public var casTgcCookie: String? {
+        get { defaults.string(forKey: Keys.casTgcCookie) }
+        set { defaults.set(newValue, forKey: Keys.casTgcCookie) }
+    }
+
+    public var dormCampus: String {
+        get { defaults.string(forKey: Keys.dormCampus) ?? "宣城校区" }
+        set { defaults.set(newValue, forKey: Keys.dormCampus) }
+    }
+
+    public var dormBuilding: String {
+        get { defaults.string(forKey: Keys.dormBuilding) ?? "7" }
+        set { defaults.set(newValue, forKey: Keys.dormBuilding) }
+    }
+
+    public var dormRoom: String {
+        get { defaults.string(forKey: Keys.dormRoom) ?? "315" }
+        set { defaults.set(newValue, forKey: Keys.dormRoom) }
+    }
+
+    public var dormEndNumber: String {
+        get { defaults.string(forKey: Keys.dormEndNumber) ?? "11" }
+        set { defaults.set(newValue, forKey: Keys.dormEndNumber) }
+    }
+
+    public var dormRoomName: String {
+        get {
+            if let name = defaults.string(forKey: Keys.dormRoomName), !name.isEmpty {
+                return name
+            }
+            let endDesc: String
+            switch dormEndNumber {
+            case "11": endDesc = "南边照明"
+            case "12": endDesc = "南边空调"
+            case "21": endDesc = "北边照明"
+            case "22": endDesc = "北边空调"
+            default: endDesc = dormEndNumber
+            }
+            return "\(dormCampus) \(dormBuilding)号楼 \(dormRoom)室 (\(endDesc))"
+        }
+        set { defaults.set(newValue, forKey: Keys.dormRoomName) }
+    }
+
+    public var electricityLowWarningThreshold: Double {
+        get {
+            let val = defaults.double(forKey: Keys.electricityLowWarningThreshold)
+            return val > 0 ? val : 10.0
+        }
+        set { defaults.set(newValue, forKey: Keys.electricityLowWarningThreshold) }
+    }
+
+    public var lastNotifiedLowElectricityDate: String? {
+        get { defaults.string(forKey: Keys.lastNotifiedLowElectricityDate) }
+        set { defaults.set(newValue, forKey: Keys.lastNotifiedLowElectricityDate) }
+    }
+}
+
+extension Notification.Name {
+    public static let dormElectricityDidUpdate = Notification.Name("cn.edu.hfut.dormElectricityDidUpdate")
+    public static let historyStatsDidUpdate = Notification.Name("cn.edu.hfut.historyStatsDidUpdate")
 }

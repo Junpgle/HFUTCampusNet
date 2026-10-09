@@ -21,11 +21,11 @@ public class CourseScheduleWindowController: NSWindowController {
     }
 
     private let timeSlots: [TimeSlot] = [
-        TimeSlot(periodName: "1 - 2 节", timeRange: "08:00 - 09:40", startVal: 800, endVal: 940),
-        TimeSlot(periodName: "3 - 4 节", timeRange: "10:10 - 11:50", startVal: 1010, endVal: 1150),
-        TimeSlot(periodName: "5 - 6 节", timeRange: "14:00 - 15:40", startVal: 1400, endVal: 1540),
-        TimeSlot(periodName: "7 - 8 节", timeRange: "16:00 - 17:40", startVal: 1600, endVal: 1740),
-        TimeSlot(periodName: "9 - 11 节", timeRange: "19:00 - 21:25", startVal: 1900, endVal: 2125),
+        TimeSlot(periodName: "1 - 2 节", timeRange: "08:00 - 09:40", startVal: 750, endVal: 950),
+        TimeSlot(periodName: "3 - 4 节", timeRange: "10:00 - 11:40", startVal: 950, endVal: 1250),
+        TimeSlot(periodName: "5 - 6 节", timeRange: "14:00 - 15:40", startVal: 1300, endVal: 1545),
+        TimeSlot(periodName: "7 - 8 节", timeRange: "15:50 - 17:30", startVal: 1545, endVal: 1830),
+        TimeSlot(periodName: "9 - 11 节", timeRange: "19:20 - 21:00", startVal: 1830, endVal: 2200),
     ]
 
     private init() {
@@ -310,7 +310,7 @@ public class CourseScheduleWindowController: NSWindowController {
         card.addSubview(nameLabel)
 
         let roomStr = course.classroom ?? "待定教室"
-        let roomLabel = NSTextField(labelWithString: "📍 \(roomStr)")
+        let roomLabel = NSTextField(labelWithString: "📍 \(roomStr) (\(course.formattedTime))")
         roomLabel.frame = NSRect(x: 4, y: 18, width: frame.width - 8, height: 16)
         roomLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
         roomLabel.textColor = NSColor.white.withAlphaComponent(0.92)

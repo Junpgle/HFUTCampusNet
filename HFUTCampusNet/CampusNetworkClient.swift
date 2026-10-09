@@ -58,6 +58,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         let interval = SettingsManager.shared.refreshInterval
         dashboardTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.fetchDashboardData()
+            ElectricityService.shared.fetchData { _ in }
         }
     }
 
@@ -78,6 +79,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     /// 手动强制刷新
     public func fetchData() {
         performHeartbeatCheck(forceDashboard: true)
+        ElectricityService.shared.fetchData { _ in }
     }
 
     // MARK: - 系统休眠唤醒与网络变化监听
@@ -182,6 +184,13 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
                 self.delegate?.clientDidUpdate(data: data)
 
+                // 记录历史流量
+                CampusHistoryManager.shared.recordFlow(
+                    usedFlowStr: data.usedFlow,
+                    availableFlowStr: (data.availableFlow != "-- M") ? data.availableFlow : nil,
+                    balanceStr: data.balance
+                )
+
                 if forceDashboard || data.availableFlow == "-- M" {
                     self.fetchDashboardData()
                 }
@@ -240,6 +249,13 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 result.isLoggedIn = true
                 self.latestData = result
                 self.delegate?.clientDidUpdate(data: result)
+
+                // 记录历史流量
+                CampusHistoryManager.shared.recordFlow(
+                    usedFlowStr: result.usedFlow,
+                    availableFlowStr: result.availableFlow,
+                    balanceStr: result.balance
+                )
             }
         }
         task.resume()

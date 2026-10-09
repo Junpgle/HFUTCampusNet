@@ -19,10 +19,15 @@ mkdir -p "$CACHE_DIR"
 
 SOURCES=(
     "HFUTCampusNet/Models.swift"
+    "HFUTCampusNet/ElectricityModels.swift"
     "HFUTCampusNet/CourseModels.swift"
+    "HFUTCampusNet/CampusHistoryManager.swift"
+    "HFUTCampusNet/ElectricityService.swift"
     "HFUTCampusNet/CourseScheduleService.swift"
     "HFUTCampusNet/CourseLoginWebViewController.swift"
+    "HFUTCampusNet/UnifiedLoginWebViewController.swift"
     "HFUTCampusNet/CourseScheduleWindowController.swift"
+    "HFUTCampusNet/HistoryStatsWindowController.swift"
     "HFUTCampusNet/SettingsManager.swift"
     "HFUTCampusNet/NotificationHelper.swift"
     "HFUTCampusNet/NetworkSpeedMonitor.swift"
@@ -62,7 +67,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.4.0</string>
+    <string>1.5.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>

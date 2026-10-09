@@ -16,6 +16,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var updateTimeMenuItem: NSMenuItem!
     private var toggleWidgetMenuItem: NSMenuItem!
     private var courseParentMenuItem: NSMenuItem!
+    private var dormElectricityMenuItem: NSMenuItem!
 
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedCompact: String = "↓ 0B/s  ↑ 0B/s"
@@ -36,6 +37,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             self,
             selector: #selector(onCourseScheduleUpdated),
             name: .courseScheduleDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onDormElectricityUpdated),
+            name: .dormElectricityDidUpdate,
             object: nil
         )
     }
@@ -96,6 +103,21 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         courseParentMenuItem.submenu = courseSubmenu
         menu.addItem(courseParentMenuItem)
         updateCourseSubmenu()
+
+        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openHistoryStatsAction), keyEquivalent: "")
+        dormElectricityMenuItem.target = self
+        menu.addItem(dormElectricityMenuItem)
+        updateDormElectricityMenu()
+
+        menu.addItem(NSMenuItem.separator())
+
+        let unifiedLoginItem = NSMenuItem(title: "🔑 统一身份认证登录 (信息门户 · 自动刷新全部)...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
+        unifiedLoginItem.target = self
+        menu.addItem(unifiedLoginItem)
+
+        let historyStatsItem = NSMenuItem(title: "📊 校园用量统计与历史分析...", action: #selector(openHistoryStatsAction), keyEquivalent: "h")
+        historyStatsItem.target = self
+        menu.addItem(historyStatsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -271,12 +293,39 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     public func menuWillOpen(_ menu: NSMenu) {
         updateWidgetMenuState()
         updateCourseSubmenu()
+        updateDormElectricityMenu()
     }
 
     private func updateWidgetMenuState() {
         let isShowing = SettingsManager.shared.showDesktopWidget
         toggleWidgetMenuItem.title = isShowing ? "隐藏桌面悬浮卡片" : "显示桌面悬浮卡片"
         toggleWidgetMenuItem.state = isShowing ? .on : .off
+    }
+
+    @objc private func onDormElectricityUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateDormElectricityMenu()
+        }
+    }
+
+    private func updateDormElectricityMenu() {
+        guard let item = dormElectricityMenuItem else { return }
+        if let elec = ElectricityService.shared.latestData {
+            let warnIcon = elec.isLowBalance ? "⚠️ " : ""
+            let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
+            let daysStr = (daysLeft != nil) ? " (约余\(daysLeft!)天)" : ""
+            item.title = "\(warnIcon)⚡ 宿舍电费: \(elec.displayBalance)\(daysStr) @ \(elec.formattedRoom)"
+        } else {
+            item.title = "⚡ 宿舍电费: 尚未同步 (点击查看/配置)"
+        }
+    }
+
+    @objc private func unifiedLoginAction() {
+        UnifiedLoginWebViewController.shared.showLoginWindow()
+    }
+
+    @objc private func openHistoryStatsAction() {
+        HistoryStatsWindowController.shared.showWindow(nil)
     }
 
     @objc private func changeDisplayStyle(_ sender: NSMenuItem) {
@@ -328,6 +377,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func refreshAction() {
         CampusNetworkClient.shared.fetchData()
+        ElectricityService.shared.fetchData { _ in }
     }
 
     @objc private func toggleWidgetAction() {

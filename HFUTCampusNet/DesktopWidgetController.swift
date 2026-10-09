@@ -22,7 +22,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedString: String = "↓ 0B/s  ↑ 0B/s"
     private var carouselTimer: Timer?
-    private var carouselToggle: Bool = false
+    private var carouselIndex: Int = 0
 
     private init() {
         let width: CGFloat = 340
@@ -58,7 +58,19 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             name: .courseScheduleDidUpdate,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onDormElectricityUpdated),
+            name: .dormElectricityDidUpdate,
+            object: nil
+        )
         updateCourseDisplay()
+    }
+
+    @objc private func onDormElectricityUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.renderBottomLabel()
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -188,6 +200,9 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         updateTimeLabel.frame = NSRect(x: marginX, y: 3, width: width - marginX * 2, height: 14)
         updateTimeLabel.font = NSFont.systemFont(ofSize: 9.5)
         updateTimeLabel.textColor = .tertiaryLabelColor
+        updateTimeLabel.toolTip = "点击打开校园用量统计与历史分析窗口"
+        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(bottomLabelClicked))
+        updateTimeLabel.addGestureRecognizer(clickGesture)
         visualEffectView.addSubview(updateTimeLabel)
     }
 
@@ -361,7 +376,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     private func renderBottomLabel() {
-        carouselToggle.toggle()
+        carouselIndex = (carouselIndex + 1) % 3
 
         if let err = currentData.errorMessage {
             updateTimeLabel.stringValue = err
@@ -369,22 +384,13 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             return
         }
 
-        if currentData.availableFlow == "-- M" {
-            // 自服务未登录提示
-            if carouselToggle {
-                updateTimeLabel.stringValue = "💡 提示: 点击【可用流量】卡片登录自服务"
-                updateTimeLabel.textColor = NSColor.systemOrange
-            } else {
-                updateTimeLabel.stringValue = "🚀 实时速率: \(currentSpeedString)"
-                updateTimeLabel.textColor = NSColor.systemTeal
-            }
-            return
-        }
-
-        if carouselToggle {
+        switch carouselIndex {
+        case 0:
+            // 实时网速
             updateTimeLabel.stringValue = "🚀 实时速率: \(currentSpeedString)"
             updateTimeLabel.textColor = NSColor.systemTeal
-        } else {
+        case 1:
+            // 更新时间与百分比
             let timeStr: String
             if let time = currentData.lastUpdated {
                 let formatter = DateFormatter()
@@ -396,7 +402,23 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             let percentage = currentData.usagePercentage * 100.0
             updateTimeLabel.stringValue = "\(timeStr) · 已用 \(String(format: "%.1f", percentage))%"
             updateTimeLabel.textColor = .tertiaryLabelColor
+        default:
+            // 宿舍电费与历史用量提示
+            if let elec = ElectricityService.shared.latestData {
+                let warn = elec.isLowBalance ? "⚠️ " : ""
+                let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
+                let daysText = (daysLeft != nil) ? " · 约余\(daysLeft!)天" : ""
+                updateTimeLabel.stringValue = "\(warn)⚡ 宿舍电费: \(elec.displayBalance)\(daysText)"
+                updateTimeLabel.textColor = elec.isLowBalance ? NSColor.systemRed : NSColor.systemOrange
+            } else {
+                updateTimeLabel.stringValue = "⚡ 宿舍电费: 点击查看历史用量与配置"
+                updateTimeLabel.textColor = NSColor.systemOrange
+            }
         }
+    }
+
+    @objc private func bottomLabelClicked() {
+        HistoryStatsWindowController.shared.showWindow(nil)
     }
 
     private func splitNumAndUnit(_ text: String, fallbackUnit: String) -> (String, String) {
