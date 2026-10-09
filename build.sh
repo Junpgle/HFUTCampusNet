@@ -4,7 +4,7 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
-echo "🔨 开始构建 HFUTCampusNet (合肥工业大学校园网监测、自动登录、网速轮播与重连通知系统)..."
+echo "🔨 开始构建 HFUTCampusNet (通用架构 Universal arm64 + x86_64)..."
 
 APP_NAME="HFUTCampusNet"
 BUNDLE_DIR="$DIR/${APP_NAME}.app"
@@ -17,21 +17,29 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 mkdir -p "$CACHE_DIR"
 
-echo "📦 正在编译 Swift 源代码..."
-swiftc -module-cache-path "$CACHE_DIR" \
-    -O \
-    HFUTCampusNet/Models.swift \
-    HFUTCampusNet/SettingsManager.swift \
-    HFUTCampusNet/NotificationHelper.swift \
-    HFUTCampusNet/NetworkSpeedMonitor.swift \
-    HFUTCampusNet/PortalAuthService.swift \
-    HFUTCampusNet/CampusNetworkClient.swift \
-    HFUTCampusNet/DesktopWidgetController.swift \
-    HFUTCampusNet/LoginWebViewController.swift \
-    HFUTCampusNet/SettingsWindowController.swift \
-    HFUTCampusNet/MenubarController.swift \
-    HFUTCampusNet/main.swift \
-    -o "$MACOS_DIR/$APP_NAME"
+SOURCES=(
+    "HFUTCampusNet/Models.swift"
+    "HFUTCampusNet/SettingsManager.swift"
+    "HFUTCampusNet/NotificationHelper.swift"
+    "HFUTCampusNet/NetworkSpeedMonitor.swift"
+    "HFUTCampusNet/PortalAuthService.swift"
+    "HFUTCampusNet/CampusNetworkClient.swift"
+    "HFUTCampusNet/DesktopWidgetController.swift"
+    "HFUTCampusNet/LoginWebViewController.swift"
+    "HFUTCampusNet/SettingsWindowController.swift"
+    "HFUTCampusNet/MenubarController.swift"
+    "HFUTCampusNet/main.swift"
+)
+
+echo "📦 正在编译 Apple Silicon (arm64) 架构..."
+swiftc -target arm64-apple-macosx12.0 -module-cache-path "$CACHE_DIR" -O "${SOURCES[@]}" -o "$MACOS_DIR/${APP_NAME}_arm64"
+
+echo "📦 正在编译 Intel (x86_64) 架构..."
+swiftc -target x86_64-apple-macosx12.0 -module-cache-path "$CACHE_DIR" -O "${SOURCES[@]}" -o "$MACOS_DIR/${APP_NAME}_x86_64"
+
+echo "🔀 正在合成 Universal 通用二进制..."
+lipo -create "$MACOS_DIR/${APP_NAME}_arm64" "$MACOS_DIR/${APP_NAME}_x86_64" -output "$MACOS_DIR/$APP_NAME"
+rm -f "$MACOS_DIR/${APP_NAME}_arm64" "$MACOS_DIR/${APP_NAME}_x86_64"
 
 echo "📝 正在生成 Info.plist..."
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
@@ -50,7 +58,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.0</string>
+    <string>1.3.1</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
@@ -68,8 +76,9 @@ EOF
 
 chmod +x "$MACOS_DIR/$APP_NAME"
 
-echo "✅ 构建成功！生成路径："
+echo "🔏 正在执行标准 Ad-Hoc 代码签名封装..."
+codesign --force --deep --sign - "$BUNDLE_DIR"
+
+echo "✅ 构建成功！生成通用架构应用："
 echo "   👉 $BUNDLE_DIR"
-echo ""
-echo "🚀 运行方式："
-echo "   open $BUNDLE_DIR"
+file "$MACOS_DIR/$APP_NAME"

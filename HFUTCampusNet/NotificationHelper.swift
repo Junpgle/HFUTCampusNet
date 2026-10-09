@@ -34,11 +34,10 @@ public class NotificationHelper: NSObject, UNUserNotificationCenterDelegate {
     }
 
     public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // 应用在前台时依然展示横幅与声音
         if #available(macOS 14.0, *) {
             completionHandler([.banner, .sound, .list])
         } else {
-            completionHandler([.alert, .sound])
+            completionHandler([.banner, .sound])
         }
     }
 }
