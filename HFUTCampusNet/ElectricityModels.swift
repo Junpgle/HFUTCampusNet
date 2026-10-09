@@ -48,9 +48,9 @@ public struct ElectricityData: Codable, Equatable {
         return String(format: "%.1f 度", k)
     }
 
-    /// 是否处于低电费预警状态 (低于 10 元)
+    /// 是否处于低电费预警状态
     public var isLowBalance: Bool {
         guard let b = balanceRMB else { return false }
-        return b < 10.0
+        return b < SettingsManager.shared.electricityLowWarningThreshold
     }
 }

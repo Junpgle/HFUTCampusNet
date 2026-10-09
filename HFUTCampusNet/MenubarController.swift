@@ -310,13 +310,17 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     private func updateDormElectricityMenu() {
         guard let item = dormElectricityMenuItem else { return }
+        if !SettingsManager.shared.isDormConfigured {
+            item.title = "⚡ 宿舍电费: 未配置宿舍 (点击前往设置)"
+            return
+        }
         if let elec = ElectricityService.shared.latestData {
             let warnIcon = elec.isLowBalance ? "⚠️ " : ""
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
             let daysStr = (daysLeft != nil) ? " (约余\(daysLeft!)天)" : ""
             item.title = "\(warnIcon)⚡ 宿舍电费: \(elec.displayBalance)\(daysStr) @ \(elec.formattedRoom)"
         } else {
-            item.title = "⚡ 宿舍电费: 尚未同步 (点击查看/配置)"
+            item.title = "⚡ 宿舍电费: 正在获取数据 (点击刷新)"
         }
     }
 
@@ -325,6 +329,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     }
 
     @objc private func openElectricityStatsAction() {
+        if !SettingsManager.shared.isDormConfigured {
+            SettingsWindowController.shared.showSettings()
+            return
+        }
+        ElectricityService.shared.fetchData { _ in }
         HistoryStatsWindowController.shared.showWindow(mode: 1)
     }
 

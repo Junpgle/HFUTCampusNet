@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
 
         // 无论如何都启动监测引擎！
         CampusNetworkClient.shared.startMonitoring()
+        ElectricityService.shared.fetchData { _ in }
 
         // 如果既没有自服务 Cookie，也没有配置密码，延迟 1 秒提示打开设置
         let noCookie = SettingsManager.shared.sessionCookie == nil || SettingsManager.shared.sessionCookie?.isEmpty == true

@@ -70,8 +70,13 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
 
         let ssoBtn = NSButton(title: "统一身份认证同步", target: self, action: #selector(onOpenUnifiedLogin))
         ssoBtn.bezelStyle = .rounded
-        ssoBtn.frame = NSRect(x: 625, y: 11, width: 140, height: 30)
+        ssoBtn.frame = NSRect(x: 480, y: 11, width: 140, height: 30)
         topBar.addSubview(ssoBtn)
+
+        let settingsBtn = NSButton(title: "⚙️ 宿舍配置", target: self, action: #selector(onOpenSettings))
+        settingsBtn.bezelStyle = .rounded
+        settingsBtn.frame = NSRect(x: 330, y: 11, width: 110, height: 30)
+        topBar.addSubview(settingsBtn)
 
         // 4 个指标统计卡片
         let cardW: CGFloat = 200
@@ -154,6 +159,16 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         self.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         reloadData()
+
+        // 自动拉取最新数据，避免显示空值或 -- 元
+        if currentMode == 1 || ElectricityService.shared.latestData == nil {
+            ElectricityService.shared.fetchData { [weak self] _ in
+                self?.reloadData()
+            }
+        }
+        if currentMode == 0 || currentFlowRecords.isEmpty {
+            CampusNetworkClient.shared.fetchData()
+        }
     }
 
     public override func showWindow(_ sender: Any?) {
@@ -163,18 +178,26 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
     @objc private func onSegmentChanged(_ sender: NSSegmentedControl) {
         currentMode = sender.selectedSegment
         reloadData()
+        if currentMode == 1 && ElectricityService.shared.latestData == nil {
+            ElectricityService.shared.fetchData { [weak self] _ in
+                self?.reloadData()
+            }
+        }
     }
 
     @objc private func onRefreshClicked() {
-        if currentMode == 0 {
-            CampusNetworkClient.shared.fetchData()
-        } else {
-            ElectricityService.shared.fetchData { _ in }
+        CampusNetworkClient.shared.fetchData()
+        ElectricityService.shared.fetchData { [weak self] _ in
+            self?.reloadData()
         }
     }
 
     @objc private func onOpenUnifiedLogin() {
         UnifiedLoginWebViewController.shared.showLoginWindow()
+    }
+
+    @objc private func onOpenSettings() {
+        SettingsWindowController.shared.showSettings()
     }
 
     @objc public func reloadData() {
@@ -201,10 +224,17 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             setCard(index: 3, title: "近日峰值网速", value: String(format: "%.2f MB/s", peak), sub: "网络传输峰值测速", color: NSColor.systemGreen)
         } else {
             // 宿舍电费模式
+            if !SettingsManager.shared.isDormConfigured {
+                setCard(index: 0, title: "当前剩余电费", value: "未配置", sub: "请先在「设置」中填写楼栋与房间号", color: NSColor.systemGray)
+                setCard(index: 1, title: "今日消耗电费", value: "--", sub: "配置宿舍后可查看", color: NSColor.systemGray)
+                setCard(index: 2, title: "近 7 天日均支出", value: "--", sub: "配置宿舍后可查看", color: NSColor.systemGray)
+                setCard(index: 3, title: "预计可用天数", value: "--", sub: "配置宿舍后可查看", color: NSColor.systemGray)
+                return
+            }
             let elec = ElectricityService.shared.latestData
-            let balStr = elec?.displayBalance ?? "-- 元"
+            let balStr = elec?.displayBalance ?? "获取中..."
             let balColor = (elec?.isLowBalance == true) ? NSColor.systemRed : NSColor.systemOrange
-            let warnText = (elec?.isLowBalance == true) ? "⚠️ 余额偏低，请及时充值" : (elec?.displayPower ?? "电量正常")
+            let warnText = (elec?.isLowBalance == true) ? "⚠️ 余额偏低，请及时充值" : (elec?.displayPower ?? "正在查询电量...")
             setCard(index: 0, title: "当前剩余电费", value: balStr, sub: warnText, color: balColor)
 
             let todayCost = CampusHistoryManager.shared.todayElectricityCostRMB

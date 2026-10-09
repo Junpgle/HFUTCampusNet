@@ -58,10 +58,10 @@ public class SettingsManager {
             defaults.set("宣城校区", forKey: Keys.dormCampus)
         }
         if defaults.object(forKey: Keys.dormBuilding) == nil {
-            defaults.set("7", forKey: Keys.dormBuilding)
+            defaults.set("", forKey: Keys.dormBuilding)
         }
         if defaults.object(forKey: Keys.dormRoom) == nil {
-            defaults.set("315", forKey: Keys.dormRoom)
+            defaults.set("", forKey: Keys.dormRoom)
         }
         if defaults.object(forKey: Keys.dormEndNumber) == nil {
             defaults.set("11", forKey: Keys.dormEndNumber) // 11: 南边照明, 12: 南边空调, 21: 北边照明, 22: 北边空调
@@ -184,13 +184,19 @@ public class SettingsManager {
         set { defaults.set(newValue, forKey: Keys.dormCampus) }
     }
 
+    public var isDormConfigured: Bool {
+        let b = dormBuilding.trimmingCharacters(in: .whitespacesAndNewlines)
+        let r = dormRoom.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !b.isEmpty && !r.isEmpty
+    }
+
     public var dormBuilding: String {
-        get { defaults.string(forKey: Keys.dormBuilding) ?? "7" }
+        get { defaults.string(forKey: Keys.dormBuilding) ?? "" }
         set { defaults.set(newValue, forKey: Keys.dormBuilding) }
     }
 
     public var dormRoom: String {
-        get { defaults.string(forKey: Keys.dormRoom) ?? "315" }
+        get { defaults.string(forKey: Keys.dormRoom) ?? "" }
         set { defaults.set(newValue, forKey: Keys.dormRoom) }
     }
 
@@ -201,15 +207,18 @@ public class SettingsManager {
 
     public var dormRoomName: String {
         get {
+            if !isDormConfigured {
+                return "未配置宿舍"
+            }
             if let name = defaults.string(forKey: Keys.dormRoomName), !name.isEmpty {
                 return name
             }
             let endDesc: String
             switch dormEndNumber {
-            case "11": endDesc = "南边照明"
-            case "12": endDesc = "南边空调"
-            case "21": endDesc = "北边照明"
-            case "22": endDesc = "北边空调"
+            case "11": endDesc = "南楼/南照明"
+            case "12": endDesc = "南楼空调"
+            case "21": endDesc = "北楼/北照明"
+            case "22": endDesc = "北楼空调"
             default: endDesc = dormEndNumber
             }
             return "\(dormCampus) \(dormBuilding)号楼 \(dormRoom)室 (\(endDesc))"

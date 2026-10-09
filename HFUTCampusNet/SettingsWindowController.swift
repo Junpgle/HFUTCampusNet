@@ -124,13 +124,13 @@ public class SettingsWindowController: NSWindowController {
         contentView.addSubview(portLabel)
 
         dormEndPopup = NSPopUpButton(frame: NSRect(x: 95, y: curY - 2, width: 130, height: 26))
-        dormEndPopup.addItem(withTitle: "南边照明 (11)")
+        dormEndPopup.addItem(withTitle: "南楼/南照明 (11)")
         dormEndPopup.lastItem?.representedObject = "11"
-        dormEndPopup.addItem(withTitle: "南边空调 (12)")
+        dormEndPopup.addItem(withTitle: "南楼空调 (12)")
         dormEndPopup.lastItem?.representedObject = "12"
-        dormEndPopup.addItem(withTitle: "北边照明 (21)")
+        dormEndPopup.addItem(withTitle: "北楼/北照明 (21)")
         dormEndPopup.lastItem?.representedObject = "21"
-        dormEndPopup.addItem(withTitle: "北边空调 (22)")
+        dormEndPopup.addItem(withTitle: "北楼空调 (22)")
         dormEndPopup.lastItem?.representedObject = "22"
 
         for item in dormEndPopup.itemArray {
