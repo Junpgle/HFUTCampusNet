@@ -160,7 +160,7 @@ public class SettingsManager {
     }
 
     public var courseStudentId: String {
-        get { defaults.string(forKey: Keys.courseStudentId) ?? "178506" }
+        get { defaults.string(forKey: Keys.courseStudentId) ?? "" }
         set { defaults.set(newValue, forKey: Keys.courseStudentId) }
     }
 
@@ -229,9 +229,6 @@ public class SettingsManager {
         get {
             if !isDormConfigured {
                 return "未配置宿舍"
-            }
-            if let name = defaults.string(forKey: Keys.dormRoomName), !name.isEmpty {
-                return name
             }
             let endDesc: String
             switch dormEndNumber {

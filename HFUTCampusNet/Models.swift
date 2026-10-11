@@ -111,12 +111,12 @@ public struct CampusNetworkData: Codable {
         }
     }
 
-    /// 流量使用百分比 0.0 ~ 1.0
+    /// 月度免费流量 (200 GB) 使用百分比 0.0 ~ 1.0
     public var usagePercentage: Double {
-        guard let used = usedMB, let avail = availableMB, (used + avail) > 0 else {
+        guard let used = usedMB, used >= 0 else {
             return 0.0
         }
-        return used / (used + avail)
+        return min(1.0, used / (200.0 * 1024.0))
     }
 
     private func parseMB(from text: String) -> Double? {

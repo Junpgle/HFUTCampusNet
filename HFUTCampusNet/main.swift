@@ -8,7 +8,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
 
         CampusNetworkClient.shared.delegate = self
 
-        // 初始化状态栏控制器与桌面小组件
+        // 初始化通知中心代理与状态栏控制器
+        _ = NotificationHelper.shared
         _ = MenubarController.shared
         
         if SettingsManager.shared.showDesktopWidget {
@@ -32,7 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
 
         // 如果既没有自服务 Cookie，也没有配置密码，延迟 1 秒提示打开设置
         let noCookie = SettingsManager.shared.sessionCookie == nil || SettingsManager.shared.sessionCookie?.isEmpty == true
-        let noPassword = SettingsManager.shared.portalPassword.isEmpty
+        let noPassword = SettingsManager.shared.portalPassword.isEmpty && SettingsManager.shared.casPassword.isEmpty
         if noCookie && noPassword {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 SettingsWindowController.shared.showSettings()
@@ -54,6 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
 
     func applicationWillTerminate(_ notification: Notification) {
         CampusNetworkClient.shared.stopMonitoring()
+        EmptyClassroomService.shared.stopMonitoring()
+        NetworkSpeedMonitor.shared.stop()
     }
 }
 

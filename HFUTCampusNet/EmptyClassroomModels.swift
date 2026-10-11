@@ -26,6 +26,26 @@ public enum StudyCampus: Int, CaseIterable, Codable {
         }
     }
 
+    /// 计算教学楼或教室前缀在当前校区的自然排序权重（使「翠一教、翠二教…翠十二教」按数字顺序排列，而非按汉字 Unicode 编码乱序）
+    public func buildingSortRank(for text: String) -> Int {
+        let pairs = preferredStudyBuildingNames.enumerated().sorted { $0.element.count > $1.element.count }
+        for (idx, keyword) in pairs {
+            if text.contains(keyword) {
+                return idx
+            }
+        }
+        return 999
+    }
+
+    public func compareBuildingNames(_ a: String, _ b: String) -> Bool {
+        let rankA = buildingSortRank(for: a)
+        let rankB = buildingSortRank(for: b)
+        if rankA != rankB {
+            return rankA < rankB
+        }
+        return a.localizedStandardCompare(b) == .orderedAscending
+    }
+
     public static func from(dormCampusString: String) -> StudyCampus {
         if dormCampusString.contains("翡翠湖") {
             return .feicuihu

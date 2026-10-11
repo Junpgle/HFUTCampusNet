@@ -12,6 +12,7 @@ public class NotificationHelper: NSObject, UNUserNotificationCenterDelegate {
     }
 
     public static func showNotification(title: String, subtitle: String? = nil, body: String) {
+        _ = Self.shared
         let content = UNMutableNotificationContent()
         content.title = title
         if let sub = subtitle {

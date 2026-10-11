@@ -20,26 +20,32 @@ public class UpdateChecker {
     /// 最新检测到的可用新版本（如有）
     public private(set) var availableUpdate: GitHubReleaseInfo?
     public private(set) var isChecking: Bool = false
+    private var pendingManualFeedback: Bool = false
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.6.0）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.6.1）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.6.0"
+        return "1.6.1"
     }
 
     /// 检查 GitHub Releases 最新版本
     /// - Parameter manual: 是否为用户手动点击触发（手动触发会弹窗提示“已是最新”或错误；自动后台检查仅在发现新版本时提醒）
     public func checkForUpdates(manual: Bool = true, completion: ((Result<GitHubReleaseInfo?, Error>) -> Void)? = nil) {
-        if isChecking { return }
+        if isChecking {
+            if manual { pendingManualFeedback = true }
+            return
+        }
         isChecking = true
+        pendingManualFeedback = manual
 
         let latestUrlStr = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
         guard let url = URL(string: latestUrlStr) else {
             isChecking = false
+            pendingManualFeedback = false
             return
         }
 
@@ -52,9 +58,11 @@ public class UpdateChecker {
 
             if let error = error {
                 DispatchQueue.main.async {
+                    let showManual = manual || self.pendingManualFeedback
                     self.isChecking = false
+                    self.pendingManualFeedback = false
                     completion?(.failure(error))
-                    if manual {
+                    if showManual {
                         self.showErrorAlert(message: "无法连接到 GitHub 检查更新，请检查网络连接。\n(\(error.localizedDescription))")
                     }
                 }
@@ -65,7 +73,7 @@ public class UpdateChecker {
 
             // 如果 /releases/latest 返回 404（例如仓库仅有 Pre-release 或暂未发布 Release），尝试拉取 /releases 列表
             if httpStatus == 404 {
-                self.fetchReleasesListFallback(manual: manual, completion: completion)
+                self.fetchReleasesListFallback(manual: manual || self.pendingManualFeedback, completion: completion)
                 return
             }
 
@@ -73,10 +81,12 @@ public class UpdateChecker {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let releaseInfo = self.parseReleaseJSON(json) else {
                 DispatchQueue.main.async {
+                    let showManual = manual || self.pendingManualFeedback
                     self.isChecking = false
+                    self.pendingManualFeedback = false
                     let err = NSError(domain: "UpdateChecker", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: "GitHub API 响应异常 (HTTP \(httpStatus))"])
                     completion?(.failure(err))
-                    if manual {
+                    if showManual {
                         self.showErrorAlert(message: "获取版本信息失败 (HTTP \(httpStatus))，请稍后再试。")
                     }
                 }
@@ -84,8 +94,10 @@ public class UpdateChecker {
             }
 
             DispatchQueue.main.async {
+                let showManual = manual || self.pendingManualFeedback
                 self.isChecking = false
-                self.handleReleaseResult(releaseInfo, manual: manual, completion: completion)
+                self.pendingManualFeedback = false
+                self.handleReleaseResult(releaseInfo, manual: showManual, completion: completion)
             }
         }.resume()
     }

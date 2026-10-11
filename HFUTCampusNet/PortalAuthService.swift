@@ -48,6 +48,15 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
         let task = session.dataTask(with: request) { data, response, error in
             if let error = error {
+                if let urlError = error as? URLError {
+                    switch urlError.code {
+                    case .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet, .dnsLookupFailed, .resourceUnavailable:
+                        completion(.notInCampusNet)
+                        return
+                    default:
+                        break
+                    }
+                }
                 completion(.offline(reason: error.localizedDescription))
                 return
             }
@@ -82,7 +91,11 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
                 completion(.offline(reason: "校园网未认证"))
             } else {
                 if let uid = self.extractVariable(name: "uid", from: html), !uid.isEmpty {
-                    completion(.online(username: uid, ip: "", flowMB: 0, fee: 0, timeMin: 0))
+                    let flowRaw = Double(self.extractVariable(name: "flow", from: html) ?? "") ?? -1.0
+                    let feeRaw = Double(self.extractVariable(name: "fee", from: html) ?? "") ?? -1.0
+                    let flowMB = flowRaw >= 0 ? (flowRaw / 1024.0) : -1.0
+                    let feeYuan = feeRaw >= 0 ? (feeRaw / 10000.0) : -1.0
+                    completion(.online(username: uid, ip: "", flowMB: flowMB, fee: feeYuan, timeMin: 0))
                 } else {
                     completion(.offline(reason: "未检测到登录态"))
                 }
@@ -93,6 +106,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
     /// 执行校园网自动登录
     public func login(username: String? = nil, password: String? = nil, completion: @escaping (Bool, String) -> Void) {
+        CampusNetworkClient.shared.clearManualLogout()
         let user = (username ?? SettingsManager.shared.portalUsername).trimmingCharacters(in: .whitespacesAndNewlines)
         let pass = (password ?? SettingsManager.shared.portalPassword).trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -197,6 +211,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
     /// 注销当前校园网连接
     public func logout(completion: @escaping (Bool, String) -> Void) {
+        CampusNetworkClient.shared.markManualLogout()
         var request = URLRequest(url: logoutURL)
         request.httpMethod = "GET"
         request.setValue("http://172.18.3.3/", forHTTPHeaderField: "Referer")
@@ -213,13 +228,19 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
     }
 
     private func extractVariable(name: String, from text: String) -> String? {
-        let pattern = "\(name)\\s*=\\s*['\"]([^'\"]*)['\"]"
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        let pattern = "\\b\(escaped)\\s*=\\s*(?:['\"]([^'\"]*)['\"]|([0-9]+(?:\\.[0-9]+)?))"
         guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else {
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
             return nil
         }
-        return String(text[range]).trimmingCharacters(in: .whitespaces)
+        if let r1 = Range(match.range(at: 1), in: text) {
+            return String(text[r1]).trimmingCharacters(in: .whitespaces)
+        }
+        if let r2 = Range(match.range(at: 2), in: text) {
+            return String(text[r2]).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
     }
 
     private func calculateMD5(_ string: String) -> String {

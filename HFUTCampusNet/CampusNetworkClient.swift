@@ -24,6 +24,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private var isHeartbeating: Bool = false
     private var isFetchingDashboard: Bool = false
     private var wasOffline: Bool = false
+    private var isManuallyLoggedOut: Bool = false
+    private var hasFetchedHuiXinFallback: Bool = false
 
     // 系统网络路径监视器 (Wi-Fi 断开/重连毫秒级感知)
     private var pathMonitor: NWPathMonitor?
@@ -31,8 +33,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 4.0
-        config.timeoutIntervalForResource = 6.0
+        config.timeoutIntervalForRequest = 15.0
+        config.timeoutIntervalForResource = 20.0
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.httpCookieStorage = nil
@@ -41,6 +43,12 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     private override init() {
         super.init()
+        if let usedMB = CampusHistoryManager.shared.currentMonthUsedFlowMB, usedMB > 0 {
+            latestData.usedFlow = String(format: "%.0f M", usedMB)
+        }
+        if let bal = CampusHistoryManager.shared.latestFlowBalanceRMB {
+            latestData.balance = String(format: "%.2f 元", bal)
+        }
         setupSystemWakeListener()
         setupPathMonitor()
     }
@@ -77,6 +85,17 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     public func updateInterval(_ interval: TimeInterval) {
         SettingsManager.shared.refreshInterval = interval
         startMonitoring()
+    }
+
+    /// 记录用户主动点击了注销网关，暂停自动重连直到用户再次主动登录
+    public func markManualLogout() {
+        isManuallyLoggedOut = true
+        markOfflineInstantly(reason: "已手动注销校园网")
+    }
+
+    /// 清除手动注销标记，恢复自动重连
+    public func clearManualLogout() {
+        isManuallyLoggedOut = false
     }
 
     /// 手动强制刷新
@@ -146,12 +165,12 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 self.wasOffline = true
                 var data = self.latestData
                 data.isLoggedIn = false
-                data.errorMessage = "校园网离线 (\(reason))"
+                data.errorMessage = self.isManuallyLoggedOut ? "已手动注销校园网" : "校园网离线 (\(reason))"
                 self.latestData = data
                 self.delegate?.clientDidUpdate(data: data)
 
-                // 若开启了自动登录且设置了密码，立即触发无感重连！
-                if SettingsManager.shared.autoLoginPortal && !SettingsManager.shared.portalPassword.isEmpty {
+                // 若开启了自动登录、设置了密码且非用户手动注销，立即触发无感重连！
+                if !self.isManuallyLoggedOut && SettingsManager.shared.autoLoginPortal && !SettingsManager.shared.portalPassword.isEmpty {
                     PortalAuthService.shared.login { success, msg in
                         if success {
                             // 重新检测状态并通知
@@ -163,11 +182,12 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 }
 
             case .online(_, _, let flowMB, let fee, _):
+                self.isManuallyLoggedOut = false
                 // 如果先前处于掉线状态，现在恢复了，触发系统横幅通知！
                 if self.wasOffline {
                     self.wasOffline = false
-                    let usedStr = String(format: "%.0f M", flowMB)
-                    let balStr = String(format: "%.2f 元", fee)
+                    let usedStr = flowMB >= 0 ? String(format: "%.0f M", flowMB) : self.latestData.usedFlow
+                    let balStr = fee >= 0 ? String(format: "%.2f 元", fee) : self.latestData.balance
                     NotificationHelper.showNotification(
                         title: "合工大校园网已自动重连",
                         subtitle: "设备重新认证成功，网络已恢复",
@@ -180,18 +200,24 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 data.errorMessage = nil
                 data.lastUpdated = Date()
 
-                // 更新网关数据
-                data.usedFlow = String(format: "%.0f M", flowMB)
-                data.balance = String(format: "%.2f 元", fee)
+                // 更新网关数据（仅当返回有效非负数值时覆盖）
+                if flowMB >= 0 {
+                    data.usedFlow = String(format: "%.0f M", flowMB)
+                }
+                if fee >= 0 {
+                    data.balance = String(format: "%.2f 元", fee)
+                }
                 self.latestData = data
 
                 self.delegate?.clientDidUpdate(data: data)
 
                 // 记录历史流量
+                let currentSpd = max(NetworkSpeedMonitor.shared.currentDownloadBytes, NetworkSpeedMonitor.shared.currentUploadBytes) / (1024.0 * 1024.0)
                 CampusHistoryManager.shared.recordFlow(
                     usedFlowStr: data.usedFlow,
                     availableFlowStr: (data.availableFlow != "-- M") ? data.availableFlow : nil,
-                    balanceStr: data.balance
+                    balanceStr: data.balance,
+                    currentSpeedMBs: currentSpd
                 )
 
                 if forceDashboard || data.availableFlow == "-- M" {
@@ -200,7 +226,37 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
             case .notInCampusNet:
                 self.markOfflineInstantly(reason: "未连接校园网络 Wi-Fi")
+                if forceDashboard || !self.hasFetchedHuiXinFallback {
+                    ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
+                        DispatchQueue.main.async {
+                            self?.applyHuiXinFallback(usedFlow: flow, balance: balance)
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /// 当处于校外/热点或网关暂不可达时，利用慧新易校接口返回的校园网已用流量与余额更新 UI 及历史统计
+    public func applyHuiXinFallback(usedFlow: String?, balance: String?) {
+        guard usedFlow != nil || balance != nil else { return }
+        var updated = self.latestData
+        var gotValid = false
+        if let f = usedFlow, !f.isEmpty, f != "-- M" {
+            updated.usedFlow = f
+            gotValid = true
+        }
+        if let b = balance, !b.isEmpty, b != "-- 元" {
+            updated.balance = b
+            gotValid = true
+        }
+        guard gotValid else { return }
+        self.hasFetchedHuiXinFallback = true
+        updated.lastUpdated = Date()
+        self.latestData = updated
+        self.delegate?.clientDidUpdate(data: updated)
+        if let f = usedFlow, !f.isEmpty {
+            CampusHistoryManager.shared.recordFlow(usedFlowStr: f, balanceStr: balance ?? updated.balance)
         }
     }
 
@@ -232,7 +288,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             if let httpResp = response as? HTTPURLResponse, (httpResp.statusCode == 302 || httpResp.statusCode == 301) {
-                // Cookie 已过期，静默重新登录自服务系统
+                // Cookie 已过期，清空失效 Cookie 并静默重新登录自服务系统
+                SettingsManager.shared.sessionCookie = nil
                 self.silentLoginSelfServiceAndFetch()
                 return
             }
@@ -242,11 +299,13 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             if html.contains("欢迎登录用户自助服务系统") && !html.contains("已用流量") {
+                SettingsManager.shared.sessionCookie = nil
                 self.silentLoginSelfServiceAndFetch()
                 return
             }
 
             if !self.applyParsedDashboardHTML(html) {
+                SettingsManager.shared.sessionCookie = nil
                 self.silentLoginSelfServiceAndFetch()
             }
         }
@@ -254,7 +313,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     @discardableResult
-    private func applyParsedDashboardHTML(_ html: String) -> Bool {
+    public func applyParsedDashboardHTML(_ html: String) -> Bool {
         guard let parsed = self.parseDashboardHTML(html) else { return false }
         var result = self.latestData
         result.availableFlow = parsed.availableFlow
@@ -270,10 +329,12 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         self.latestData = result
         self.delegate?.clientDidUpdate(data: result)
 
+        let currentSpd = max(NetworkSpeedMonitor.shared.currentDownloadBytes, NetworkSpeedMonitor.shared.currentUploadBytes) / (1024.0 * 1024.0)
         CampusHistoryManager.shared.recordFlow(
             usedFlowStr: result.usedFlow,
             availableFlowStr: result.availableFlow,
-            balanceStr: result.balance
+            balanceStr: result.balance,
+            currentSpeedMBs: currentSpd
         )
         self.fetchOnlineDevices()
         return true
@@ -340,6 +401,15 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 updated.onlineDevices = sessions
                 self.latestData = updated
                 self.delegate?.clientDidUpdate(data: updated)
+                if updated.usedFlow != "-- M" && !updated.usedFlow.isEmpty {
+                    CampusHistoryManager.shared.recordFlow(
+                        usedFlowStr: updated.usedFlow,
+                        availableFlowStr: (updated.availableFlow != "-- M") ? updated.availableFlow : nil,
+                        balanceStr: updated.balance
+                    )
+                } else {
+                    NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
+                }
                 completion?()
             }
         }.resume()
@@ -494,33 +564,70 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         for target in targets {
             let label = target.label
-            guard let range = html.range(of: label) else { continue }
 
-            let lowerIdx = html.index(range.lowerBound, offsetBy: -250, limitedBy: html.startIndex) ?? html.startIndex
-            let upperIdx = html.index(range.upperBound, offsetBy: 250, limitedBy: html.endIndex) ?? html.endIndex
-            let windowStr = String(html[lowerIdx..<upperIdx])
-            let cleanStr = windowStr.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-
-            let prePattern = "([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?\\s*\(label)"
-            if let preRegex = try? NSRegularExpression(pattern: prePattern),
-               let match = preRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
-                let num = (cleanStr as NSString).substring(with: match.range(at: 1))
-                let unit = match.range(at: 2).location != NSNotFound ? (cleanStr as NSString).substring(with: match.range(at: 2)) : target.unitFallback
-                assignValue(target.key, "\(num) \(unit)".trimmingCharacters(in: .whitespaces), &usedFlow, &availFlow, &protection, &balance)
-                continue
+            // 1. 优先精确匹配自服务面板的 <dl><dt>数值 <small>单位</small></dt><dd>标签</dd></dl> 结构
+            // 注意：JSP 模板在“消费保护”的 <dt>...</dt> 内部有 8 行超长缩进空白（超过 500 个空格字符），且不能跨越前一个指标的 </dt>
+            let dlPattern = "<dt[^>]*>((?:(?!</dt>)[\\s\\S]){1,1500}?)</dt>\\s*<dd[^>]*>\\s*\(NSRegularExpression.escapedPattern(for: label))\\s*</dd>"
+            if let dlRegex = try? NSRegularExpression(pattern: dlPattern, options: [.caseInsensitive]),
+               let dlMatch = dlRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let dtRange = Range(dlMatch.range(at: 1), in: html) {
+                let dtClean = String(html[dtRange])
+                    .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let valPattern = "([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
+                if let valRegex = try? NSRegularExpression(pattern: valPattern),
+                   let valMatch = valRegex.firstMatch(in: dtClean, range: NSRange(dtClean.startIndex..., in: dtClean)) {
+                    let num = (dtClean as NSString).substring(with: valMatch.range(at: 1))
+                    let unit = valMatch.range(at: 2).location != NSNotFound
+                        ? (dtClean as NSString).substring(with: valMatch.range(at: 2))
+                        : target.unitFallback
+                    assignValue(target.key, "\(num) \(unit)".trimmingCharacters(in: .whitespaces), &usedFlow, &availFlow, &protection, &balance)
+                    continue
+                } else if target.key == "prot" && (dtClean.contains("--") || dtClean.contains("未设置") || dtClean.contains("无") || dtClean.isEmpty) {
+                    // 用户未开启/未设置消费保护时，自服务页面 <dt> 内为 "--" 或 "未设置"
+                    assignValue(target.key, "未设置", &usedFlow, &availFlow, &protection, &balance)
+                    continue
+                }
             }
 
-            let postPattern = "\(label)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
-            if let postRegex = try? NSRegularExpression(pattern: postPattern),
-               let match = postRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
-                let num = (cleanStr as NSString).substring(with: match.range(at: 1))
-                let unit = match.range(at: 2).location != NSNotFound ? (cleanStr as NSString).substring(with: match.range(at: 2)) : target.unitFallback
-                assignValue(target.key, "\(num) \(unit)".trimmingCharacters(in: .whitespaces), &usedFlow, &availFlow, &protection, &balance)
-                continue
+            // 2. 兜底：遍历 HTML 中该标签的所有出现位置（扩大上下文窗口至 1000 字符以跨越 JSP 大量缩进空白）
+            var searchStart = html.startIndex
+            var matched = false
+            while !matched, searchStart < html.endIndex,
+                  let range = html.range(of: label, range: searchStart..<html.endIndex) {
+                searchStart = range.upperBound
+
+                let lowerIdx = html.index(range.lowerBound, offsetBy: -1000, limitedBy: html.startIndex) ?? html.startIndex
+                let upperIdx = html.index(range.upperBound, offsetBy: 400, limitedBy: html.endIndex) ?? html.endIndex
+                let windowStr = String(html[lowerIdx..<upperIdx])
+                let cleanStr = windowStr
+                    .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+
+                let prePattern = "([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?\\s*\(label)"
+                if let preRegex = try? NSRegularExpression(pattern: prePattern),
+                   let match = preRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
+                    let num = (cleanStr as NSString).substring(with: match.range(at: 1))
+                    let unit = match.range(at: 2).location != NSNotFound ? (cleanStr as NSString).substring(with: match.range(at: 2)) : target.unitFallback
+                    assignValue(target.key, "\(num) \(unit)".trimmingCharacters(in: .whitespaces), &usedFlow, &availFlow, &protection, &balance)
+                    matched = true
+                    break
+                }
+
+                let postPattern = "\(label)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
+                if let postRegex = try? NSRegularExpression(pattern: postPattern),
+                   let match = postRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
+                    let num = (cleanStr as NSString).substring(with: match.range(at: 1))
+                    let unit = match.range(at: 2).location != NSNotFound ? (cleanStr as NSString).substring(with: match.range(at: 2)) : target.unitFallback
+                    assignValue(target.key, "\(num) \(unit)".trimmingCharacters(in: .whitespaces), &usedFlow, &availFlow, &protection, &balance)
+                    matched = true
+                    break
+                }
             }
         }
 
-        if availFlow != nil || usedFlow != nil || balance != nil {
+        if availFlow != nil || usedFlow != nil || balance != nil || protection != nil {
             return CampusNetworkData(
                 usedFlow: usedFlow ?? latestData.usedFlow,
                 availableFlow: availFlow ?? latestData.availableFlow,

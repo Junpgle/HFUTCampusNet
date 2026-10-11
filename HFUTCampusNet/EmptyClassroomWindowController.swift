@@ -259,14 +259,18 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
         target: AnyObject,
         action: Selector
     ) {
-        if isHighlightedStudyRow != isCurrentStudy {
-            isHighlightedStudyRow = isCurrentStudy
+        let shouldHighlight = isTomorrow ? (isNextDayStudy || isCurrentStudy) : isCurrentStudy
+        if isHighlightedStudyRow != shouldHighlight {
+            isHighlightedStudyRow = shouldHighlight
             needsDisplay = true
         }
 
         nameLabel.stringValue = room.nameZh
 
-        if isCurrentStudy {
+        if isTomorrow && isNextDayStudy {
+            metaLabel.stringValue = "明日预约"
+            metaLabel.textColor = .controlAccentColor
+        } else if isCurrentStudy {
             metaLabel.stringValue = "当前自习"
             metaLabel.textColor = .controlAccentColor
         } else if isNextDayStudy {
@@ -432,6 +436,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
             guard let self = self, self.window?.isVisible == true, !self.isWindowLoading else { return }
+            self.refreshDateSegmentLabelsAndSelection()
             self.updateLastSyncTimeDisplay()
             self.renderSummaryBar()
             self.reloadFilteredRooms()
@@ -442,15 +447,22 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func refreshDateSegmentLabelsAndSelection() {
+        let todayStr = EmptyClassroomService.todayDateString()
+        let tomorrowStr = EmptyClassroomService.tomorrowDateString()
+        dateSegment?.setLabel("今天 (\(todayStr.suffix(5)))", forSegment: 0)
+        dateSegment?.setLabel("明天 (\(tomorrowStr.suffix(5)))", forSegment: 1)
+        if dateSegment?.selectedSegment == 1 {
+            selectedDateString = tomorrowStr
+        } else {
+            selectedDateString = todayStr
+        }
+    }
+
     public func showWindowAndSync(selectTomorrow: Bool = false) {
         selectedCampus = EmptyClassroomService.shared.currentPreferredCampus
-        if selectTomorrow {
-            selectedDateString = EmptyClassroomService.tomorrowDateString()
-            dateSegment?.selectedSegment = 1
-        } else {
-            selectedDateString = EmptyClassroomService.todayDateString()
-            dateSegment?.selectedSegment = 0
-        }
+        dateSegment?.selectedSegment = selectTomorrow ? 1 : 0
+        refreshDateSegmentLabelsAndSelection()
         selectCampusInPopUp(selectedCampus)
         updateLastSyncTimeDisplay()
 
@@ -658,7 +670,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         searchField = NSSearchField(frame: NSRect(x: 564, y: 3, width: 150, height: 24))
         searchField.autoresizingMask = [.minXMargin]
-        searchField.placeholderString = "搜索教室号 (如 325)"
+        searchField.placeholderString = "搜索教室号 (如 101)"
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchFieldChanged(_:))
@@ -945,6 +957,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             if !cached.isEmpty {
                 if let bid = selectedBuildingId {
                     self.currentRooms = cached.filter { $0.buildingId == bid }
+                } else if !preferredIds.isEmpty {
+                    let curStudyId = SettingsManager.shared.currentStudyRoom?.roomId
+                    let nextStudyId = SettingsManager.shared.nextDayStudyRoom?.roomId
+                    self.currentRooms = cached.filter { room in
+                        guard let rBid = room.buildingId else { return true }
+                        return preferredIds.contains(rBid) || room.id == curStudyId || room.id == nextStudyId
+                    }
                 } else {
                     self.currentRooms = cached
                 }
@@ -981,7 +1000,14 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             return
         }
 
-        setLoadingState(true, message: "正在加载所选教学楼教室数据...")
+        let alreadyCached = !forceRefresh && service.hasCachedRooms(
+            dateString: selectedDateString,
+            campus: selectedCampus,
+            buildingIds: targetIds
+        )
+        if !alreadyCached {
+            setLoadingState(true, message: "正在加载所选教学楼教室数据...")
+        }
         service.fetchRooms(
             dateString: selectedDateString,
             campus: selectedCampus,
@@ -1002,7 +1028,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                         let timeStr = fmt.string(from: Date())
                         self.showRefreshFeedback(
                             success: true,
-                            message: "刷新成功 · 已同步 \( rooms.count ) 间教室 (\(timeStr))"
+                            message: "刷新成功 · 已同步 \(rooms.count) 间教室 (\(timeStr))"
                         )
                     }
                 case .failure(let err):
@@ -1021,8 +1047,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     private func rebuildBuildingControls() {
         let buildings = EmptyClassroomService.shared.allBuildings.filter { $0.campusAssoc == selectedCampus.rawValue }
-        mainBuildings = buildings.filter { $0.isPreferredStudyBuilding }
-        extraBuildings = buildings.filter { !$0.isPreferredStudyBuilding }
+        let campus = selectedCampus
+        mainBuildings = buildings
+            .filter { $0.isPreferredStudyBuilding }
+            .sorted { campus.compareBuildingNames($0.cleanName, $1.cleanName) }
+        extraBuildings = buildings
+            .filter { !$0.isPreferredStudyBuilding }
+            .sorted { campus.compareBuildingNames($0.cleanName, $1.cleanName) }
 
         var segLabels = ["常用教学楼"]
         for b in mainBuildings {
@@ -1120,7 +1151,8 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             col1.addSubview(roomTitle)
 
             if let room = currentItem {
-                let (conflict, isOngoing, minsUntil, recs) = service.nearbySwitchRecommendations(for: room, limit: 3)
+                let roomCampus = StudyCampus(rawValue: record.campusAssoc) ?? selectedCampus
+                let (conflict, isOngoing, minsUntil, recs) = service.nearbySwitchRecommendations(for: room, campus: roomCampus, limit: 3)
                 if let occ = conflict {
                     let dot = makeDot(color: (isOngoing || (minsUntil ?? 99) <= 30) ? .systemOrange : .systemGreen, y: 24)
                     col1.addSubview(dot)
@@ -1169,6 +1201,14 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                     subLbl.textColor = .tertiaryLabelColor
                     col1.addSubview(subLbl)
                 }
+            } else {
+                col1.addSubview(makeDot(color: .systemTeal, y: 24))
+                let statusLbl = NSTextField(labelWithString: service.isSyncing ? "正在同步该自习室今日排课状态..." : "已选定自习室，点击右上角「刷新」可更新排课")
+                statusLbl.frame = NSRect(x: 12, y: 20, width: col1.bounds.width - 12, height: 15)
+                statusLbl.font = NSFont.systemFont(ofSize: 11)
+                statusLbl.textColor = .secondaryLabelColor
+                statusLbl.lineBreakMode = .byTruncatingTail
+                col1.addSubview(statusLbl)
             }
         } else {
             let statusLbl = NSTextField(labelWithString: "未设定")
@@ -1337,14 +1377,25 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             }
         }
 
+        let isTomorrow = (selectedDateString == EmptyClassroomService.tomorrowDateString())
+        let nextDayStudyId = SettingsManager.shared.nextDayStudyRoom?.roomId
+        let campus = selectedCampus
+
         filtered.sort { a, b in
+            if isTomorrow {
+                let aIsNext = (a.id == nextDayStudyId)
+                let bIsNext = (b.id == nextDayStudyId)
+                if aIsNext != bIsNext {
+                    return aIsNext
+                }
+            }
             let aIsCurrent = (a.id == currentStudyId)
             let bIsCurrent = (b.id == currentStudyId)
             if aIsCurrent != bIsCurrent {
                 return aIsCurrent
             }
             if a.buildingPrefix != b.buildingPrefix {
-                return a.buildingPrefix < b.buildingPrefix
+                return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
             }
             if a.inferredFloor != b.inferredFloor {
                 return a.inferredFloor < b.inferredFloor
@@ -1366,7 +1417,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         }
 
         let allDayCount = filtered.filter { $0.isAllDayFree }.count
-        let restFreeCount = filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count
+        let restFreeCount = isToday ? filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count : allDayCount
         let syncInfo = EmptyClassroomService.shared.formattedFullLastSync(for: selectedCampus)
         updateLastSyncTimeDisplay()
         bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  余下无课 \(restFreeCount) 间   ｜   \(syncInfo)"
@@ -1475,12 +1526,27 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     @objc private func quickSelectTodayRoom(_ sender: NSButton) {
         let roomId = sender.tag
-        let todayRooms = EmptyClassroomService.shared.cachedStudyRooms(
+        let service = EmptyClassroomService.shared
+        let todayStr = EmptyClassroomService.todayDateString()
+        let todayRooms = service.cachedStudyRooms(
             campus: selectedCampus,
-            dateString: EmptyClassroomService.todayDateString()
+            dateString: todayStr
         )
         if let room = todayRooms.first(where: { $0.id == roomId }) ?? currentRooms.first(where: { $0.id == roomId }) {
-            EmptyClassroomService.shared.setCurrentStudyRoom(room, campus: selectedCampus)
+            let bCampus = room.buildingId.flatMap { bid in service.allBuildings.first(where: { $0.id == bid })?.campusAssoc }
+            let roomCampus = bCampus.flatMap { StudyCampus(rawValue: $0) } ?? selectedCampus
+            service.setCurrentStudyRoom(room, campus: roomCampus)
+            renderSummaryBar()
+            reloadFilteredRooms()
+            return
+        }
+        let prefCampus = (SettingsManager.shared.currentStudyRoom?.campusAssoc).flatMap { StudyCampus(rawValue: $0) }
+            ?? service.currentPreferredCampus
+        let prefRooms = service.cachedStudyRooms(campus: prefCampus, dateString: todayStr)
+        if let room = prefRooms.first(where: { $0.id == roomId }) {
+            let bCampus = room.buildingId.flatMap { bid in service.allBuildings.first(where: { $0.id == bid })?.campusAssoc }
+            let roomCampus = bCampus.flatMap { StudyCampus(rawValue: $0) } ?? prefCampus
+            service.setCurrentStudyRoom(room, campus: roomCampus)
             renderSummaryBar()
             reloadFilteredRooms()
         }

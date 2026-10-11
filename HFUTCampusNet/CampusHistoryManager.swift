@@ -87,6 +87,7 @@ public struct DailyElectricityRecord: Codable, Identifiable {
 public struct CampusHistoryStore: Codable {
     public var flowRecords: [DailyFlowRecord] = []
     public var electricityRecords: [DailyElectricityRecord] = []
+    public var electricityDormKey: String? = nil
 }
 
 /// 校园网与电费历史统计管理器
@@ -276,11 +277,43 @@ public class CampusHistoryManager {
         }
     }
 
+    /// 实时更新当日监测到的峰值网速 (MB/s)
+    public func updatePeakSpeed(speedMBs: Double) {
+        guard speedMBs > 0 else { return }
+        queue.async {
+            let today = self.todayString()
+            if let idx = self.store.flowRecords.firstIndex(where: { $0.dateString == today }) {
+                if speedMBs > self.store.flowRecords[idx].peakSpeedMBs {
+                    self.store.flowRecords[idx].peakSpeedMBs = speedMBs
+                    self.saveStore()
+                }
+            }
+        }
+    }
+
     // MARK: - 记录宿舍电费
+
+    public func clearElectricityHistory() {
+        queue.async {
+            self.store.electricityRecords.removeAll()
+            self.store.electricityDormKey = nil
+            self.saveStore()
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
+            }
+        }
+    }
 
     public func recordElectricity(_ data: ElectricityData) {
         queue.async {
             guard let bal = data.balanceRMB else { return }
+            let dormKey = "\(data.campus)|\(data.building)|\(data.room)|\(SettingsManager.shared.dormEndNumber)"
+            if let prevKey = self.store.electricityDormKey, prevKey != dormKey {
+                // 宿舍房间或端口已变更，清空旧宿舍电费历史，避免两个不同房间的余额相减产生虚假巨额消费
+                self.store.electricityRecords.removeAll()
+            }
+            self.store.electricityDormKey = dormKey
+
             let today = self.todayString()
             let kwh = data.remainingKWh
 
@@ -368,7 +401,9 @@ public class CampusHistoryManager {
     /// 今日新增流量消耗 (MB)
     public var todayFlowDeltaMB: Double {
         let today = todayString()
-        let recorded = store.flowRecords.first(where: { $0.dateString == today })?.dailyDeltaMB ?? 0.0
+        let recorded = queue.sync {
+            store.flowRecords.first(where: { $0.dateString == today })?.dailyDeltaMB ?? 0.0
+        }
         let onlineToday = CampusNetworkClient.shared.latestData.onlineDevices
             .filter { $0.loginTime.hasPrefix(today) }
             .reduce(0.0) { $0 + $1.usedFlowMB }
@@ -433,16 +468,39 @@ public class CampusHistoryManager {
         return records.reduce(0.0) { $0 + $1.dailyDeltaMB }
     }
 
+    /// 当月最新记录的累计已用流量 (MB)，跨月自动失效避免上月流量误作本月流量
+    public var currentMonthUsedFlowMB: Double? {
+        let monthPrefix = String(todayString().prefix(7))
+        return queue.sync {
+            guard let last = store.flowRecords.sorted(by: { $0.dateString < $1.dateString }).last,
+                  last.dateString.hasPrefix(monthPrefix) else {
+                return nil
+            }
+            return last.totalUsedMB
+        }
+    }
+
+    /// 历史记录中最近一次校园网账户余额 (元)
+    public var latestFlowBalanceRMB: Double? {
+        return queue.sync {
+            store.flowRecords.sorted(by: { $0.dateString < $1.dateString }).last(where: { $0.balanceRMB != nil })?.balanceRMB
+        }
+    }
+
     /// 今日消耗电费 (元)
     public var todayElectricityCostRMB: Double {
         let today = todayString()
-        return store.electricityRecords.first(where: { $0.dateString == today })?.dailyCostRMB ?? 0.0
+        return queue.sync {
+            store.electricityRecords.first(where: { $0.dateString == today })?.dailyCostRMB ?? 0.0
+        }
     }
 
     /// 今日消耗电量 (度)
     public var todayElectricityUsedKWh: Double {
         let today = todayString()
-        return store.electricityRecords.first(where: { $0.dateString == today })?.dailyUsedKWh ?? 0.0
+        return queue.sync {
+            store.electricityRecords.first(where: { $0.dateString == today })?.dailyUsedKWh ?? 0.0
+        }
     }
 
     /// 近 7 天电费总消耗 (元)
@@ -469,7 +527,10 @@ public class CampusHistoryManager {
 
     /// 智能预测：剩余电费预计可用天数
     public var estimatedElectricityDaysRemaining: Int? {
-        guard let latest = store.electricityRecords.last?.balanceRMB, latest > 0 else {
+        let latestBalance: Double? = ElectricityService.shared.latestData?.balanceRMB ?? queue.sync {
+            store.electricityRecords.sorted { $0.dateString < $1.dateString }.last?.balanceRMB
+        }
+        guard let latest = latestBalance, latest > 0 else {
             return nil
         }
         let dailyAvg = past7DaysElectricityDailyAverageCostRMB
@@ -480,7 +541,9 @@ public class CampusHistoryManager {
 
     /// 获取近 N 天流量历史记录 (按日期由旧到新排序)
     public func getPastDaysFlowRecords(days: Int) -> [DailyFlowRecord] {
-        let sorted = store.flowRecords.sorted { $0.dateString < $1.dateString }
+        let sorted = queue.sync {
+            store.flowRecords.sorted { $0.dateString < $1.dateString }
+        }
         if sorted.count <= days {
             return sorted
         }
@@ -489,7 +552,9 @@ public class CampusHistoryManager {
 
     /// 获取近 N 天电费历史记录 (按日期由旧到新排序)
     public func getPastDaysElectricityRecords(days: Int) -> [DailyElectricityRecord] {
-        let sorted = store.electricityRecords.sorted { $0.dateString < $1.dateString }
+        let sorted = queue.sync {
+            store.electricityRecords.sorted { $0.dateString < $1.dateString }
+        }
         if sorted.count <= days {
             return sorted
         }

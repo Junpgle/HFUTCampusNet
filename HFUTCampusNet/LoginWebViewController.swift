@@ -8,6 +8,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     private var webView: WKWebView!
     private var progressIndicator: NSProgressIndicator!
     private var statusLabel: NSTextField!
+    private var isCapturingSession: Bool = false
 
     private init() {
         let window = NSWindow(
@@ -55,6 +56,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
         statusLabel = NSTextField(labelWithString: "正在连接校园网自服务平台...")
         statusLabel.frame = NSRect(x: 42, y: 14, width: 620, height: 20)
+        statusLabel.autoresizingMask = [.width]
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = NSFont.systemFont(ofSize: 12)
         bottomBar.addSubview(statusLabel)
@@ -62,11 +64,13 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         let reloadBtn = NSButton(title: "重新加载", target: self, action: #selector(reloadPage))
         reloadBtn.bezelStyle = .rounded
         reloadBtn.frame = NSRect(x: 670, y: 9, width: 85, height: 30)
+        reloadBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(reloadBtn)
 
         let manualButton = NSButton(title: "手动填Cookie", target: self, action: #selector(promptManualCookie))
         manualButton.bezelStyle = .rounded
         manualButton.frame = NSRect(x: 760, y: 9, width: 125, height: 30)
+        manualButton.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(manualButton)
 
         containerView.addSubview(bottomBar)
@@ -78,6 +82,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+        isCapturingSession = false
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
@@ -205,48 +210,37 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     // 捕获 Cookie 并就地直接提取页面数据！
     private func checkAndCaptureSession() {
+        guard !isCapturingSession else { return }
         // 先检查 HTML 内容
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak self] result, _ in
-            guard let self = self else { return }
+            guard let self = self, !self.isCapturingSession else { return }
             let text = (result as? String) ?? ""
 
             // 如果页面中包含了自服务的特征词
             if text.contains("可用流量") || text.contains("已用流量") || text.contains("消费保护") || text.contains("账户余额") {
-                self.webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML : ''") { htmlResult, _ in
-                    if let fullHtml = htmlResult as? String {
-                        // 直接通过解析器提取
-                        if let parsed = CampusNetworkClient.shared.parseDashboardHTML(fullHtml) {
-                            var data = CampusNetworkClient.shared.latestData
-                            if parsed.availableFlow != "-- M" {
-                                data.availableFlow = parsed.availableFlow
-                            }
-                            if parsed.flowProtection != "-- 元" {
-                                data.flowProtection = parsed.flowProtection
-                            }
-                            if parsed.balance != "-- 元" {
-                                data.balance = parsed.balance
-                            }
-                            if parsed.usedFlow != "-- M" {
-                                data.usedFlow = parsed.usedFlow
-                            }
-                            data.lastUpdated = Date()
-                            data.isLoggedIn = true
-                            CampusNetworkClient.shared.delegate?.clientDidUpdate(data: data)
-                        }
-                    }
-                }
-
-                // 提取最新的 JSESSIONID Cookie
+                self.isCapturingSession = true
+                // 先提取最新的 xywzz 自服务专属 JSESSIONID Cookie，避免混入其它站点同名 JSESSIONID
                 self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                    for cookie in cookies {
-                        if cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
-                            SettingsManager.shared.sessionCookie = cookie.value
+                    var matchedSid: String?
+                    for cookie in cookies where cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
+                        if cookie.domain.lowercased().contains("xywzz") || cookie.path.contains("/Self") {
+                            matchedSid = cookie.value
                             break
+                        } else if matchedSid == nil {
+                            matchedSid = cookie.value
+                        }
+                    }
+                    if let sid = matchedSid {
+                        SettingsManager.shared.sessionCookie = sid
+                    }
+                    self.webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML : ''") { htmlResult, _ in
+                        if let fullHtml = htmlResult as? String {
+                            CampusNetworkClient.shared.applyParsedDashboardHTML(fullHtml)
                         }
                     }
                 }
 
-                self.statusLabel.stringValue = "✓ 授权成功！可用流量与保护配额已同步至小组件！"
+                self.statusLabel.stringValue = "✓ 授权成功！流量与消费保护配额已同步至小组件！"
                 self.statusLabel.textColor = .systemGreen
 
                 // 延时 1.5 秒自动关闭窗口

@@ -33,15 +33,15 @@ public class NetworkSpeedMonitor {
     private var lastTimestamp: Date = Date()
     private var isStarted = false
 
+    private var lastInterfaceBytes: [String: (ibytes: UInt32, obytes: UInt32)] = [:]
+
     private init() {}
 
     public func start() {
         guard !isStarted else { return }
         isStarted = true
 
-        let initial = getSystemNetworkBytes()
-        lastIBytes = initial.ibytes
-        lastOBytes = initial.obytes
+        lastInterfaceBytes = getInterfaceNetworkBytes()
         lastTimestamp = Date()
 
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -60,16 +60,34 @@ public class NetworkSpeedMonitor {
         let deltaSec = now.timeIntervalSince(lastTimestamp)
         guard deltaSec > 0.3 else { return }
 
-        let current = getSystemNetworkBytes()
-        let diffI = (current.ibytes >= lastIBytes) ? Double(current.ibytes - lastIBytes) : 0.0
-        let diffO = (current.obytes >= lastOBytes) ? Double(current.obytes - lastOBytes) : 0.0
+        let currentMap = getInterfaceNetworkBytes()
+        var diffI: UInt64 = 0
+        var diffO: UInt64 = 0
 
-        currentDownloadBytes = diffI / deltaSec
-        currentUploadBytes = diffO / deltaSec
+        // यदि从睡眠唤醒间隔过长 (> 10s)，仅重置基准不计算瞬时速率，避免唤醒瞬间虚高
+        if deltaSec <= 10.0 {
+            for (name, curr) in currentMap {
+                if let prev = lastInterfaceBytes[name] {
+                    // ifi_ibytes / ifi_obytes 为 32 位无符号整型 (4GB 溢出回绕)，使用 &+ / &- 安全处理回绕
+                    let dI = curr.ibytes >= prev.ibytes ? (curr.ibytes - prev.ibytes) : (curr.ibytes &- prev.ibytes)
+                    let dO = curr.obytes >= prev.obytes ? (curr.obytes - prev.obytes) : (curr.obytes &- prev.obytes)
+                    // 过滤网卡重置导致的异常跳变 (> 1 GB/s)
+                    if dI < 1_073_741_824 { diffI += UInt64(dI) }
+                    if dO < 1_073_741_824 { diffO += UInt64(dO) }
+                }
+            }
+        }
 
-        lastIBytes = current.ibytes
-        lastOBytes = current.obytes
+        currentDownloadBytes = Double(diffI) / deltaSec
+        currentUploadBytes = Double(diffO) / deltaSec
+
+        lastInterfaceBytes = currentMap
         lastTimestamp = now
+
+        let currentSpeedMBs = max(currentDownloadBytes, currentUploadBytes) / (1024.0 * 1024.0)
+        if currentSpeedMBs > 0.01 {
+            CampusHistoryManager.shared.updatePeakSpeed(speedMBs: currentSpeedMBs)
+        }
 
         delegate?.speedMonitorDidUpdate(
             download: formattedDownloadSpeed,
@@ -78,28 +96,33 @@ public class NetworkSpeedMonitor {
         )
     }
 
-    private func getSystemNetworkBytes() -> (ibytes: UInt64, obytes: UInt64) {
+    private func getInterfaceNetworkBytes() -> [String: (ibytes: UInt32, obytes: UInt32)] {
         var ifap: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifap) == 0, let first = ifap else { return (0, 0) }
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return [:] }
         defer { freeifaddrs(ifap) }
 
-        var totalI: UInt64 = 0
-        var totalO: UInt64 = 0
+        var result: [String: (ibytes: UInt32, obytes: UInt32)] = [:]
 
-        var ptr = Optional(first)
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
         while let current = ptr {
-            let name = String(cString: current.pointee.ifa_name)
-            // 排除本地回环 lo0
-            if !name.hasPrefix("lo"),
+            if let cName = current.pointee.ifa_name,
+               let addr = current.pointee.ifa_addr,
                let data = current.pointee.ifa_data,
-               Int32(current.pointee.ifa_addr.pointee.sa_family) == AF_LINK {
-                let networkData = data.assumingMemoryBound(to: if_data.self)
-                totalI += UInt64(networkData.pointee.ifi_ibytes)
-                totalO += UInt64(networkData.pointee.ifi_obytes)
+               Int32(addr.pointee.sa_family) == AF_LINK {
+                let name = String(cString: cName)
+                // 排除本地回环 lo0
+                if !name.hasPrefix("lo") {
+                    let networkData = data.assumingMemoryBound(to: if_data.self)
+                    let prev = result[name] ?? (0, 0)
+                    result[name] = (
+                        ibytes: prev.ibytes &+ networkData.pointee.ifi_ibytes,
+                        obytes: prev.obytes &+ networkData.pointee.ifi_obytes
+                    )
+                }
             }
             ptr = current.pointee.ifa_next
         }
-        return (totalI, totalO)
+        return result
     }
 
     private func formatBytesPerSecond(_ bytes: Double) -> String {

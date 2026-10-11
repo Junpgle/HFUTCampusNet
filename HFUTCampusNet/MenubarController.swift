@@ -60,6 +60,24 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             name: .updateCheckDidFinish,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onHistoryStatsUpdated),
+            name: .historyStatsDidUpdate,
+            object: nil
+        )
+    }
+
+    @objc private func onHistoryStatsUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let todayMB = CampusHistoryManager.shared.todayFlowDeltaMB
+            let todayStr = todayMB >= 1024.0
+                ? String(format: "%.2f GB", todayMB / 1024.0)
+                : String(format: "%.0f MB", todayMB)
+            self.availFlowMenuItem?.title = "今日已用：\(todayStr) / 30 GB (单日限额)"
+            self.quotaMenuCardView?.refresh(mode: 0)
+        }
     }
 
     private func symbolImage(_ name: String, pointSize: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSImage? {
@@ -129,11 +147,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         netSubmenu.addItem(quotaMenuItem)
         netSubmenu.addItem(NSMenuItem.separator())
 
-        availFlowMenuItem = NSMenuItem(title: "可用流量：点击自服务授权查看", action: #selector(loginAction), keyEquivalent: "")
+        availFlowMenuItem = NSMenuItem(title: "今日已用：-- / 30 GB (单日限额)", action: #selector(openHistoryStatsAction), keyEquivalent: "")
         availFlowMenuItem.target = self
         netSubmenu.addItem(availFlowMenuItem)
 
-        usedFlowMenuItem = NSMenuItem(title: "已用流量：--", action: nil, keyEquivalent: "")
+        usedFlowMenuItem = NSMenuItem(title: "本月已用：-- / 200 GB (免费额度)", action: nil, keyEquivalent: "")
         usedFlowMenuItem.isEnabled = false
         netSubmenu.addItem(usedFlowMenuItem)
 
@@ -315,6 +333,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         currentSpeedCompact = compact
 
         updateTopStatusLine()
+        DesktopWidgetController.shared.speedMonitorDidUpdate(download: download, upload: upload, compact: compact)
 
         let style = SettingsManager.shared.menubarStyle
         if style == 2 || style == 3 || (style == 0 && carouselToggle) {
@@ -330,15 +349,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         let devCount = data.onlineDevices.count
         let devSuffix = devCount > 0 ? " (\(devCount) 台在线)" : ""
 
-        if data.availableFlow != "-- M" {
-            networkSummaryMenuItem?.title = "校园网：可用 \(data.formattedAvailable) · 余额 \(data.balance)\(devSuffix)"
-            availFlowMenuItem.title = "可用流量：\(data.availableFlow) (\(data.formattedAvailable))"
-        } else {
-            networkSummaryMenuItem?.title = "校园网：已用 \(data.formattedUsed) · 余额 \(data.balance)\(devSuffix)"
-            availFlowMenuItem.title = "可用流量：点击自服务授权查看..."
-        }
-        
-        usedFlowMenuItem.title = "已用流量：\(data.usedFlow) (\(data.formattedUsed))"
+        networkSummaryMenuItem?.title = "校园网：已用 \(data.formattedUsed) · 余额 \(data.balance)\(devSuffix)"
+
+        let todayMB = CampusHistoryManager.shared.todayFlowDeltaMB
+        let todayStr = todayMB >= 1024.0
+            ? String(format: "%.2f GB", todayMB / 1024.0)
+            : String(format: "%.0f MB", todayMB)
+        availFlowMenuItem.title = "今日已用：\(todayStr) / 30 GB (单日限额)"
+        usedFlowMenuItem.title = "本月已用：\(data.formattedUsed) / 200 GB (免费额度 · 400 GB 封顶)"
         balMenuItem.title = "账户余额：\(data.balance)"
         protMenuItem.title = "消费保护：\(data.flowProtection)"
 
@@ -425,10 +443,8 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         if isOffline {
             flowTitle = " 离线/未认证"
-        } else if currentData.availableFlow != "-- M" {
-            flowTitle = " \(currentData.formattedAvailable) | \(currentData.balance)"
         } else {
-            flowTitle = " \(currentData.formattedUsed) | \(currentData.balance)"
+            flowTitle = " 已用 \(currentData.formattedUsed) | \(currentData.balance)"
         }
 
         let wifiIcon = symbolImage(isOffline ? "wifi.slash" : "wifi", pointSize: 12.5, weight: .medium)
@@ -449,9 +465,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             button.image = nil
             button.title = currentSpeedCompact
         case 3:
-            let flowStr = (currentData.availableFlow != "-- M") ? currentData.formattedAvailable : currentData.formattedUsed
             button.image = wifiIcon
-            button.title = " \(flowStr) · \(currentSpeedCompact)"
+            button.title = isOffline
+                ? " 离线 · \(currentSpeedCompact)"
+                : " 已用 \(currentData.formattedUsed) · \(currentSpeedCompact)"
         default:
             button.image = wifiIcon
             button.title = flowTitle
@@ -601,6 +618,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     private func updateCourseSubmenu() {
         guard let courseParent = courseParentMenuItem, let submenu = courseParent.submenu else { return }
+        courseParent.isHidden = !SettingsManager.shared.courseTableEnabled
         submenu.removeAllItems()
 
         let schedule = CourseScheduleService.shared.currentSchedule

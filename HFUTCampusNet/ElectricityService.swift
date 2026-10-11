@@ -23,8 +23,10 @@ public class ElectricityService {
               let cached = try? JSONDecoder().decode(ElectricityData.self, from: data) else {
             return
         }
-        // 若配置与缓存宿舍不一致，丢弃旧缓存
-        if cached.building != SettingsManager.shared.dormBuilding || cached.room != SettingsManager.shared.dormRoom {
+        // 若配置与缓存宿舍不一致（校区、楼栋或房间号变化），丢弃旧缓存
+        if cached.campus != SettingsManager.shared.dormCampus ||
+           cached.building != SettingsManager.shared.dormBuilding ||
+           cached.room != SettingsManager.shared.dormRoom {
             return
         }
         self.latestData = cached
@@ -36,6 +38,26 @@ public class ElectricityService {
             try? encoded.write(to: cacheURL)
         }
     }
+
+    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号时，立即清理不匹配的旧宿舍缓存与旧宿舍历史记录
+    public func invalidateCacheIfDormChanged() {
+        CampusHistoryManager.shared.clearElectricityHistory()
+        guard let cached = self.latestData else { return }
+        if !SettingsManager.shared.isDormConfigured ||
+           cached.campus != SettingsManager.shared.dormCampus ||
+           cached.building != SettingsManager.shared.dormBuilding ||
+           cached.room != SettingsManager.shared.dormRoom {
+            self.latestData = nil
+            try? FileManager.default.removeItem(at: cacheURL)
+            NotificationCenter.default.post(name: .dormElectricityDidUpdate, object: nil)
+        }
+    }
+
+    private static let formFieldAllowedCharacters: CharacterSet = {
+        var cs = CharacterSet.urlQueryAllowed
+        cs.remove(charactersIn: "+&=%#")
+        return cs
+    }()
 
     /// 查询宿舍电费信息（支持静默自动登录）
     public func fetchData(completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
@@ -63,49 +85,75 @@ public class ElectricityService {
         }
     }
 
-    /// 静默调用慧新易校 OAuth 登录获取 Token
-    private func loginHuiXinAndRetry(completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
+    /// 静默调用慧新易校 OAuth 登录获取 Token（支持依次尝试校园网密码与信息门户密码，并正确编码特殊字符）
+    private func obtainHuiXinToken(completion: @escaping (Result<String, Error>) -> Void) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        let password = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let portalPwd = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let casPwd = SettingsManager.shared.casPassword.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !username.isEmpty, !password.isEmpty else {
+        var candidates: [String] = []
+        if !portalPwd.isEmpty { candidates.append(portalPwd) }
+        if !casPwd.isEmpty && !candidates.contains(casPwd) { candidates.append(casPwd) }
+
+        guard !username.isEmpty, !candidates.isEmpty else {
             let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未配置学号或密码，请在设置中保存学号与密码，或通过「统一身份认证同步」登录"])
             DispatchQueue.main.async {
-                completion?(.failure(err))
+                completion(.failure(err))
             }
             return
         }
 
-        let url = URL(string: "http://121.251.19.62/berserker-auth/oauth/token")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10.0
-        // Basic mobile_service_platform:mobile_service_platform_secret
-        request.setValue("Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0", forHTTPHeaderField: "Authorization")
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        func tryCandidate(at index: Int) {
+            let password = candidates[index]
+            let url = URL(string: "http://121.251.19.62/berserker-auth/oauth/token")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 10.0
+            // Basic mobile_service_platform:mobile_service_platform_secret
+            request.setValue("Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0", forHTTPHeaderField: "Authorization")
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-        let body = "username=\(username)&password=\(password)&grant_type=password&logintype=sno"
-        request.httpBody = body.data(using: .utf8)
+            let encUser = username.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? username
+            let encPass = password.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? password
+            let body = "username=\(encUser)&password=\(encPass)&grant_type=password&logintype=sno"
+            request.httpBody = body.data(using: .utf8)
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
+            URLSession.shared.dataTask(with: request) { data, _, error in
+                if let error = error {
+                    if index + 1 < candidates.count {
+                        tryCandidate(at: index + 1)
+                    } else {
+                        DispatchQueue.main.async { completion(.failure(error)) }
+                    }
+                    return
+                }
 
-            if let error = error {
-                DispatchQueue.main.async { completion?(.failure(error)) }
-                return
+                if let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let token = json["access_token"] as? String, !token.isEmpty {
+                    SettingsManager.shared.huixinAuthToken = token
+                    DispatchQueue.main.async { completion(.success(token)) }
+                } else if index + 1 < candidates.count {
+                    tryCandidate(at: index + 1)
+                } else {
+                    let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "慧新易校授权失败，请核对学号与密码"])
+                    DispatchQueue.main.async { completion(.failure(err)) }
+                }
+            }.resume()
+        }
+
+        tryCandidate(at: 0)
+    }
+
+    private func loginHuiXinAndRetry(completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
+        obtainHuiXinToken { [weak self] result in
+            switch result {
+            case .success(let token):
+                self?.executeFeeQuery(token: token, completion: completion)
+            case .failure(let err):
+                completion?(.failure(err))
             }
-
-            guard let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let token = json["access_token"] as? String, !token.isEmpty else {
-                let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "慧新易校授权失败，请核对学号与密码"])
-                DispatchQueue.main.async { completion?(.failure(err)) }
-                return
-            }
-
-            SettingsManager.shared.huixinAuthToken = token
-            self.executeFeeQuery(token: token, completion: completion)
-        }.resume()
+        }
     }
 
     /// 执行电费接口查询
@@ -157,7 +205,7 @@ public class ElectricityService {
             formParams["room"] = room
         }
 
-        let bodyString = formParams.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }.joined(separator: "&")
+        let bodyString = formParams.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? $0.value)" }.joined(separator: "&")
         request.httpBody = bodyString.data(using: .utf8)
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -284,7 +332,7 @@ public class ElectricityService {
 
     /// 离线/校外模式下通过慧新易校查询校园网流量与余额 (feeitemid=281)
     public func fetchSchoolNetInfoFromHuiXin(completion: ((_ flow: String?, _ balance: String?) -> Void)? = nil) {
-        func query(token: String) {
+        func query(token: String, allowRetry: Bool) {
             let url = URL(string: "http://121.251.19.62/charge/feeitem/getThirdData")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -297,10 +345,26 @@ public class ElectricityService {
             let body = "feeitemid=281&type=IEC&level=0"
             request.httpBody = body.data(using: .utf8)
 
-            URLSession.shared.dataTask(with: request) { data, _, _ in
+            URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
                 guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let map = json["map"] as? [String: Any],
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    DispatchQueue.main.async { completion?(nil, nil) }
+                    return
+                }
+
+                if let code = json["code"] as? Int, code == 401, allowRetry {
+                    self?.obtainHuiXinToken { res in
+                        switch res {
+                        case .success(let newToken):
+                            query(token: newToken, allowRetry: false)
+                        case .failure:
+                            completion?(nil, nil)
+                        }
+                    }
+                    return
+                }
+
+                guard let map = json["map"] as? [String: Any],
                       let showData = map["showData"] as? [String: Any] else {
                     DispatchQueue.main.async { completion?(nil, nil) }
                     return
@@ -319,12 +383,13 @@ public class ElectricityService {
         }
 
         if let token = SettingsManager.shared.huixinAuthToken, !token.isEmpty {
-            query(token: token)
+            query(token: token, allowRetry: true)
         } else {
-            loginHuiXinAndRetry { _ in
-                if let token = SettingsManager.shared.huixinAuthToken {
-                    query(token: token)
-                } else {
+            obtainHuiXinToken { result in
+                switch result {
+                case .success(let token):
+                    query(token: token, allowRetry: false)
+                case .failure:
                     completion?(nil, nil)
                 }
             }

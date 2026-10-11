@@ -124,10 +124,10 @@ public struct CourseScheduleData: Codable, Equatable {
     public var lessons: [CourseLesson]             // 所有课节列表
 
     public init(
-        studentId: String = "178506",
+        studentId: String = "",
         semesterId: String = "354",
         semesterName: String? = nil,
-        bizTypeId: String = "2",
+        bizTypeId: String = "23",
         lastSyncTime: Date? = nil,
         lessons: [CourseLesson] = []
     ) {
@@ -213,16 +213,16 @@ public struct CourseScheduleData: Codable, Equatable {
         if let match = lessons.first(where: { $0.dateString == todayStr && $0.weekIndex != nil }) {
             return match.weekIndex
         }
-        // 根据已知周次的锚点日期精确计算当前日期属于第几周
-        if let ref = lessons.first(where: { $0.weekIndex != nil }),
+        // 根据已知周次的锚点日期精确计算当前日期属于第几周（支持锚点在当前日期之前或之后）
+        if let ref = lessons.first(where: { $0.weekIndex != nil && !$0.dateString.isEmpty }),
            let refWeek = ref.weekIndex,
            let refDate = CourseCalendarHelper.parseDate(ref.dateString, "00:00"),
            let todayDate = CourseCalendarHelper.parseDate(todayStr, "00:00") {
             let cal = CourseCalendarHelper.beijingCalendar
             if let refMonday = cal.date(byAdding: .day, value: -(ref.weekday - 1), to: refDate),
-               let daysDiff = cal.dateComponents([.day], from: refMonday, to: todayDate).day,
-               daysDiff >= 0 {
-                let computedWeek = refWeek + (daysDiff / 7)
+               let daysDiff = cal.dateComponents([.day], from: refMonday, to: todayDate).day {
+                let weekOffset = Int(floor(Double(daysDiff) / 7.0))
+                let computedWeek = refWeek + weekOffset
                 if computedWeek >= 1 && computedWeek <= 24 {
                     return computedWeek
                 }

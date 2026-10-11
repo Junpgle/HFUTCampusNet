@@ -28,10 +28,16 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         let width: CGFloat = 340
         let height: CGFloat = 256
 
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let savedOrigin = SettingsManager.shared.widgetOrigin
-        let initialX = savedOrigin?.x ?? (screen.maxX - width - 24)
-        let initialY = savedOrigin?.y ?? (screen.maxY - height - 36)
+        let defaultScreen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var initialX = defaultScreen.maxX - width - 24
+        var initialY = defaultScreen.maxY - height - 36
+        if let saved = SettingsManager.shared.widgetOrigin {
+            let savedRect = NSRect(x: saved.x, y: saved.y, width: width, height: height)
+            if let matchingScreen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(savedRect) })?.visibleFrame {
+                initialX = min(max(saved.x, matchingScreen.minX + 8), matchingScreen.maxX - width - 8)
+                initialY = min(max(saved.y, matchingScreen.minY + 8), matchingScreen.maxY - height - 8)
+            }
+        }
 
         let window = CustomDraggableWindow(
             contentRect: NSRect(x: initialX, y: initialY, width: width, height: height),
@@ -70,7 +76,27 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             name: .dormElectricityDidUpdate,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onHistoryStatsUpdated),
+            name: .historyStatsDidUpdate,
+            object: nil
+        )
         updateCourseDisplay()
+    }
+
+    @objc private func onHistoryStatsUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let todayMB = CampusHistoryManager.shared.todayFlowDeltaMB
+            let todayFormatted = todayMB >= 1024.0
+                ? String(format: "%.2f G", todayMB / 1024.0)
+                : String(format: "%.0f M", todayMB)
+            let (todayNum, todayUnit) = self.splitNumAndUnit(todayFormatted, fallbackUnit: "M")
+            self.availFlowNumLabel?.stringValue = todayNum
+            self.availFlowUnitLabel?.stringValue = todayUnit
+            self.renderBottomLabel()
+        }
     }
 
     @objc private func onEmptyClassroomUpdated() {
@@ -141,26 +167,28 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         let row1Y: CGFloat = height - 98
         let row2Y: CGFloat = height - 168
 
-        // 卡片 1: 已用流量 (左上)
+        // 卡片 1: 本月已用 (左上)
         let (card1, num1, unit1) = makeMetricCard(
             frame: NSRect(x: marginX, y: row1Y, width: cardW, height: cardH),
-            label: "已用流量",
+            label: "本月已用 (限200G)",
             defaultNum: "--",
-            defaultUnit: "M"
+            defaultUnit: "M",
+            action: #selector(openFlowHistoryStats)
         )
+        card1.toolTip = "本月校园网累计已用流量（每月 200GB 免费额度，400GB 封顶）· 点击查看流量统计"
         usedFlowNumLabel = num1
         usedFlowUnitLabel = unit1
         visualEffectView.addSubview(card1)
 
-        // 卡片 2: 可用流量 (右上 - 支持点击授权)
+        // 卡片 2: 今日已用 (右上 - 单日限额 30GB)
         let (card2, num2, unit2) = makeMetricCard(
             frame: NSRect(x: marginX + cardW + 12, y: row1Y, width: cardW, height: cardH),
-            label: "可用流量 (点此授权)",
+            label: "今日已用 (限30G)",
             defaultNum: "--",
             defaultUnit: "M",
-            action: #selector(openSelfLogin)
+            action: #selector(openFlowHistoryStats)
         )
-        card2.toolTip = "点击打开自服务登录窗口，授权后即可获取可用流量与保护配额"
+        card2.toolTip = "今日新增校园网流量消耗（单日 30GB 限额）· 点击查看详细统计"
         availFlowNumLabel = num2
         availFlowUnitLabel = unit2
         visualEffectView.addSubview(card2)
@@ -184,8 +212,10 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             frame: NSRect(x: marginX + cardW + 12, y: row2Y, width: cardW, height: cardH),
             label: "账户余额",
             defaultNum: "--",
-            defaultUnit: "元"
+            defaultUnit: "元",
+            action: #selector(openFlowHistoryStats)
         )
+        card4.toolTip = "校园网账户余额 · 点击查看历史用量与余额统计"
         balNumLabel = num4
         balUnitLabel = unit4
         visualEffectView.addSubview(card4)
@@ -325,6 +355,33 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             }
         }
 
+        if !SettingsManager.shared.courseTableEnabled {
+            if let studyRoom = service.currentStudyRoomItem() {
+                titleLabel.stringValue = "当前自习：\(studyRoom.nameZh)"
+                titleLabel.textColor = NSColor.systemGreen
+                if let nextOcc = studyRoom.nextOccupation(afterMinutes: nowMin) {
+                    detailLabel.stringValue = "空闲至 \(nextOcc.startTimeString) (\(nextOcc.shortCourseName)) · 点击查看空教室推荐"
+                } else {
+                    detailLabel.stringValue = "今日余下时段全部空闲 · 点击查看明日自习推荐"
+                }
+                detailLabel.textColor = .secondaryLabelColor
+                return
+            }
+            let picks = service.recommendedTodayAllDayFreeRooms(limit: 2)
+            if !picks.isEmpty {
+                let names = picks.map { $0.nameZh }.joined(separator: "、")
+                titleLabel.stringValue = "自习空教室：\(names) 全天空闲"
+                titleLabel.textColor = NSColor.systemBlue
+                detailLabel.stringValue = "点击打开自习空教室与时间轴面板"
+            } else {
+                titleLabel.stringValue = "自习空教室查询与推荐"
+                titleLabel.textColor = NSColor.systemBlue
+                detailLabel.stringValue = "点击查看全天空闲教室、课前换座与明日留座推荐"
+            }
+            detailLabel.textColor = .secondaryLabelColor
+            return
+        }
+
         guard let schedule = CourseScheduleService.shared.currentSchedule, !schedule.lessons.isEmpty else {
             if let studyRoom = service.currentStudyRoomItem() {
                 titleLabel.stringValue = "当前自习：\(studyRoom.nameZh)"
@@ -377,12 +434,32 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         } else {
             titleLabel.stringValue = "今日暂无排课"
             titleLabel.textColor = .labelColor
-            detailLabel.stringValue = "\(weekStr) · 周\(CourseCalendarHelper.weekday(from: now)) · 点击查看完整周课表"
+            let weekdayStr = CourseCalendarHelper.weekdayName(from: CourseCalendarHelper.weekday(from: now))
+            detailLabel.stringValue = "\(weekStr) · \(weekdayStr) · 点击查看完整周课表"
             detailLabel.textColor = .secondaryLabelColor
         }
     }
 
     @objc private func courseCardClicked() {
+        if !SettingsManager.shared.courseTableEnabled {
+            EmptyClassroomWindowController.shared.showWindowAndSync()
+            return
+        }
+        let schedule = CourseScheduleService.shared.currentSchedule
+        if schedule == nil || schedule?.lessons.isEmpty == true {
+            CourseScheduleWindowController.shared.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            CourseScheduleService.shared.syncSchedule { result in
+                if case .failure(let error) = result,
+                   let syncErr = error as? CourseScheduleService.CourseSyncError,
+                   case .needLogin = syncErr {
+                    DispatchQueue.main.async {
+                        CourseLoginWebViewController.shared.showLoginWindow()
+                    }
+                }
+            }
+            return
+        }
         let now = Date()
         let nowMin = EmptyClassroomService.currentMinutesOfDay(at: now)
         if let studyRoom = EmptyClassroomService.shared.currentStudyRoomItem() {
@@ -390,7 +467,6 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
                 EmptyClassroomWindowController.shared.showWindowAndSync()
                 return
             }
-            let schedule = CourseScheduleService.shared.currentSchedule
             if schedule?.currentLesson(at: now) == nil && schedule?.nextLesson(at: now) == nil {
                 EmptyClassroomWindowController.shared.showWindowAndSync()
                 return
@@ -403,27 +479,37 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private func startSpeedCarousel() {
         carouselTimer?.invalidate()
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
-            self?.renderBottomLabel()
+            guard let self = self else { return }
+            self.carouselIndex = (self.carouselIndex + 1) % 4
+            self.renderBottomLabel()
         }
     }
 
     public func speedMonitorDidUpdate(download: String, upload: String, compact: String) {
         currentSpeedString = "↓ \(download)   ↑ \(upload)"
         speedBadgeLabel?.stringValue = compact
+        if carouselIndex == 0 {
+            updateTimeLabel?.stringValue = "实时速率：\(currentSpeedString)"
+            updateTimeLabel?.textColor = NSColor.systemTeal
+        }
     }
 
     public func updateData(_ data: CampusNetworkData) {
         currentData = data
-        let (usedNum, usedUnit) = splitNumAndUnit(data.usedFlow, fallbackUnit: "M")
-        let (availNum, availUnit) = splitNumAndUnit(data.availableFlow, fallbackUnit: "M")
+        let (usedNum, usedUnit) = splitNumAndUnit(data.formattedUsed, fallbackUnit: "M")
+        let todayMB = CampusHistoryManager.shared.todayFlowDeltaMB
+        let todayFormatted = todayMB >= 1024.0
+            ? String(format: "%.2f G", todayMB / 1024.0)
+            : String(format: "%.0f M", todayMB)
+        let (todayNum, todayUnit) = splitNumAndUnit(todayFormatted, fallbackUnit: "M")
         let (protNum, protUnit) = splitNumAndUnit(data.flowProtection, fallbackUnit: "元")
         let (balNum, balUnit) = splitNumAndUnit(data.balance, fallbackUnit: "元")
 
         usedFlowNumLabel.stringValue = usedNum
         usedFlowUnitLabel.stringValue = usedUnit
 
-        availFlowNumLabel.stringValue = availNum
-        availFlowUnitLabel.stringValue = availUnit
+        availFlowNumLabel.stringValue = todayNum
+        availFlowUnitLabel.stringValue = todayUnit
 
         protNumLabel.stringValue = protNum
         protUnitLabel.stringValue = protUnit
@@ -439,21 +525,24 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     private func renderBottomLabel() {
-        carouselIndex = (carouselIndex + 1) % 4
-
-        if let err = currentData.errorMessage {
-            updateTimeLabel.stringValue = err
-            updateTimeLabel.textColor = .systemRed
-            return
-        }
-
         switch carouselIndex {
         case 0:
             // 实时网速
             updateTimeLabel.stringValue = "实时速率：\(currentSpeedString)"
             updateTimeLabel.textColor = NSColor.systemTeal
         case 1:
-            // 更新时间与百分比
+            // 更新时间与百分比（若网关未连接/离线则在此槽位提示）
+            let percentage = currentData.usagePercentage * 100.0
+            if let err = currentData.errorMessage {
+                if currentData.usedMB != nil {
+                    updateTimeLabel.stringValue = "\(err) · 本月已用 \(String(format: "%.1f", percentage))%"
+                    updateTimeLabel.textColor = .systemOrange
+                } else {
+                    updateTimeLabel.stringValue = err
+                    updateTimeLabel.textColor = .systemRed
+                }
+                return
+            }
             let timeStr: String
             if let time = currentData.lastUpdated {
                 let formatter = DateFormatter()
@@ -462,7 +551,6 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             } else {
                 timeStr = "未更新"
             }
-            let percentage = currentData.usagePercentage * 100.0
             updateTimeLabel.stringValue = "\(timeStr) · 已用 \(String(format: "%.1f", percentage))%"
             updateTimeLabel.textColor = .tertiaryLabelColor
         case 2:
@@ -481,13 +569,21 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             // 自习空教室状态与推荐
             let nowMin = EmptyClassroomService.currentMinutesOfDay()
             if let record = SettingsManager.shared.currentStudyRoom {
-                if let live = EmptyClassroomService.shared.currentStudyRoomItem(),
-                   let nextOcc = live.nextOccupation(afterMinutes: nowMin) {
-                    updateTimeLabel.stringValue = "自习室：\(record.roomName) (空至 \(nextOcc.startTimeString) · 点击管理)"
+                if let live = EmptyClassroomService.shared.currentStudyRoomItem() {
+                    if let curOcc = live.currentOccupation(atMinutes: nowMin) {
+                        updateTimeLabel.stringValue = "自习室：\(record.roomName) (当前\(curOcc.causeTitle)中至 \(curOcc.endTimeString) · 点击切换)"
+                        updateTimeLabel.textColor = NSColor.systemRed
+                    } else if let nextOcc = live.nextOccupation(afterMinutes: nowMin) {
+                        updateTimeLabel.stringValue = "自习室：\(record.roomName) (空至 \(nextOcc.startTimeString) · 点击管理)"
+                        updateTimeLabel.textColor = NSColor.systemGreen
+                    } else {
+                        updateTimeLabel.stringValue = "自习室：\(record.roomName) (今日余下全空 · 点击管理)"
+                        updateTimeLabel.textColor = NSColor.systemGreen
+                    }
                 } else {
-                    updateTimeLabel.stringValue = "自习室：\(record.roomName) (今日余下全空 · 点击管理)"
+                    updateTimeLabel.stringValue = "自习室：\(record.roomName) (点击查看占用与推荐)"
+                    updateTimeLabel.textColor = NSColor.systemGreen
                 }
-                updateTimeLabel.textColor = NSColor.systemGreen
             } else {
                 let picks = EmptyClassroomService.shared.recommendedTodayAllDayFreeRooms(limit: 2)
                 if !picks.isEmpty {
@@ -511,15 +607,23 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     private func splitNumAndUnit(_ text: String, fallbackUnit: String) -> (String, String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "未设置" || trimmed == "无" {
+            return (trimmed, "")
+        }
+        if trimmed.hasPrefix("--") {
+            let rest = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            return ("--", rest.isEmpty ? fallbackUnit : rest)
+        }
         let pattern = "^([0-9\\.]+)\\s*(.*)$"
         guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
-            return (text, fallbackUnit)
+              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) else {
+            return (trimmed, "")
         }
-        let numRange = Range(match.range(at: 1), in: text)
-        let unitRange = Range(match.range(at: 2), in: text)
-        let num = numRange != nil ? String(text[numRange!]) : text
-        let unit = (unitRange != nil && !text[unitRange!].isEmpty) ? String(text[unitRange!]) : fallbackUnit
+        let numRange = Range(match.range(at: 1), in: trimmed)
+        let unitRange = Range(match.range(at: 2), in: trimmed)
+        let num = numRange != nil ? String(trimmed[numRange!]) : trimmed
+        let unit = (unitRange != nil && !trimmed[unitRange!].isEmpty) ? String(trimmed[unitRange!]) : fallbackUnit
         return (num, unit)
     }
 
@@ -527,8 +631,13 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         LoginWebViewController.shared.showLoginWindow()
     }
 
+    @objc private func openFlowHistoryStats() {
+        HistoryStatsWindowController.shared.showWindow(mode: 0)
+    }
+
     @objc private func refreshClicked() {
         CampusNetworkClient.shared.fetchData()
+        EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
     }
 
     @objc public func hideWidget() {

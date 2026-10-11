@@ -156,7 +156,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         titleLabel.font = NSFont.systemFont(ofSize: 16, weight: .bold)
         topBar.addSubview(titleLabel)
 
-        semesterLabel = NSTextField(labelWithString: "2026-2027学年 第一学期 (std: 178506)")
+        semesterLabel = NSTextField(labelWithString: "当前学期")
         semesterLabel.frame = NSRect(x: 20, y: 8, width: 280, height: 16)
         semesterLabel.font = NSFont.systemFont(ofSize: 11)
         semesterLabel.textColor = .secondaryLabelColor
@@ -215,7 +215,8 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         bottomBar.dynamicBackgroundColor = .windowBackgroundColor
 
         statusInfoLabel = NSTextField(labelWithString: "正在加载课表...")
-        statusInfoLabel.frame = NSRect(x: 20, y: 6, width: 800, height: 18)
+        statusInfoLabel.frame = NSRect(x: 20, y: 6, width: mainView.frame.width - 40, height: 18)
+        statusInfoLabel.autoresizingMask = [.width]
         statusInfoLabel.font = NSFont.systemFont(ofSize: 11)
         statusInfoLabel.textColor = .tertiaryLabelColor
         bottomBar.addSubview(statusInfoLabel)
@@ -246,8 +247,9 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         headerBar.subviews.forEach { $0.removeFromSuperview() }
 
         let schedule = CourseScheduleService.shared.currentSchedule
-        let stdId = schedule?.studentId ?? SettingsManager.shared.courseStudentId
-        semesterLabel?.stringValue = "\(schedule?.semesterName ?? "当前学期") (stdId: \(stdId))"
+        let stdId = (schedule?.studentId ?? SettingsManager.shared.courseStudentId).trimmingCharacters(in: .whitespacesAndNewlines)
+        let semTitle = schedule?.semesterName ?? "当前学期"
+        semesterLabel?.stringValue = stdId.isEmpty ? semTitle : "\(semTitle) (stdId: \(stdId))"
 
         if let syncTime = schedule?.lastSyncTime {
             let f = DateFormatter()
@@ -265,11 +267,11 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         let weekLessons = schedule?.lessonsForWeek(currentWeek) ?? []
         let weekDates = schedule?.datesForWeek(currentWeek) ?? [:]
 
-        // 时间轴范围：默认 08:00 ~ 22:00，若本周有更早或更晚的课自动扩展
-        let minLessonHour = weekLessons.map { $0.startTime / 100 }.min() ?? 8
-        let maxLessonHour = weekLessons.map { ($0.endTime + 59) / 100 }.max() ?? 22
+        // 时间轴范围：默认 08:00 ~ 22:00，若本周有更早或更晚的课按 60 进制分钟向上/向下扩展
+        let minLessonHour = weekLessons.map { $0.startMinutes / 60 }.min() ?? 8
+        let maxLessonHour = weekLessons.map { ($0.endMinutes + 59) / 60 }.max() ?? 22
         let startHour = min(8, minLessonHour)
-        let endHour = max(22, maxLessonHour)
+        let endHour = min(24, max(22, maxLessonHour))
         let totalHours = max(1, endHour - startHour)
         let axisStartMin = startHour * 60
 
@@ -545,11 +547,25 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         return card
     }
 
-    // MARK: - Actions
+    public override func showWindow(_ sender: Any?) {
+        if let schedule = CourseScheduleService.shared.currentSchedule,
+           let week = schedule.currentWeek() {
+            currentWeek = week
+        }
+        renderSchedule()
+        super.showWindow(sender)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     @objc private func onScheduleUpdated() {
         DispatchQueue.main.async { [weak self] in
-            self?.renderSchedule()
+            guard let self = self else { return }
+            if let schedule = CourseScheduleService.shared.currentSchedule,
+               let week = schedule.currentWeek() {
+                self.currentWeek = week
+            }
+            self.renderSchedule()
         }
     }
 

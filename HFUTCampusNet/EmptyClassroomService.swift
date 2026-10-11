@@ -25,7 +25,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 35.0
         config.timeoutIntervalForResource = 40.0
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
     private var appSupportDir: URL {
@@ -82,6 +82,18 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
            let data = try? Data(contentsOf: studyRoomsCacheURL),
            let decoded = try? JSONDecoder().decode([String: [EmptyClassroomItem]].self, from: data) {
             self.studyRoomsByDate = decoded
+            for (key, rooms) in decoded {
+                let parts = key.split(separator: "|")
+                guard parts.count >= 2 else { continue }
+                let campusPart = String(parts[0])
+                let datePart = String(parts[1])
+                let grouped = Dictionary(grouping: rooms, by: { $0.buildingId })
+                for (bidOpt, bRooms) in grouped {
+                    if let bid = bidOpt, !bRooms.isEmpty {
+                        self.roomsCache["\(campusPart)|\(datePart)|\(bid)"] = bRooms
+                    }
+                }
+            }
         }
         if fileManager.fileExists(atPath: syncMetaCacheURL.path),
            let data = try? Data(contentsOf: syncMetaCacheURL),
@@ -118,6 +130,11 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             return String(parts[1]) >= today
         }
         self.studyRoomsByDate = filtered
+        self.roomsCache = self.roomsCache.filter { key, _ in
+            let parts = key.split(separator: "|")
+            guard parts.count >= 2 else { return false }
+            return String(parts[1]) >= today
+        }
         if let data = try? JSONEncoder().encode(filtered) {
             try? data.write(to: studyRoomsCacheURL, options: .atomic)
         }
@@ -294,7 +311,17 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         return studyRoomsByDate["\(c.rawValue)|\(d)"] ?? []
     }
 
-    /// 查找当前自习室对应的最新详情对象
+    /// 判断指定查询条件是否已有内存缓存
+    public func hasCachedRooms(dateString: String, campus: StudyCampus, buildingIds: [Int]?) -> Bool {
+        let sortedIds = (buildingIds ?? []).sorted()
+        let cacheKey = "\(campus.rawValue)|\(dateString)|\(sortedIds.map(String.init).joined(separator: ","))"
+        if let cached = roomsCache[cacheKey], !cached.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    /// 查找当前自习室对应的最新详情对象（同时检索主力教学楼缓存与单栋教学楼缓存）
     public func currentStudyRoomItem(on dateString: String? = nil) -> EmptyClassroomItem? {
         guard let record = SettingsManager.shared.currentStudyRoom else { return nil }
         let targetDate = dateString ?? Self.todayDateString()
@@ -303,7 +330,16 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         if let matchById = rooms.first(where: { $0.id == record.roomId }) {
             return matchById
         }
-        return rooms.first(where: { $0.nameZh == record.roomName })
+        if let matchByName = rooms.first(where: { $0.nameZh == record.roomName }) {
+            return matchByName
+        }
+        let prefix = "\(campus.rawValue)|\(targetDate)|"
+        for (key, cachedList) in roomsCache where key.hasPrefix(prefix) {
+            if let match = cachedList.first(where: { $0.id == record.roomId || $0.nameZh == record.roomName }) {
+                return match
+            }
+        }
+        return nil
     }
 
     /// 【功能 1】当天刚打开时推荐一批全天空闲的教室（优先主力教学楼低楼层，一坐一整天不用搬）
@@ -417,10 +453,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         let curRecord = SettingsManager.shared.currentStudyRoom
         let curTodayItem = currentStudyRoomItem(on: todayStr)
-        let curTomorrowItem: EmptyClassroomItem? = {
-            guard let rec = curRecord else { return nil }
-            return tomorrowRooms.first(where: { $0.id == rec.roomId || $0.nameZh == rec.roomName })
-        }()
+        let curTomorrowItem = currentStudyRoomItem(on: tomorrowStr)
 
         // 判断明天当前自习室是否全天空闲
         let isCurrentFreeTomorrow = curTomorrowItem?.isAllDayFree ?? false
@@ -510,10 +543,9 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     }
 
     private func sortRoomsForSelfStudy(_ rooms: [EmptyClassroomItem], campus: StudyCampus) -> [EmptyClassroomItem] {
-        let preferredNames = campus.preferredStudyBuildingNames
         return rooms.sorted { a, b in
-            let idxA = preferredNames.firstIndex(where: { a.nameZh.contains($0) }) ?? 99
-            let idxB = preferredNames.firstIndex(where: { b.nameZh.contains($0) }) ?? 99
+            let idxA = campus.buildingSortRank(for: a.buildingPrefix)
+            let idxB = campus.buildingSortRank(for: b.buildingPrefix)
             if idxA != idxB {
                 return idxA < idxB
             }
@@ -629,7 +661,19 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             case .success(let buildings):
                 let campusBuildings = buildings.filter { $0.campusAssoc == targetCampus.rawValue }
                 let preferredIds = campusBuildings.filter { $0.isPreferredStudyBuilding }.map { $0.id }
-                let targetBuildingIds = preferredIds.isEmpty ? campusBuildings.map { $0.id } : preferredIds
+                var targetBuildingIds = preferredIds.isEmpty ? campusBuildings.map { $0.id } : preferredIds
+                if let curRec = SettingsManager.shared.currentStudyRoom,
+                   curRec.campusAssoc == targetCampus.rawValue,
+                   let bid = curRec.buildingId,
+                   !targetBuildingIds.contains(bid) {
+                    targetBuildingIds.append(bid)
+                }
+                if let nextRec = SettingsManager.shared.nextDayStudyRoom,
+                   nextRec.campusAssoc == targetCampus.rawValue,
+                   let bid = nextRec.buildingId,
+                   !targetBuildingIds.contains(bid) {
+                    targetBuildingIds.append(bid)
+                }
 
                 let group = DispatchGroup()
                 var firstError: Error?
@@ -848,7 +892,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                let rooms = root.data?.data {
                 let sortedRooms = rooms.sorted { a, b in
                     if a.buildingPrefix != b.buildingPrefix {
-                        return a.buildingPrefix < b.buildingPrefix
+                        return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
                     }
                     if a.inferredFloor != b.inferredFloor {
                         return a.inferredFloor < b.inferredFloor
@@ -856,6 +900,14 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     return a.inferredRoomNumber < b.inferredRoomNumber
                 }
                 self.roomsCache[cacheKey] = sortedRooms
+                if buildingIds.count > 1 {
+                    let grouped = Dictionary(grouping: sortedRooms, by: { $0.buildingId })
+                    for bid in buildingIds {
+                        if let bRooms = grouped[bid], !bRooms.isEmpty {
+                            self.roomsCache["\(campus.rawValue)|\(dateString)|\(bid)"] = bRooms
+                        }
+                    }
+                }
                 DispatchQueue.main.async {
                     self.recordCampusSyncTime(campus)
                 }
@@ -996,15 +1048,11 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     }
 
     private func fetchJxglstuDefaultPassword(completion: @escaping (String?) -> Void) {
-        let stdId = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !stdId.isEmpty,
-              let infoURL = URL(string: "http://jxglstu.hfut.edu.cn/eams5-student/for-std/student-info/info/\(stdId)") else {
-            completion(nil)
-            return
-        }
-
         let performFetch: (@escaping (String?) -> Void) -> Void = { done in
-            guard let savedCookie = SettingsManager.shared.courseSessionCookie?.trimmingCharacters(in: .whitespacesAndNewlines),
+            let stdId = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stdId.isEmpty,
+                  let infoURL = URL(string: "http://jxglstu.hfut.edu.cn/eams5-student/for-std/student-info/info/\(stdId)"),
+                  let savedCookie = SettingsManager.shared.courseSessionCookie?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !savedCookie.isEmpty else {
                 done(nil)
                 return
@@ -1037,7 +1085,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             if let pwd = firstTry {
                 completion(pwd)
             } else {
-                // 若教务 Cookie 过期，先触发一次后台 CAS TGC 单点登录再重试
+                // 若尚未获取 studentId 或教务 Cookie 过期，先触发一次后台登录自动获取 studentId 与 Cookie 再重试
                 CourseScheduleService.shared.tryBackgroundLogin { success in
                     if success {
                         performFetch(completion)

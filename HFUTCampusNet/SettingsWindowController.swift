@@ -24,6 +24,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private var dormEndPopup: NSPopUpButton!
     private var dormThresholdField: NSTextField!
     private var dormStatusLabel: NSTextField!
+    private var initialUsername: String = ""
+    private var initialStdId: String = ""
 
     private init() {
         let window = NSWindow(
@@ -37,6 +39,43 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         super.init(window: window)
         window.delegate = self
         setupUI()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onExternalServiceUpdated),
+            name: .courseScheduleDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onExternalServiceUpdated),
+            name: .dormElectricityDidUpdate,
+            object: nil
+        )
+    }
+
+    @objc private func onExternalServiceUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if !SettingsManager.shared.courseStudentId.isEmpty {
+                self.courseStudentIdField?.stringValue = SettingsManager.shared.courseStudentId
+            }
+            if !SettingsManager.shared.courseSemesterId.isEmpty {
+                self.courseSemesterIdField?.stringValue = SettingsManager.shared.courseSemesterId
+            }
+            self.updateCourseStatusDisplay()
+            self.updateDormStatusDisplay()
+        }
+    }
+
+    @objc private func onControlChanged() {
+        let prevCampus = SettingsManager.shared.dormCampus
+        let prevEnd = SettingsManager.shared.dormEndNumber
+        saveCredentials()
+        if (prevCampus != SettingsManager.shared.dormCampus || prevEnd != SettingsManager.shared.dormEndNumber),
+           SettingsManager.shared.isDormConfigured {
+            ElectricityService.shared.fetchData { _ in }
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -148,7 +187,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         casPasswordField.delegate = self
         netCard.addSubview(casPasswordField)
 
-        autoLoginCheckbox = NSButton(checkboxWithTitle: "断网或切换 Wi-Fi 时自动重连并发送通知", target: nil, action: nil)
+        autoLoginCheckbox = NSButton(checkboxWithTitle: "断网或切换 Wi-Fi 时自动重连并发送通知", target: self, action: #selector(onControlChanged))
         autoLoginCheckbox.font = NSFont.systemFont(ofSize: 12)
         autoLoginCheckbox.frame = NSRect(x: 104, y: 110, width: 266, height: 20)
         autoLoginCheckbox.state = SettingsManager.shared.autoLoginPortal ? .on : .off
@@ -184,6 +223,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         dormCampusPopup = NSPopUpButton(frame: NSRect(x: 62, y: 11, width: 148, height: 25))
         dormCampusPopup.addItems(withTitles: ["宣城校区", "合肥翡翠湖校区", "合肥屯溪路校区"])
         dormCampusPopup.selectItem(withTitle: SettingsManager.shared.dormCampus)
+        dormCampusPopup.target = self
+        dormCampusPopup.action = #selector(onControlChanged)
         elecCard.addSubview(dormCampusPopup)
 
         elecCard.addSubview(makeFieldLabel("楼栋：", frame: NSRect(x: 216, y: 15, width: 44, height: 18)))
@@ -217,6 +258,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
                 break
             }
         }
+        dormEndPopup.target = self
+        dormEndPopup.action = #selector(onControlChanged)
         elecCard.addSubview(dormEndPopup)
 
         elecCard.addSubview(makeFieldLabel("预警阈值：", frame: NSRect(x: 216, y: 47, width: 66, height: 18)))
@@ -259,7 +302,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         courseCard.addSubview(makeFieldLabel("学生 ID：", frame: NSRect(x: 12, y: 15, width: 66, height: 18)))
         courseStudentIdField = NSTextField(frame: NSRect(x: 82, y: 12, width: 150, height: 22))
-        courseStudentIdField.placeholderString = "例如 178506"
+        courseStudentIdField.placeholderString = "自动识别 (或手动填写)"
         courseStudentIdField.stringValue = SettingsManager.shared.courseStudentId
         courseStudentIdField.delegate = self
         courseCard.addSubview(courseStudentIdField)
@@ -271,7 +314,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         courseSemesterIdField.delegate = self
         courseCard.addSubview(courseSemesterIdField)
 
-        courseTableCheckbox = NSButton(checkboxWithTitle: "在桌面悬浮组件与状态栏菜单中显示今日课程", target: nil, action: nil)
+        courseTableCheckbox = NSButton(checkboxWithTitle: "在桌面悬浮组件与状态栏菜单中显示今日课程", target: self, action: #selector(onControlChanged))
         courseTableCheckbox.font = NSFont.systemFont(ofSize: 12)
         courseTableCheckbox.frame = NSRect(x: 82, y: 44, width: 390, height: 20)
         courseTableCheckbox.state = SettingsManager.shared.courseTableEnabled ? .on : .off
@@ -334,6 +377,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     public func showSettings() {
+        initialUsername = SettingsManager.shared.portalUsername
+        initialStdId = SettingsManager.shared.courseStudentId
         usernameField.stringValue = SettingsManager.shared.portalUsername
         passwordField.stringValue = SettingsManager.shared.portalPassword
         casPasswordField.stringValue = SettingsManager.shared.casPassword
@@ -549,19 +594,51 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     @objc private func saveClicked() {
         saveCredentials()
+        handleAccountSwitchIfNeeded()
         window?.close()
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
+    }
+
+    private func handleAccountSwitchIfNeeded() {
+        let currentU = SettingsManager.shared.portalUsername
+        guard !initialUsername.isEmpty, !currentU.isEmpty, currentU != initialUsername else { return }
+        initialUsername = currentU
+        SettingsManager.shared.sessionCookie = nil
+        SettingsManager.shared.courseSessionCookie = nil
+        SettingsManager.shared.casTgcCookie = nil
+        SettingsManager.shared.huixinAuthToken = nil
+        SettingsManager.shared.uniAppJwt = nil
+        SettingsManager.shared.jxglstuDefaultPasswordCache = nil
+        if SettingsManager.shared.courseStudentId == initialStdId {
+            SettingsManager.shared.courseStudentId = ""
+            courseStudentIdField?.stringValue = ""
+        }
     }
 
     private func saveCredentials() {
         SettingsManager.shared.portalUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.portalPassword = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.casPassword = casPasswordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        SettingsManager.shared.autoLoginPortal = (autoLoginCheckbox.state == .on)
+        let prevAutoLogin = SettingsManager.shared.autoLoginPortal
+        let newAutoLogin = (autoLoginCheckbox.state == .on)
+        SettingsManager.shared.autoLoginPortal = newAutoLogin
+        if !prevAutoLogin && newAutoLogin {
+            CampusNetworkClient.shared.clearManualLogout()
+        }
         SettingsManager.shared.courseStudentId = courseStudentIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.courseSemesterId = courseSemesterIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        SettingsManager.shared.courseTableEnabled = (courseTableCheckbox.state == .on)
+        let prevCourseEnabled = SettingsManager.shared.courseTableEnabled
+        let newCourseEnabled = (courseTableCheckbox.state == .on)
+        SettingsManager.shared.courseTableEnabled = newCourseEnabled
+        if prevCourseEnabled != newCourseEnabled {
+            NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: nil)
+        }
+
+        let prevCampus = SettingsManager.shared.dormCampus
+        let prevBuilding = SettingsManager.shared.dormBuilding
+        let prevRoom = SettingsManager.shared.dormRoom
+        let prevEnd = SettingsManager.shared.dormEndNumber
 
         if let selectedCampus = dormCampusPopup.titleOfSelectedItem {
             SettingsManager.shared.dormCampus = selectedCampus
@@ -574,10 +651,21 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if let thresh = Double(dormThresholdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), thresh > 0 {
             SettingsManager.shared.electricityLowWarningThreshold = thresh
         }
+
+        if prevCampus != SettingsManager.shared.dormCampus ||
+           prevBuilding != SettingsManager.shared.dormBuilding ||
+           prevRoom != SettingsManager.shared.dormRoom ||
+           prevEnd != SettingsManager.shared.dormEndNumber {
+            ElectricityService.shared.invalidateCacheIfDormChanged()
+        }
     }
 
     public func windowWillClose(_ notification: Notification) {
         saveCredentials()
+        handleAccountSwitchIfNeeded()
+        if SettingsManager.shared.isDormConfigured && ElectricityService.shared.latestData == nil {
+            ElectricityService.shared.fetchData { _ in }
+        }
     }
 
     public func controlTextDidChange(_ obj: Notification) {

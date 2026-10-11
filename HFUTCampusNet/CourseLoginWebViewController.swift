@@ -56,6 +56,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
         statusLabel = NSTextField(labelWithString: "正在连接合工大教务管理系统...")
         statusLabel.frame = NSRect(x: 42, y: 16, width: 560, height: 20)
+        statusLabel.autoresizingMask = [.width]
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = NSFont.systemFont(ofSize: 12)
         bottomBar.addSubview(statusLabel)
@@ -63,16 +64,19 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         let reloadBtn = NSButton(title: "重新加载", target: self, action: #selector(reloadPage))
         reloadBtn.bezelStyle = .rounded
         reloadBtn.frame = NSRect(x: 610, y: 11, width: 85, height: 30)
+        reloadBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(reloadBtn)
 
         let goToTableBtn = NSButton(title: "前往课表页", target: self, action: #selector(navigateToCourseTable))
         goToTableBtn.bezelStyle = .rounded
         goToTableBtn.frame = NSRect(x: 700, y: 11, width: 95, height: 30)
+        goToTableBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(goToTableBtn)
 
         let manualSyncBtn = NSButton(title: "从当前页读取课表", target: self, action: #selector(manualExtractCurrentPage))
         manualSyncBtn.bezelStyle = .rounded
         manualSyncBtn.frame = NSRect(x: 800, y: 11, width: 145, height: 30)
+        manualSyncBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(manualSyncBtn)
 
         containerView.addSubview(bottomBar)
@@ -256,7 +260,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
             // 优先在当前已登录的 WKWebView 页面上下文内直接执行同源 fetch 获取课表 JSON（100% 复用页面自身有效会话）
             let inPageFetchScript = """
-            const html = document.documentElement ? document.documentElement.outerHTML : '';
+            let html = document.documentElement ? document.documentElement.outerHTML : '';
             let stdMatch = window.location.pathname.match(/\\/for-std\\/course-table\\/info\\/(\\d+)/) || html.match(/var\\s+studentId\\s*=\\s*(\\d+)/);
             let stdId = stdMatch ? stdMatch[1] : '\(detectedStudentId)';
             let bizMatch = html.match(/bizTypeId\\s*:\\s*(\\d+)/);
@@ -264,6 +268,22 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             let semSelect = document.getElementById('allSemesters');
             let semMatch = html.match(/'fileInfoAssoc'\\s*:\\s*null\\s*,\\s*'id'\\s*:\\s*(\\d+)/) || html.match(/semesterId\\s*:\\s*(\\d+)/);
             let semId = (semSelect && semSelect.value) ? semSelect.value : (semMatch ? semMatch[1] : '\(CourseCalendarHelper.inferSemesterId())');
+
+            if (!stdId) {
+                const tableResp = await fetch('/eams5-student/for-std/course-table', { credentials: 'include' });
+                const tableHtml = await tableResp.text();
+                const urlStd = (tableResp.url || '').match(/\\/for-std\\/course-table\\/info\\/(\\d+)/);
+                const htmlStd = tableHtml.match(/var\\s+studentId\\s*=\\s*(\\d+)/);
+                if (urlStd) stdId = urlStd[1];
+                else if (htmlStd) stdId = htmlStd[1];
+                const tBiz = tableHtml.match(/bizTypeId\\s*:\\s*(\\d+)/);
+                if (tBiz) bizId = tBiz[1];
+                const tSem = tableHtml.match(/'fileInfoAssoc'\\s*:\\s*null\\s*,\\s*'id'\\s*:\\s*(\\d+)/) || tableHtml.match(/semesterId\\s*:\\s*(\\d+)/);
+                if (tSem) semId = tSem[1];
+            }
+            if (!stdId) {
+                throw new Error('Missing stdId');
+            }
 
             const getDataResp = await fetch(`/eams5-student/for-std/course-table/get-data?bizTypeId=${bizId}&semesterId=${semId}&dataId=${stdId}`, {
                 credentials: 'include',
@@ -333,6 +353,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         self.progressIndicator.stopAnimation(nil)
         self.statusLabel.stringValue = "🎉 课表同步成功！已获取 \(schedule.lessons.count) 节课程，正在自动返回..."
         self.statusLabel.textColor = NSColor.systemGreen
+        EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
         NotificationHelper.sendNotification(
             title: "🎉 HFUT课表同步成功",
             body: "已成功同步 \(schedule.lessons.count) 门课次数据，可在菜单栏与桌面组件随时查看！"

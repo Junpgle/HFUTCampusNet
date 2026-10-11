@@ -53,6 +53,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         let topSubtitle = NSTextField(labelWithString: "登录信息门户后，本应用将自动记住账号密码并无缝刷新课表排课、宿舍电费、校园网流量及历史统计！")
         topSubtitle.frame = NSRect(x: 48, y: 5, width: 650, height: 16)
+        topSubtitle.autoresizingMask = [.width]
         topSubtitle.font = NSFont.systemFont(ofSize: 11)
         topSubtitle.textColor = .secondaryLabelColor
         topBar.addSubview(topSubtitle)
@@ -60,6 +61,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         let reloadBtn = NSButton(title: "重新加载", target: self, action: #selector(reloadPage))
         reloadBtn.bezelStyle = .rounded
         reloadBtn.frame = NSRect(x: 885, y: 8, width: 95, height: 28)
+        reloadBtn.autoresizingMask = [.minXMargin]
         topBar.addSubview(reloadBtn)
 
         containerView.addSubview(topBar)
@@ -113,6 +115,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         for (i, step) in steps.enumerated() {
             let label = NSTextField(labelWithString: "⏳ " + step)
             label.frame = NSRect(x: stepStartX + CGFloat(i) * stepWidth, y: 46, width: stepWidth, height: 18)
+            label.autoresizingMask = [.minXMargin]
             label.font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
             label.textColor = .tertiaryLabelColor
             bottomBar.addSubview(label)
@@ -122,11 +125,13 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         let viewScheduleBtn = NSButton(title: "查看课表", target: self, action: #selector(openCourseSchedule))
         viewScheduleBtn.bezelStyle = .rounded
         viewScheduleBtn.frame = NSRect(x: 770, y: 12, width: 95, height: 28)
+        viewScheduleBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(viewScheduleBtn)
 
         let viewStatsBtn = NSButton(title: "用量统计", target: self, action: #selector(openHistoryStats))
         viewStatsBtn.bezelStyle = .rounded
         viewStatsBtn.frame = NSRect(x: 875, y: 12, width: 95, height: 28)
+        viewStatsBtn.autoresizingMask = [.minXMargin]
         bottomBar.addSubview(viewStatsBtn)
 
         containerView.addSubview(bottomBar)
@@ -320,11 +325,12 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 }
             }
 
-            // 检查当前 URL 是否已经跳出登录页面，或者包含 CAS 凭据
+            // 检查当前 URL 是否已经跳出登录页面，严禁停留在 /cas/login 时因旧缓存 CASTGC 误触发同步并自动关窗
             let currentURL = self.webView.url?.absoluteString ?? ""
-            let loggedInByUrl = (!currentURL.contains("/cas/login") && currentURL.contains("hfut.edu.cn")) || currentURL.contains("ticket=")
+            let isStillOnLoginPage = currentURL.isEmpty || currentURL.contains("/cas/login") || currentURL.contains("/login?")
+            let loggedInByUrl = (!isStillOnLoginPage && currentURL.contains("hfut.edu.cn")) || currentURL.contains("ticket=")
 
-            if hasTGC || loggedInByUrl {
+            if !isStillOnLoginPage && (hasTGC || loggedInByUrl) {
                 self.startFullSSORefreshChain(cookies: cookies)
             }
         }
@@ -348,16 +354,19 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             }
         }
 
-        let cookieHeader = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        let casCookies = cookies.filter {
+            let dom = $0.domain.lowercased()
+            return dom.contains("cas.hfut.edu.cn") || $0.name == "CASTGC" || $0.name == "TGC"
+        }
+        let cookieHeader = (casCookies.isEmpty ? cookies : casCookies)
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
 
-        // 1. 同步教务课表 (EAMS 5.0)
+        // 1. 同步教务系统课表 (EAMS 5.0)
         self.syncCourseTable(cookies: cookies)
 
-        // 2. 同步慧新易校 (宿舍电费与一卡通)
+        // 2. 同步慧新易校 (宿舍电费与一卡通) 并联动同步校园网流量
         self.syncHuiXinElectricity(cookieHeader: cookieHeader)
-
-        // 3. 同步校园网自服务与流量
-        self.syncCampusNetwork()
     }
 
     // MARK: - 1. 同步教务系统课表
@@ -401,9 +410,16 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     private func syncHuiXinElectricity(cookieHeader: String) {
         updateStep(index: 2, text: "3. 宿舍电费查询", status: .inProgress)
+        updateStep(index: 3, text: "4. 校园网与历史用量", status: .inProgress)
+
+        // 立即发起校园网网关/自服务拉取
+        CampusNetworkClient.shared.fetchData()
 
         let oauthURLStr = "https://cas.hfut.edu.cn/cas/oauth2.0/authorize?client_id=Hfut2023Ydfwpt&redirect_uri=http%3A%2F%2F121.251.19.62%2Fberserker-auth%2Fcas%2Foauth2url%3Foauth2url%3Dhttp%3A%2F%2F121.251.19.62%2Fberserker-base%2Fredirect&response_type=code"
-        guard let oauthURL = URL(string: oauthURLStr) else { return }
+        guard let oauthURL = URL(string: oauthURLStr) else {
+            self.syncCampusNetwork()
+            return
+        }
 
         // 通过自定义 Session 捕获 Location 中的 synjones-auth
         let config = URLSessionConfiguration.default
@@ -411,26 +427,27 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             guard let self = self else { return }
             if let token = capturedToken {
                 SettingsManager.shared.huixinAuthToken = token
-                ElectricityService.shared.fetchData { [weak self] elecResult in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        switch elecResult {
-                        case .success(let elec):
-                            let balStr = elec.displayBalance
-                            self.updateStep(index: 2, text: "3. 电费 (\(balStr))", status: .success)
-                        case .failure:
+            }
+            // 在拿到最新 huixinAuthToken 后再调用慧新易校校园网流量兜底接口，避免 Token 尚未就绪的竞态
+            self.syncCampusNetwork()
+
+            ElectricityService.shared.fetchData { [weak self] elecResult in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    switch elecResult {
+                    case .success(let elec):
+                        let balStr = elec.displayBalance
+                        self.updateStep(index: 2, text: "3. 电费 (\(balStr))", status: .success)
+                    case .failure:
+                        if !SettingsManager.shared.isDormConfigured {
+                            self.updateStep(index: 2, text: "3. 电费 (未填宿舍)", status: .success)
+                        } else if capturedToken != nil {
                             self.updateStep(index: 2, text: "3. 电费已授权", status: .success)
+                        } else {
+                            self.updateStep(index: 2, text: "3. 电费查询失败", status: .failure)
                         }
-                        self.checkAllSyncFinished()
                     }
-                }
-            } else {
-                // 如果未能捕获到 token，直接尝试使用已有 token 请求
-                ElectricityService.shared.fetchData { [weak self] _ in
-                    DispatchQueue.main.async {
-                        self?.updateStep(index: 2, text: "3. 宿舍电费", status: .success)
-                        self?.checkAllSyncFinished()
-                    }
+                    self.checkAllSyncFinished()
                 }
             }
         }
@@ -441,23 +458,17 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
         captureSession.dataTask(with: request).resume()
+        captureSession.finishTasksAndInvalidate()
     }
 
     // MARK: - 3. 同步校园网自服务与历史用量
 
     private func syncCampusNetwork() {
-        updateStep(index: 3, text: "4. 校园网与历史用量", status: .inProgress)
-
-        // 优先拉取网关或自服务
-        CampusNetworkClient.shared.fetchData()
-
-        // 同时从慧新易校拉取本期校园网流量与余额（支持校外/热点访问）
+        // 从慧新易校拉取本期校园网流量与余额（支持校外/热点访问）
         ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                if let f = flow {
-                    CampusHistoryManager.shared.recordFlow(usedFlowStr: f, balanceStr: balance)
-                }
+                CampusNetworkClient.shared.applyHuiXinFallback(usedFlow: flow, balance: balance)
                 self.updateStep(index: 3, text: "4. 校园网与历史已同步", status: .success)
                 self.checkAllSyncFinished()
             }
