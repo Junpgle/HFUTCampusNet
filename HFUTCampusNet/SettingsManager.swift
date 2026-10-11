@@ -130,27 +130,16 @@ public class SettingsManager {
         set { defaults.set(newValue, forKey: Keys.portalUsername) }
     }
 
+    /// 校园网认证 (172.18.3.3) 与用户自服务系统 (xywzz:8443) 专用密码
     public var portalPassword: String {
-        get {
-            let p = defaults.string(forKey: Keys.portalPassword) ?? ""
-            if !p.isEmpty { return p }
-            return defaults.string(forKey: Keys.casPassword) ?? ""
-        }
+        get { defaults.string(forKey: Keys.portalPassword) ?? "" }
         set { defaults.set(newValue, forKey: Keys.portalPassword) }
     }
 
+    /// 统一身份认证 / 信息门户 (cas.hfut.edu.cn) 专用密码（与校园网密码完全独立）
     public var casPassword: String {
-        get {
-            let p = defaults.string(forKey: Keys.casPassword) ?? ""
-            if !p.isEmpty { return p }
-            return defaults.string(forKey: Keys.portalPassword) ?? ""
-        }
-        set {
-            defaults.set(newValue, forKey: Keys.casPassword)
-            if (defaults.string(forKey: Keys.portalPassword) ?? "").isEmpty && !newValue.isEmpty {
-                defaults.set(newValue, forKey: Keys.portalPassword)
-            }
-        }
+        get { defaults.string(forKey: Keys.casPassword) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.casPassword) }
     }
 
     public var autoLoginPortal: Bool {

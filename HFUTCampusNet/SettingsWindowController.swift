@@ -4,9 +4,10 @@ import AppKit
 public class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     public static let shared = SettingsWindowController()
 
-    // 校园网网关控件
+    // 校园网网关与信息门户控件
     private var usernameField: NSTextField!
     private var passwordField: NSSecureTextField!
+    private var casPasswordField: NSSecureTextField!
     private var autoLoginCheckbox: NSButton!
     private var statusLabel: NSTextField!
 
@@ -26,7 +27,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 730),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 760),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -46,7 +47,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         guard let window = self.window else { return }
         let contentView = NSView(frame: window.contentView!.bounds)
 
-        var curY: CGFloat = 730 - 36
+        var curY: CGFloat = 760 - 36
 
         // 0. 顶部统一身份认证快捷入口卡片
         let ssoBox = NSView(frame: NSRect(x: 20, y: curY - 60, width: 480, height: 60))
@@ -194,15 +195,26 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         contentView.addSubview(usernameField)
         curY -= 28
 
-        let passLabel = NSTextField(labelWithString: "登录密码：")
+        let passLabel = NSTextField(labelWithString: "校园网密码：")
         passLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
         contentView.addSubview(passLabel)
 
         passwordField = NSSecureTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
-        passwordField.placeholderString = "输入后将自动保存并用于网页自动填充"
+        passwordField.placeholderString = "用于校园网认证 (172.18.3.3) 与自服务系统 (xywzz:8443)"
         passwordField.stringValue = SettingsManager.shared.portalPassword
         passwordField.delegate = self
         contentView.addSubview(passwordField)
+        curY -= 28
+
+        let casPassLabel = NSTextField(labelWithString: "信息门户密码：")
+        casPassLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
+        contentView.addSubview(casPassLabel)
+
+        casPasswordField = NSSecureTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
+        casPasswordField.placeholderString = "用于统一身份认证 (cas.hfut.edu.cn) 与教务课表同步"
+        casPasswordField.stringValue = SettingsManager.shared.casPassword
+        casPasswordField.delegate = self
+        contentView.addSubview(casPasswordField)
         curY -= 26
 
         autoLoginCheckbox = NSButton(checkboxWithTitle: "断网或切换 Wi-Fi 时自动重连并发送系统通知", target: nil, action: nil)
@@ -323,6 +335,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func showSettings() {
         usernameField.stringValue = SettingsManager.shared.portalUsername
         passwordField.stringValue = SettingsManager.shared.portalPassword
+        casPasswordField.stringValue = SettingsManager.shared.casPassword
         autoLoginCheckbox.state = SettingsManager.shared.autoLoginPortal ? .on : .off
         courseStudentIdField.stringValue = SettingsManager.shared.courseStudentId
         courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
@@ -508,6 +521,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private func saveCredentials() {
         SettingsManager.shared.portalUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.portalPassword = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        SettingsManager.shared.casPassword = casPasswordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.autoLoginPortal = (autoLoginCheckbox.state == .on)
         SettingsManager.shared.courseStudentId = courseStudentIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.courseSemesterId = courseSemesterIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
