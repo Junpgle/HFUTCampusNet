@@ -33,7 +33,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 4.0
         config.timeoutIntervalForResource = 6.0
-        config.httpShouldSetCookies = true
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.httpCookieStorage = nil
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
@@ -399,6 +401,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         let loginPageURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         var step1Req = URLRequest(url: loginPageURL)
         step1Req.httpMethod = "GET"
+        step1Req.httpShouldHandleCookies = false
+        step1Req.cachePolicy = .reloadIgnoringLocalCacheData
         step1Req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 
         session.dataTask(with: step1Req) { [weak self] data, response, error in
@@ -412,7 +416,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             // 1. 提取 JSESSIONID
             var jsessionId: String? = nil
             if let httpResp = response as? HTTPURLResponse,
-               let setCookie = httpResp.allHeaderFields["Set-Cookie"] as? String,
+               let setCookie = httpResp.value(forHTTPHeaderField: "Set-Cookie"),
                let match = setCookie.range(of: #"JSESSIONID=([0-9A-Za-z_]+)"#, options: .regularExpression) {
                 jsessionId = String(setCookie[match]).replacingOccurrences(of: "JSESSIONID=", with: "")
             }
@@ -438,6 +442,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             // 3. 触发一次 randomCode 初始化会话验证码状态
             let randomURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/randomCode?t=\(Double.random(in: 0.1...0.9))")!
             var step2Req = URLRequest(url: randomURL)
+            step2Req.httpShouldHandleCookies = false
             step2Req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             step2Req.setValue(loginPageURL.absoluteString, forHTTPHeaderField: "Referer")
 
@@ -449,6 +454,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 let verifyURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/verify")!
                 var step3Req = URLRequest(url: verifyURL)
                 step3Req.httpMethod = "POST"
+                step3Req.httpShouldHandleCookies = false
                 step3Req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
                 step3Req.setValue(loginPageURL.absoluteString, forHTTPHeaderField: "Referer")
                 step3Req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -548,11 +554,15 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        if let location = response.allHeaderFields["Location"] as? String, location.contains("login") {
+        if let location = response.value(forHTTPHeaderField: "Location"), location.contains("login") {
             completionHandler(nil)
         } else {
             var redirectReq = request
-            if let origCookie = task.originalRequest?.value(forHTTPHeaderField: "Cookie") {
+            redirectReq.httpShouldHandleCookies = false
+            if let setCookie = response.value(forHTTPHeaderField: "Set-Cookie"),
+               let match = setCookie.range(of: #"JSESSIONID=([0-9A-Za-z_]+)"#, options: .regularExpression) {
+                redirectReq.setValue(String(setCookie[match]), forHTTPHeaderField: "Cookie")
+            } else if let origCookie = task.originalRequest?.value(forHTTPHeaderField: "Cookie") {
                 redirectReq.setValue(origCookie, forHTTPHeaderField: "Cookie")
             }
             completionHandler(redirectReq)

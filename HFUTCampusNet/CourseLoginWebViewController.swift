@@ -85,8 +85,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        let stdId = SettingsManager.shared.courseStudentId.isEmpty ? "178506" : SettingsManager.shared.courseStudentId
-        let defaultURL = "https://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table/info/\(stdId)"
+        let defaultURL = "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table"
         let finalURLStr = targetURLString ?? defaultURL
 
         guard let url = URL(string: finalURLStr) else { return }
@@ -104,14 +103,14 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     }
 
     @objc private func navigateToCourseTable() {
-        let stdId = SettingsManager.shared.courseStudentId.isEmpty ? "178506" : SettingsManager.shared.courseStudentId
-        let urlStr = "https://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table/info/\(stdId)"
+        let urlStr = "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table"
         if let url = URL(string: urlStr) {
             webView.load(URLRequest(url: url))
         }
     }
 
     @objc private func manualExtractCurrentPage() {
+        isSyncing = false
         triggerAutoExtraction()
     }
 
@@ -226,7 +225,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         guard !isSyncing else { return }
         isSyncing = true
         progressIndicator.startAnimation(nil)
-        statusLabel.stringValue = "正在检测课表权限并抓取排课数据..."
+        statusLabel.stringValue = "正在从当前页面直接提取排课数据..."
         statusLabel.textColor = NSColor.systemBlue
 
         guard let currentURL = webView.url else {
@@ -244,49 +243,104 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             SettingsManager.shared.courseStudentId = detectedStudentId
         }
 
-        // 读取所有 Cookie
+        // 读取所有 Cookie，严格提取 jxglstu 专属 SESSION + SRVID，避免被 cas.hfut.edu.cn 的同名 SESSION 覆盖
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self else { return }
+            if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
+                SettingsManager.shared.courseSessionCookie = jxCookieHeader
+            }
             for cookie in cookies {
-                if cookie.name == "SESSION" && (cookie.domain.contains("hfut.edu.cn") || cookie.domain.isEmpty) {
-                    SettingsManager.shared.courseSessionCookie = cookie.value
+                if (cookie.name == "CASTGC" || cookie.name == "TGC") && cookie.domain.contains("hfut.edu.cn") {
+                    SettingsManager.shared.casTgcCookie = cookie.value
                 }
             }
 
-            // 读取 HTML 获取 bizTypeId
-            self.webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] htmlObj, _ in
-                guard let self = self else { return }
-                let html = (htmlObj as? String) ?? ""
-                CourseScheduleService.shared.fetchAndApplyFromHTML(
-                    html: html,
-                    studentId: detectedStudentId,
-                    cookies: cookies
-                ) { [weak self] result in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        self.isSyncing = false
-                        self.progressIndicator.stopAnimation(nil)
+            // 优先在当前已登录的 WKWebView 页面上下文内直接执行同源 fetch 获取课表 JSON（100% 复用页面自身有效会话）
+            let inPageFetchScript = """
+            const html = document.documentElement ? document.documentElement.outerHTML : '';
+            let stdMatch = window.location.pathname.match(/\\/for-std\\/course-table\\/info\\/(\\d+)/) || html.match(/var\\s+studentId\\s*=\\s*(\\d+)/);
+            let stdId = stdMatch ? stdMatch[1] : '\(detectedStudentId)';
+            let bizMatch = html.match(/bizTypeId\\s*:\\s*(\\d+)/);
+            let bizId = bizMatch ? bizMatch[1] : '23';
+            let semSelect = document.getElementById('allSemesters');
+            let semMatch = html.match(/'fileInfoAssoc'\\s*:\\s*null\\s*,\\s*'id'\\s*:\\s*(\\d+)/) || html.match(/semesterId\\s*:\\s*(\\d+)/);
+            let semId = (semSelect && semSelect.value) ? semSelect.value : (semMatch ? semMatch[1] : '\(CourseCalendarHelper.inferSemesterId())');
 
-                        switch result {
-                        case .success(let schedule):
-                            self.statusLabel.stringValue = "🎉 课表同步成功！已获取 \(schedule.lessons.count) 节课程，正在自动返回..."
-                            self.statusLabel.textColor = NSColor.systemGreen
-                            NotificationHelper.sendNotification(
-                                title: "🎉 HFUT课表同步成功",
-                                body: "已成功同步 \(schedule.lessons.count) 门课次数据，可在菜单栏与桌面组件随时查看！"
-                            )
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                                self.window?.close()
-                                // 打开课表主窗口供用户查看
-                                CourseScheduleWindowController.shared.showWindow(nil)
+            const getDataResp = await fetch(`/eams5-student/for-std/course-table/get-data?bizTypeId=${bizId}&semesterId=${semId}&dataId=${stdId}`, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json, text/javascript, */*; q=0.01' }
+            });
+            const getDataJson = await getDataResp.json();
+            const lessonIds = getDataJson.lessonIds || [];
+            if (lessonIds.length === 0) {
+                return JSON.stringify({ stdId, semId, bizId, datum: JSON.stringify({ result: { lessonList: [], scheduleList: [] } }) });
+            }
+            const datumResp = await fetch('/eams5-student/ws/schedule-table/datum', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+                body: JSON.stringify({ lessonIds: lessonIds, studentId: parseInt(stdId, 10), weekIndex: '' })
+            });
+            const datumText = await datumResp.text();
+            return JSON.stringify({ stdId, semId, bizId, datum: datumText });
+            """
+
+            self.webView.callAsyncJavaScript(inPageFetchScript, arguments: [:], in: nil, in: .page) { [weak self] jsResult in
+                guard let self = self else { return }
+                if case .success(let val) = jsResult,
+                   let jsonStr = val as? String,
+                   let wrapperData = jsonStr.data(using: .utf8),
+                   let wrapper = try? JSONSerialization.jsonObject(with: wrapperData) as? [String: String],
+                   let datumStr = wrapper["datum"],
+                   let stdId = wrapper["stdId"],
+                   let semId = wrapper["semId"],
+                   let bizId = wrapper["bizId"],
+                   let schedule = try? CourseScheduleService.shared.applyDatumJSONString(datumStr, studentId: stdId, semesterId: semId, bizTypeId: bizId) {
+                    DispatchQueue.main.async {
+                        self.handleSyncSuccess(schedule)
+                    }
+                    return
+                }
+
+                // 若页内 JS 拉取未成功，回退到 HTML + Cookie 解析请求
+                self.webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] htmlObj, _ in
+                    guard let self = self else { return }
+                    let html = (htmlObj as? String) ?? ""
+                    CourseScheduleService.shared.fetchAndApplyFromHTML(
+                        html: html,
+                        studentId: detectedStudentId,
+                        cookies: cookies
+                    ) { [weak self] result in
+                        DispatchQueue.main.async {
+                            guard let self = self else { return }
+                            switch result {
+                            case .success(let schedule):
+                                self.handleSyncSuccess(schedule)
+                            case .failure(let error):
+                                self.isSyncing = false
+                                self.progressIndicator.stopAnimation(nil)
+                                self.statusLabel.stringValue = "❌ 课表同步失败: \(error.localizedDescription)"
+                                self.statusLabel.textColor = NSColor.systemRed
                             }
-                        case .failure(let error):
-                            self.statusLabel.stringValue = "❌ 课表同步失败: \(error.localizedDescription)"
-                            self.statusLabel.textColor = NSColor.systemRed
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func handleSyncSuccess(_ schedule: CourseScheduleData) {
+        self.isSyncing = false
+        self.progressIndicator.stopAnimation(nil)
+        self.statusLabel.stringValue = "🎉 课表同步成功！已获取 \(schedule.lessons.count) 节课程，正在自动返回..."
+        self.statusLabel.textColor = NSColor.systemGreen
+        NotificationHelper.sendNotification(
+            title: "🎉 HFUT课表同步成功",
+            body: "已成功同步 \(schedule.lessons.count) 门课次数据，可在菜单栏与桌面组件随时查看！"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            self.window?.close()
+            CourseScheduleWindowController.shared.showWindow(nil)
         }
     }
 

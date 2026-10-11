@@ -30,6 +30,7 @@ SOURCES=(
     "HFUTCampusNet/HistoryStatsWindowController.swift"
     "HFUTCampusNet/SettingsManager.swift"
     "HFUTCampusNet/NotificationHelper.swift"
+    "HFUTCampusNet/UpdateChecker.swift"
     "HFUTCampusNet/NetworkSpeedMonitor.swift"
     "HFUTCampusNet/PortalAuthService.swift"
     "HFUTCampusNet/CampusNetworkClient.swift"
@@ -50,7 +51,11 @@ echo "🔀 正在合成 Universal 通用二进制..."
 lipo -create "$MACOS_DIR/${APP_NAME}_arm64" "$MACOS_DIR/${APP_NAME}_x86_64" -output "$MACOS_DIR/$APP_NAME"
 rm -f "$MACOS_DIR/${APP_NAME}_arm64" "$MACOS_DIR/${APP_NAME}_x86_64"
 
-echo "📝 正在生成 Info.plist..."
+echo "📝 正在生成 Info.plist 与复制应用图标..."
+if [ -f "$DIR/HFUTCampusNet/AppIcon.icns" ]; then
+    cp "$DIR/HFUTCampusNet/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+fi
+
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,6 +69,8 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <string>HFUT校园网助手</string>
     <key>CFBundleDisplayName</key>
     <string>HFUT校园网助手</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -88,6 +95,11 @@ chmod +x "$MACOS_DIR/$APP_NAME"
 echo "🔏 正在执行标准 Ad-Hoc 代码签名封装..."
 codesign --force --deep --sign - "$BUNDLE_DIR"
 
+echo "📦 正在打包发布压缩包 HFUTCampusNet-macOS.zip..."
+rm -f "$DIR/HFUTCampusNet-macOS.zip"
+ditto -c -k --keepParent "$BUNDLE_DIR" "$DIR/HFUTCampusNet-macOS.zip"
+
 echo "✅ 构建成功！生成通用架构应用："
 echo "   👉 $BUNDLE_DIR"
+echo "   👉 $DIR/HFUTCampusNet-macOS.zip"
 file "$MACOS_DIR/$APP_NAME"

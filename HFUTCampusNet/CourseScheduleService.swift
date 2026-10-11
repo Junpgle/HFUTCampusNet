@@ -88,6 +88,42 @@ public class CourseScheduleService {
         }
     }
 
+    /// 从 Cookie 列表中仅提取教务系统 (jxglstu.hfut.edu.cn) 的专属 Cookie (包含 SESSION 与负载均衡粘性 Cookie SRVID)
+    public static func extractJxglstuCookieHeader(from cookies: [HTTPCookie]) -> String? {
+        var sessionVal: String?
+        var srvidVal: String?
+        for cookie in cookies {
+            let dom = cookie.domain.lowercased()
+            // 严格匹配 jxglstu 域名（或路径为 /eams5-student），绝不混入 cas.hfut.edu.cn / one.hfut.edu.cn 的同名 SESSION
+            if dom.contains("jxglstu") || cookie.path.contains("eams5-student") {
+                if cookie.name == "SESSION" {
+                    sessionVal = cookie.value
+                } else if cookie.name == "SRVID" {
+                    srvidVal = cookie.value
+                }
+            } else if dom.isEmpty && cookie.name == "SRVID" {
+                srvidVal = cookie.value
+            }
+        }
+        guard let s = sessionVal, !s.isEmpty else { return nil }
+        if let srv = srvidVal, !srv.isEmpty {
+            return "SESSION=\(s); SRVID=\(srv)"
+        }
+        return "SESSION=\(s)"
+    }
+
+    /// 构造请求使用的 Cookie Header 字符串
+    private func buildCookieHeader() -> String? {
+        guard let saved = SettingsManager.shared.courseSessionCookie?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !saved.isEmpty else {
+            return nil
+        }
+        if saved.contains("SESSION=") {
+            return saved
+        }
+        return "SESSION=\(saved)"
+    }
+
     /// 同步课表
     public func syncSchedule(
         studentId: String? = nil,
@@ -104,7 +140,7 @@ public class CourseScheduleService {
         let sem = (semesterId ?? SettingsManager.shared.courseSemesterId).trimmingCharacters(in: .whitespaces)
         let semFinal = sem.isEmpty ? String(CourseCalendarHelper.inferSemesterId()) : sem
         let biz = (bizTypeId ?? SettingsManager.shared.courseBizTypeId).trimmingCharacters(in: .whitespaces)
-        let bizFinal = biz.isEmpty ? "2" : biz
+        let bizFinal = (biz.isEmpty || biz == "2") ? "23" : biz
 
         // 尝试用现有 Cookie 请求
         fetchCourseData(studentId: std, semesterId: semFinal, bizTypeId: bizFinal) { [weak self] result in
@@ -113,13 +149,14 @@ public class CourseScheduleService {
                 self?.saveSchedule(schedule)
                 completion(.success(schedule))
             case .failure(let error):
-                // 如果是需要登录且有保存的账号密码，尝试后台自动登录一次
-                if let syncErr = error as? CourseSyncError, case .needLogin = syncErr,
-                   !SettingsManager.shared.portalUsername.isEmpty,
-                   !SettingsManager.shared.portalPassword.isEmpty {
+                // 如果会话过期，尝试通过已保存的 CAS TGC 或账号密码后台自动 SSO 登录教务系统
+                if let syncErr = error as? CourseSyncError, case .needLogin = syncErr {
                     self?.tryBackgroundLogin { loginSuccess in
                         if loginSuccess {
-                            self?.fetchCourseData(studentId: std, semesterId: semFinal, bizTypeId: bizFinal) { retryResult in
+                            let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
+                            let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
+                            let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
+                            self?.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
                                 switch retryResult {
                                 case .success(let schedule):
                                     self?.saveSchedule(schedule)
@@ -139,6 +176,38 @@ public class CourseScheduleService {
         }
     }
 
+    /// 直接应用网页端 JS 获取到的 datum JSON 字符串并持久化保存课表
+    public func applyDatumJSONString(
+        _ jsonString: String,
+        studentId: String,
+        semesterId: String,
+        bizTypeId: String
+    ) throws -> CourseScheduleData {
+        guard let data = jsonString.data(using: .utf8) else {
+            throw CourseSyncError.invalidResponse
+        }
+        let parsedLessons = try CourseScheduleService.parseDatumJSON(data: data)
+        if !studentId.isEmpty {
+            SettingsManager.shared.courseStudentId = studentId
+        }
+        if !semesterId.isEmpty {
+            SettingsManager.shared.courseSemesterId = semesterId
+        }
+        if !bizTypeId.isEmpty {
+            SettingsManager.shared.courseBizTypeId = bizTypeId
+        }
+        let schedule = CourseScheduleData(
+            studentId: studentId.isEmpty ? SettingsManager.shared.courseStudentId : studentId,
+            semesterId: semesterId.isEmpty ? SettingsManager.shared.courseSemesterId : semesterId,
+            semesterName: "当前学期",
+            bizTypeId: bizTypeId.isEmpty ? SettingsManager.shared.courseBizTypeId : bizTypeId,
+            lastSyncTime: Date(),
+            lessons: parsedLessons
+        )
+        self.saveSchedule(schedule)
+        return schedule
+    }
+
     /// 直接使用给定数据更新课表（例如从网页提取后直接更新）
     public func fetchAndApplyFromHTML(
         html: String,
@@ -146,29 +215,33 @@ public class CourseScheduleService {
         cookies: [HTTPCookie],
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
-        // 保存 Cookie
-        for cookie in cookies {
-            HTTPCookieStorage.shared.setCookie(cookie)
-            if cookie.name == "SESSION" {
-                SettingsManager.shared.courseSessionCookie = cookie.value
-            }
+        // 仅保存 jxglstu.hfut.edu.cn 专属的 SESSION 与 SRVID Cookie
+        if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
+            SettingsManager.shared.courseSessionCookie = jxCookieHeader
         }
 
-        var detectedBiz = "2"
+        var detectedStd = studentId
+        if let matchStd = matchRegex(pattern: #"var\s+studentId\s*=\s*(\d+)"#, in: html) {
+            detectedStd = matchStd
+        }
+        if !detectedStd.isEmpty {
+            SettingsManager.shared.courseStudentId = detectedStd
+        }
+
+        var detectedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
         if let match = matchRegex(pattern: #"bizTypeId\s*:\s*(\d+)"#, in: html) {
             detectedBiz = match
             SettingsManager.shared.courseBizTypeId = match
         }
 
-        var detectedSem = String(CourseCalendarHelper.inferSemesterId())
-        if let match = matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
+        var detectedSem = SettingsManager.shared.courseSemesterId.isEmpty ? String(CourseCalendarHelper.inferSemesterId()) : SettingsManager.shared.courseSemesterId
+        if let match = matchRegex(pattern: #"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)"#, in: html)
+            ?? matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
             detectedSem = match
             SettingsManager.shared.courseSemesterId = match
         }
 
-        SettingsManager.shared.courseStudentId = studentId
-
-        fetchCourseData(studentId: studentId, semesterId: detectedSem, bizTypeId: detectedBiz) { [weak self] result in
+        fetchCourseData(studentId: detectedStd, semesterId: detectedSem, bizTypeId: detectedBiz) { [weak self] result in
             switch result {
             case .success(let schedule):
                 self?.saveSchedule(schedule)
@@ -197,8 +270,9 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         req.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
 
-        if let savedSession = SettingsManager.shared.courseSessionCookie, !savedSession.isEmpty {
-            req.setValue("SESSION=\(savedSession)", forHTTPHeaderField: "Cookie")
+        if let cookieHeader = buildCookieHeader() {
+            req.httpShouldHandleCookies = false
+            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
         URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
@@ -279,8 +353,9 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
 
-        if let savedSession = SettingsManager.shared.courseSessionCookie, !savedSession.isEmpty {
-            req.setValue("SESSION=\(savedSession)", forHTTPHeaderField: "Cookie")
+        if let cookieHeader = buildCookieHeader() {
+            req.httpShouldHandleCookies = false
+            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
         let bodyObj: [String: Any] = [
@@ -419,17 +494,128 @@ public class CourseScheduleService {
         }
     }
 
-    // MARK: - 后台账号自动登录辅助
+    // MARK: - 后台 CAS SSO 与账号自动登录辅助
 
-    private func tryBackgroundLogin(completion: @escaping (Bool) -> Void) {
+    public func tryBackgroundLogin(completion: @escaping (Bool) -> Void) {
+        // 优先使用统一身份认证 CAS TGC 票据无缝单点登录教务系统
+        if let tgc = SettingsManager.shared.casTgcCookie?.trimmingCharacters(in: .whitespacesAndNewlines), !tgc.isEmpty {
+            loginViaCASTgc(tgc: tgc) { [weak self] success in
+                if success {
+                    completion(true)
+                } else {
+                    self?.loginViaSaltPassword(completion: completion)
+                }
+            }
+            return
+        }
+        loginViaSaltPassword(completion: completion)
+    }
+
+    /// 通过 CAS TGC Cookie 执行单点登录获取教务系统专属 SESSION + SRVID 及最新 studentId/semesterId/bizTypeId
+    private func loginViaCASTgc(tgc: String, completion: @escaping (Bool) -> Void) {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
+
+        if let c1 = HTTPCookie(properties: [
+            .domain: "cas.hfut.edu.cn",
+            .path: "/",
+            .name: "CASTGC",
+            .value: tgc
+        ]) {
+            config.httpCookieStorage?.setCookie(c1)
+        }
+        if let c2 = HTTPCookie(properties: [
+            .domain: "cas.hfut.edu.cn",
+            .path: "/cas",
+            .name: "TGC",
+            .value: tgc
+        ]) {
+            config.httpCookieStorage?.setCookie(c2)
+        }
+
+        let ssoSession = URLSession(configuration: config)
+        guard let ssoURL = URL(string: "https://cas.hfut.edu.cn/cas/login?service=http%3A%2F%2Fjxglstu.hfut.edu.cn%2Feams5-student%2Fneusoft-sso%2Flogin") else {
+            completion(false)
+            return
+        }
+
+        var req = URLRequest(url: ssoURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+
+        ssoSession.dataTask(with: req) { [weak self] _, response, error in
+            guard let self = self, error == nil,
+                  let http = response as? HTTPURLResponse,
+                  let finalURL = http.url?.absoluteString,
+                  finalURL.contains("jxglstu.hfut.edu.cn"),
+                  !finalURL.contains("cas.hfut.edu.cn/cas/login") else {
+                completion(false)
+                return
+            }
+
+            // 进一步请求 /for-std/course-table 以自动解析 studentId、semesterId、bizTypeId 并确认会话有效
+            guard let tableURL = URL(string: "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table") else {
+                completion(false)
+                return
+            }
+            var tableReq = URLRequest(url: tableURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
+            tableReq.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+
+            ssoSession.dataTask(with: tableReq) { [weak self] tData, tResp, tErr in
+                guard let self = self, tErr == nil,
+                      let tHttp = tResp as? HTTPURLResponse,
+                      let tFinalURL = tHttp.url?.absoluteString,
+                      !tFinalURL.contains("/login") else {
+                    completion(false)
+                    return
+                }
+
+                let allCookies = ssoSession.configuration.httpCookieStorage?.cookies ?? []
+                for c in allCookies {
+                    HTTPCookieStorage.shared.setCookie(c)
+                }
+                guard let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: allCookies) else {
+                    completion(false)
+                    return
+                }
+                SettingsManager.shared.courseSessionCookie = jxCookieHeader
+
+                // 从重定向 URL 或 HTML 中提取 studentId、bizTypeId、semesterId
+                if let stdFromURL = self.matchRegex(pattern: #"/for-std/course-table/info/(\d+)"#, in: tFinalURL) {
+                    SettingsManager.shared.courseStudentId = stdFromURL
+                }
+                if let tData = tData, let html = String(data: tData, encoding: .utf8) {
+                    if let stdFromHTML = self.matchRegex(pattern: #"var\s+studentId\s*=\s*(\d+)"#, in: html) {
+                        SettingsManager.shared.courseStudentId = stdFromHTML
+                    }
+                    if let biz = self.matchRegex(pattern: #"bizTypeId\s*:\s*(\d+)"#, in: html) {
+                        SettingsManager.shared.courseBizTypeId = biz
+                    }
+                    if let sem = self.matchRegex(pattern: #"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)"#, in: html)
+                        ?? self.matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
+                        SettingsManager.shared.courseSemesterId = sem
+                    }
+                }
+                completion(true)
+            }.resume()
+        }.resume()
+    }
+
+    private func loginViaSaltPassword(completion: @escaping (Bool) -> Void) {
         let u = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespaces)
-        let p = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespaces)
+        let casP = SettingsManager.shared.casPassword.trimmingCharacters(in: .whitespaces)
+        let p = casP.isEmpty ? SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespaces) : casP
         guard !u.isEmpty, !p.isEmpty else {
             completion(false)
             return
         }
 
-        let base = "https://jxglstu.hfut.edu.cn/eams5-student"
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
+        let session = URLSession(configuration: config)
+
+        let base = "http://jxglstu.hfut.edu.cn/eams5-student"
         guard let saltURL = URL(string: "\(base)/login-salt") else {
             completion(false)
             return
@@ -438,21 +624,12 @@ public class CourseScheduleService {
         var saltReq = URLRequest(url: saltURL, timeoutInterval: 10.0)
         saltReq.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: saltReq) { data, response, error in
+        session.dataTask(with: saltReq) { data, _, _ in
             guard let data = data, let salt = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !salt.isEmpty else {
                 completion(false)
                 return
             }
 
-            // 提取 Set-Cookie
-            if let http = response as? HTTPURLResponse, let headerFields = http.allHeaderFields as? [String: String], let url = http.url {
-                let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
-                for cookie in cookies where cookie.name == "SESSION" {
-                    SettingsManager.shared.courseSessionCookie = cookie.value
-                }
-            }
-
-            // 计算 SHA1
             let toHash = "\(salt)-\(p)"
             let sha1Pwd = CourseScheduleService.sha1Hex(toHash)
 
@@ -464,9 +641,6 @@ public class CourseScheduleService {
             var loginReq = URLRequest(url: loginURL, timeoutInterval: 10.0)
             loginReq.httpMethod = "POST"
             loginReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let session = SettingsManager.shared.courseSessionCookie {
-                loginReq.setValue("SESSION=\(session)", forHTTPHeaderField: "Cookie")
-            }
 
             let postBody: [String: Any] = [
                 "username": u,
@@ -475,7 +649,7 @@ public class CourseScheduleService {
             ]
             loginReq.httpBody = try? JSONSerialization.data(withJSONObject: postBody)
 
-            URLSession.shared.dataTask(with: loginReq) { lData, lResp, lErr in
+            session.dataTask(with: loginReq) { lData, _, _ in
                 guard let lData = lData,
                       let json = try? JSONSerialization.jsonObject(with: lData) as? [String: Any],
                       let result = json["result"] as? Bool, result == true else {
@@ -483,12 +657,9 @@ public class CourseScheduleService {
                     return
                 }
 
-                // 登录成功，提取更新后的 SESSION
-                if let http = lResp as? HTTPURLResponse, let headerFields = http.allHeaderFields as? [String: String], let url = http.url {
-                    let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
-                    for cookie in cookies where cookie.name == "SESSION" {
-                        SettingsManager.shared.courseSessionCookie = cookie.value
-                    }
+                let allCookies = session.configuration.httpCookieStorage?.cookies ?? []
+                if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: allCookies) {
+                    SettingsManager.shared.courseSessionCookie = jxCookieHeader
                 }
                 completion(true)
             }.resume()

@@ -343,20 +343,17 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         statusDetailLabel.stringValue = "请稍候，系统正在通过 SSO 依次拉取课表排课、宿舍电费、校园网流量..."
         updateStep(index: 0, text: "1. 统一身份认证", status: .success)
 
-        // 尝试从页面或输入框提取学号
+        // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
         self.webView.evaluateJavaScript("document.getElementById('username') ? document.getElementById('username').value : ''") { val, _ in
             if let user = val as? String, !user.isEmpty {
                 SettingsManager.shared.portalUsername = user
-                if SettingsManager.shared.courseStudentId.isEmpty || SettingsManager.shared.courseStudentId == "178506" {
-                    SettingsManager.shared.courseStudentId = user
-                }
             }
         }
 
         let cookieHeader = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
 
         // 1. 同步教务课表 (EAMS 5.0)
-        self.syncCourseTable(cookieHeader: cookieHeader, cookies: cookies)
+        self.syncCourseTable(cookies: cookies)
 
         // 2. 同步慧新易校 (宿舍电费与一卡通)
         self.syncHuiXinElectricity(cookieHeader: cookieHeader)
@@ -367,32 +364,18 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     // MARK: - 1. 同步教务系统课表
 
-    private func syncCourseTable(cookieHeader: String, cookies: [HTTPCookie]) {
+    private func syncCourseTable(cookies: [HTTPCookie]) {
         updateStep(index: 1, text: "2. 教务课表同步", status: .inProgress)
 
-        let ssoURL = URL(string: "https://cas.hfut.edu.cn/cas/login?service=http://jxglstu.hfut.edu.cn/eams5-student/neusoft-sso/login")!
-        var request = URLRequest(url: ssoURL)
-        request.httpMethod = "GET"
-        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+        // 仅当 cookies 中已包含 jxglstu 专属 Cookie 时才更新，绝不用 cas.hfut.edu.cn 的同名 SESSION 覆盖
+        if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
+            SettingsManager.shared.courseSessionCookie = jxCookieHeader
+        }
 
-        // 通过 URLSession 处理重定向以获取 jxglstu 的 SESSION
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-
-            // 无论重定向结果如何，尝试抓取课表
-            let stdId = SettingsManager.shared.courseStudentId.isEmpty ? "178506" : SettingsManager.shared.courseStudentId
-
-            for cookie in cookies {
-                HTTPCookieStorage.shared.setCookie(cookie)
-                if cookie.name == "SESSION" && (cookie.domain.contains("hfut.edu.cn") || cookie.domain.isEmpty) {
-                    SettingsManager.shared.courseSessionCookie = cookie.value
-                }
-            }
-
-            // 直接通过 CourseScheduleService 执行最新抓取
+        // 通过 CAS TGC 票据执行单点登录，自动解析最新 studentId / semesterId / bizTypeId 并拉取课表
+        CourseScheduleService.shared.tryBackgroundLogin { [weak self] _ in
             CourseScheduleService.shared.syncSchedule(
-                studentId: stdId,
+                studentId: SettingsManager.shared.courseStudentId,
                 semesterId: SettingsManager.shared.courseSemesterId,
                 bizTypeId: SettingsManager.shared.courseBizTypeId
             ) { [weak self] result in
@@ -402,18 +385,16 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     case .success(let schedule):
                         self.updateStep(index: 1, text: "2. 课表 (\(schedule.lessons.count)节)", status: .success)
                     case .failure:
-                        // 若 direct 失败，尝试读取并解析
-                        if CourseScheduleService.shared.currentSchedule != nil {
-                            self.updateStep(index: 1, text: "2. 课表 (已载入本地)", status: .success)
+                        if let cached = CourseScheduleService.shared.currentSchedule, !cached.lessons.isEmpty {
+                            self.updateStep(index: 1, text: "2. 课表 (缓存\(cached.lessons.count)节)", status: .success)
                         } else {
-                            self.updateStep(index: 1, text: "2. 课表同步稍后重试", status: .failure)
+                            self.updateStep(index: 1, text: "2. 课表同步失败", status: .failure)
                         }
                     }
                     self.checkAllSyncFinished()
                 }
             }
         }
-        task.resume()
     }
 
     // MARK: - 2. 同步慧新易校电费

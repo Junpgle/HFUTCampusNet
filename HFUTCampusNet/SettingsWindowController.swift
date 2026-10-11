@@ -313,23 +313,32 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         curY -= 36
 
         // 底部保存与测试按钮
+        let updateBtn = NSButton(title: "🔄 检查更新", target: self, action: #selector(checkUpdateClicked))
+        updateBtn.bezelStyle = .rounded
+        updateBtn.frame = NSRect(x: 20, y: 14, width: 105, height: 32)
+        contentView.addSubview(updateBtn)
+
         let testBtn = NSButton(title: "测试网关登录", target: self, action: #selector(testLoginClicked))
         testBtn.bezelStyle = .rounded
-        testBtn.frame = NSRect(x: 100, y: 14, width: 115, height: 32)
+        testBtn.frame = NSRect(x: 132, y: 14, width: 115, height: 32)
         contentView.addSubview(testBtn)
 
         let logoutBtn = NSButton(title: "注销网关", target: self, action: #selector(logoutClicked))
         logoutBtn.bezelStyle = .rounded
-        logoutBtn.frame = NSRect(x: 225, y: 14, width: 95, height: 32)
+        logoutBtn.frame = NSRect(x: 254, y: 14, width: 90, height: 32)
         contentView.addSubview(logoutBtn)
 
         let saveBtn = NSButton(title: "保存设置", target: self, action: #selector(saveClicked))
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
-        saveBtn.frame = NSRect(x: 330, y: 14, width: 150, height: 32)
+        saveBtn.frame = NSRect(x: 352, y: 14, width: 148, height: 32)
         contentView.addSubview(saveBtn)
 
         window.contentView = contentView
+    }
+
+    @objc private func checkUpdateClicked() {
+        UpdateChecker.shared.checkForUpdates(manual: true)
     }
 
     public func showSettings() {

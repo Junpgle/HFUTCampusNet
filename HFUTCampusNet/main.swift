@@ -18,6 +18,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
         // 无论如何都启动监测引擎！
         CampusNetworkClient.shared.startMonitoring()
         ElectricityService.shared.fetchData { _ in }
+        if SettingsManager.shared.courseTableEnabled {
+            CourseScheduleService.shared.syncSchedule { _ in }
+        }
+
+        // 启动后延迟 3 秒在后台静默检查 GitHub Releases 更新
+        if SettingsManager.shared.autoCheckUpdate {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                UpdateChecker.shared.checkForUpdates(manual: false)
+            }
+        }
 
         // 如果既没有自服务 Cookie，也没有配置密码，延迟 1 秒提示打开设置
         let noCookie = SettingsManager.shared.sessionCookie == nil || SettingsManager.shared.sessionCookie?.isEmpty == true

@@ -175,6 +175,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         }
         if currentMode == 0 || currentFlowRecords.isEmpty {
             CampusNetworkClient.shared.fetchData()
+            CampusNetworkClient.shared.fetchOnlineDevices()
         }
     }
 
@@ -194,6 +195,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
 
     @objc private func onRefreshClicked() {
         CampusNetworkClient.shared.fetchData()
+        CampusNetworkClient.shared.fetchOnlineDevices()
         ElectricityService.shared.fetchData { [weak self] _ in
             self?.reloadData()
         }
@@ -228,8 +230,24 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             setCard(index: 1, title: "近 7 天累计消耗", value: formatMB(CampusHistoryManager.shared.past7DaysFlowTotalMB), sub: "近一周网络流量总计", color: NSColor.systemIndigo)
             setCard(index: 2, title: "近 7 天日均消耗", value: formatMB(CampusHistoryManager.shared.past7DaysFlowDailyAverageMB) + "/天", sub: "每日平均使用水平", color: NSColor.systemTeal)
 
-            let peak = currentFlowRecords.map { $0.peakSpeedMBs }.max() ?? 0.0
-            setCard(index: 3, title: "近日峰值网速", value: String(format: "%.2f MB/s", peak), sub: "网络传输峰值测速", color: NSColor.systemGreen)
+            let netData = CampusNetworkClient.shared.latestData
+            let balText: String
+            if netData.balance != "-- 元" && !netData.balance.isEmpty {
+                balText = netData.balance
+            } else if let lastBal = currentFlowRecords.first?.balanceRMB {
+                balText = String(format: "%.2f 元", lastBal)
+            } else {
+                balText = "-- 元"
+            }
+            let monthlyUsedStr: String
+            if let usedMB = netData.usedMB {
+                monthlyUsedStr = "本月累计已用 \(formatMB(usedMB))"
+            } else if let lastUsed = currentFlowRecords.first?.totalUsedMB {
+                monthlyUsedStr = "本月累计已用 \(formatMB(lastUsed))"
+            } else {
+                monthlyUsedStr = "校园网账户实时余额"
+            }
+            setCard(index: 3, title: "校园网账户余额", value: balText, sub: monthlyUsedStr, color: NSColor.systemGreen)
         } else {
             // 宿舍电费模式
             if !SettingsManager.shared.isDormConfigured {
@@ -298,13 +316,12 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
 
         if currentMode == 0 {
             let cols: [(String, String, CGFloat)] = [
-                ("date", "日期", 100),
-                ("delta", "今日新增用量", 130),
-                ("total", "累计已用流量", 130),
-                ("avail", "剩余可用流量", 130),
-                ("bal", "校园网余额", 110),
-                ("peak", "峰值网速", 110),
-                ("time", "更新时间", 120)
+                ("date", "日期", 120),
+                ("delta", "今日新增用量", 145),
+                ("total", "累计已用流量", 145),
+                ("avail", "剩余可用流量", 145),
+                ("bal", "校园网余额", 130),
+                ("time", "更新时间", 125)
             ]
             for (cid, ctitle, w) in cols {
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
@@ -314,10 +331,10 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             }
         } else {
             let cols: [(String, String, CGFloat)] = [
-                ("date", "日期", 100),
-                ("cost", "当日消耗电费", 140),
-                ("kwh", "当日用电度数", 130),
-                ("bal", "最新剩余电费", 140),
+                ("date", "日期", 120),
+                ("cost", "当日消耗电费", 145),
+                ("kwh", "当日用电度数", 135),
+                ("bal", "最新剩余电费", 145),
                 ("remKwh", "剩余度数", 130),
                 ("time", "更新时间", 130)
             ]
@@ -371,7 +388,6 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             case "total": cell.stringValue = formatMB(record.totalUsedMB)
             case "avail": cell.stringValue = record.availableMB != nil ? formatMB(record.availableMB!) : "--"
             case "bal": cell.stringValue = record.balanceRMB != nil ? String(format: "%.2f 元", record.balanceRMB!) : "--"
-            case "peak": cell.stringValue = String(format: "%.2f MB/s", record.peakSpeedMBs)
             case "time": cell.stringValue = timeFormatter.string(from: record.lastUpdated)
             default: break
             }
@@ -446,7 +462,7 @@ public class HistoryBarChartView: NSView {
             return
         }
 
-        let maxVal = max(items.map { $0.value }.max() ?? 1.0, 1.0)
+        let maxVal = max(items.map { $0.value }.max() ?? 0.1, 0.05)
         let chartBottom: CGFloat = 30
         let chartTop: CGFloat = bounds.height - 30
         let chartHeight = max(10.0, chartTop - chartBottom)

@@ -34,6 +34,8 @@ public class SettingsManager {
         static let electricityLowWarningThreshold = "campus_electricity_low_threshold"
         static let lastNotifiedLowElectricityDate = "campus_last_notified_low_electricity_date"
         static let casPassword = "campus_cas_password"
+        static let skippedUpdateVersion = "campus_skipped_update_version"
+        static let autoCheckUpdate = "campus_auto_check_update"
     }
 
     private init() {
@@ -69,6 +71,9 @@ public class SettingsManager {
         }
         if defaults.object(forKey: Keys.electricityLowWarningThreshold) == nil {
             defaults.set(10.0, forKey: Keys.electricityLowWarningThreshold)
+        }
+        if defaults.object(forKey: Keys.autoCheckUpdate) == nil {
+            defaults.set(true, forKey: Keys.autoCheckUpdate)
         }
         // 账号默认留空，由用户首次在设置中填写
     }
@@ -158,7 +163,7 @@ public class SettingsManager {
     }
 
     public var courseBizTypeId: String {
-        get { defaults.string(forKey: Keys.courseBizTypeId) ?? "2" }
+        get { defaults.string(forKey: Keys.courseBizTypeId) ?? "23" }
         set { defaults.set(newValue, forKey: Keys.courseBizTypeId) }
     }
 
@@ -245,6 +250,16 @@ public class SettingsManager {
     public var lastNotifiedLowElectricityDate: String? {
         get { defaults.string(forKey: Keys.lastNotifiedLowElectricityDate) }
         set { defaults.set(newValue, forKey: Keys.lastNotifiedLowElectricityDate) }
+    }
+
+    public var skippedUpdateVersion: String? {
+        get { defaults.string(forKey: Keys.skippedUpdateVersion) }
+        set { defaults.set(newValue, forKey: Keys.skippedUpdateVersion) }
+    }
+
+    public var autoCheckUpdate: Bool {
+        get { defaults.object(forKey: Keys.autoCheckUpdate) == nil ? true : defaults.bool(forKey: Keys.autoCheckUpdate) }
+        set { defaults.set(newValue, forKey: Keys.autoCheckUpdate) }
     }
 }
 

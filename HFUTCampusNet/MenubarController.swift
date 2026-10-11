@@ -17,6 +17,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var toggleWidgetMenuItem: NSMenuItem!
     private var courseParentMenuItem: NSMenuItem!
     private var dormElectricityMenuItem: NSMenuItem!
+    private var checkUpdateMenuItem: NSMenuItem!
     private var quotaMenuCardView: CampusQuotaCardView?
 
     private var currentData: CampusNetworkData = CampusNetworkData()
@@ -44,6 +45,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             self,
             selector: #selector(onDormElectricityUpdated),
             name: .dormElectricityDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onUpdateCheckFinished),
+            name: .updateCheckDidFinish,
             object: nil
         )
     }
@@ -215,6 +222,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         let portalSettingsItem = NSMenuItem(title: "⚙️ 偏好设置...", action: #selector(openPortalSettingsAction), keyEquivalent: ",")
         portalSettingsItem.target = self
         menu.addItem(portalSettingsItem)
+
+        checkUpdateMenuItem = NSMenuItem(
+            title: "🔄 检查软件更新 (v\(UpdateChecker.shared.currentVersion))...",
+            action: #selector(checkUpdateAction),
+            keyEquivalent: ""
+        )
+        checkUpdateMenuItem.target = self
+        menu.addItem(checkUpdateMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -596,6 +611,27 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                     }
                 }
             }
+        }
+    }
+
+    @objc private func checkUpdateAction() {
+        checkUpdateMenuItem?.title = "🔄 正在检查更新..."
+        UpdateChecker.shared.checkForUpdates(manual: true) { [weak self] _ in
+            self?.refreshUpdateMenuItemTitle()
+        }
+    }
+
+    @objc private func onUpdateCheckFinished() {
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshUpdateMenuItemTitle()
+        }
+    }
+
+    private func refreshUpdateMenuItemTitle() {
+        if let release = UpdateChecker.shared.availableUpdate {
+            checkUpdateMenuItem?.title = "🔴 发现新版本 \(release.tagName) (点击下载更新)..."
+        } else {
+            checkUpdateMenuItem?.title = "🔄 检查软件更新 (v\(UpdateChecker.shared.currentVersion))..."
         }
     }
 
