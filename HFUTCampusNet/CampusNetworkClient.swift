@@ -273,7 +273,120 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             availableFlowStr: result.availableFlow,
             balanceStr: result.balance
         )
+        self.fetchOnlineDevices()
         return true
+    }
+
+    /// 获取当前自服务平台在线设备列表 (dashboard/getOnlineList)
+    public func fetchOnlineDevices(completion: (() -> Void)? = nil) {
+        guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
+            completion?()
+            return
+        }
+        let cleanCookie = cookie.contains("JSESSIONID=") ? cookie : "JSESSIONID=\(cookie)"
+        let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/dashboard/getOnlineList")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue(cleanCookie, forHTTPHeaderField: "Cookie")
+        req.setValue(dashboardURL.absoluteString, forHTTPHeaderField: "Referer")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        session.dataTask(with: req) { [weak self] data, _, error in
+            guard let self = self else {
+                completion?()
+                return
+            }
+            guard error == nil, let data = data,
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                completion?()
+                return
+            }
+
+            var sessions: [OnlineDeviceSession] = []
+            for item in arr {
+                let sid = "\(item["sessionId"] ?? "")"
+                guard !sid.isEmpty else { continue }
+                let ip = (item["ip"] as? String) ?? "--"
+                let mac = (item["mac"] as? String) ?? ""
+                let loginTime = (item["loginTime"] as? String) ?? "--"
+                let useTimeSec = Int("\(item["useTime"] ?? "0")") ?? 0
+                let useMinutes = max(0, Int(round(Double(useTimeSec) / 60.0)))
+                let downKB = Double("\(item["downFlow"] ?? "0")") ?? 0
+                let upKB = Double("\(item["upFlow"] ?? "0")") ?? 0
+                let usedMB = (downKB + upKB) / 1024.0
+                var termType = (item["terminalType"] as? String) ?? "未知终端"
+                if termType.hasPrefix("#") {
+                    termType = String(termType.dropFirst())
+                }
+                if termType.isEmpty { termType = "在线终端" }
+                let hostName = (item["hostName"] as? String) ?? ""
+
+                sessions.append(OnlineDeviceSession(
+                    sessionId: sid,
+                    ip: ip,
+                    mac: mac,
+                    loginTime: loginTime,
+                    useMinutes: useMinutes,
+                    usedFlowMB: usedMB,
+                    terminalType: termType,
+                    hostName: hostName
+                ))
+            }
+
+            DispatchQueue.main.async {
+                var updated = self.latestData
+                updated.onlineDevices = sessions
+                self.latestData = updated
+                self.delegate?.clientDidUpdate(data: updated)
+                completion?()
+            }
+        }.resume()
+    }
+
+    /// 强制注销指定在线设备 (dashboard/tooffline?sessionid=xxx)
+    public func kickOnlineDevice(sessionId: String, completion: @escaping (Bool, String) -> Void) {
+        guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
+            completion(false, "自服务会话未就绪，请稍后重试")
+            return
+        }
+        let cleanCookie = cookie.contains("JSESSIONID=") ? cookie : "JSESSIONID=\(cookie)"
+        let encodedSid = sessionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionId
+        let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/dashboard/tooffline?sessionid=\(encodedSid)")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue(cleanCookie, forHTTPHeaderField: "Cookie")
+        req.setValue(dashboardURL.absoluteString, forHTTPHeaderField: "Referer")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        session.dataTask(with: req) { [weak self] data, _, error in
+            guard let self = self else { return }
+            if let error = error {
+                DispatchQueue.main.async {
+                    completion(false, "网络异常: \(error.localizedDescription)")
+                }
+                return
+            }
+            var ok = false
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let success = json["success"] as? Bool {
+                ok = success
+            }
+
+            DispatchQueue.main.async {
+                if ok {
+                    var updated = self.latestData
+                    updated.onlineDevices.removeAll { $0.sessionId == sessionId }
+                    self.latestData = updated
+                    self.delegate?.clientDidUpdate(data: updated)
+                    self.fetchOnlineDevices()
+                    self.fetchData()
+                    completion(true, "设备已成功强制下线！")
+                } else {
+                    completion(false, "注销失败，该设备可能已下线或会话已过期")
+                }
+            }
+        }.resume()
     }
 
     /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取可用流量与消费保护

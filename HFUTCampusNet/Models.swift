@@ -1,5 +1,55 @@
 import Foundation
 
+public struct OnlineDeviceSession: Codable {
+    public var sessionId: String
+    public var ip: String
+    public var mac: String
+    public var loginTime: String
+    public var useMinutes: Int
+    public var usedFlowMB: Double
+    public var terminalType: String
+    public var hostName: String
+
+    public init(
+        sessionId: String,
+        ip: String,
+        mac: String,
+        loginTime: String,
+        useMinutes: Int,
+        usedFlowMB: Double,
+        terminalType: String,
+        hostName: String
+    ) {
+        self.sessionId = sessionId
+        self.ip = ip
+        self.mac = mac
+        self.loginTime = loginTime
+        self.useMinutes = useMinutes
+        self.usedFlowMB = usedFlowMB
+        self.terminalType = terminalType
+        self.hostName = hostName
+    }
+
+    public var formattedMAC: String {
+        let raw = mac.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: ":", with: "")
+        guard raw.count == 12 else { return mac }
+        var parts: [String] = []
+        var idx = raw.startIndex
+        for _ in 0..<6 {
+            let next = raw.index(idx, offsetBy: 2)
+            parts.append(String(raw[idx..<next]))
+            idx = next
+        }
+        return parts.joined(separator: "-")
+    }
+
+    public var displayTitle: String {
+        let icon = terminalType.contains("移动") ? "📱" : "💻"
+        let hostPart = hostName.isEmpty ? "" : " (\(hostName))"
+        return "\(icon) \(terminalType)\(hostPart) · \(ip)  [\(String(format: "%.1f M", usedFlowMB)) · \(useMinutes)分钟]"
+    }
+}
+
 public struct CampusNetworkData: Codable {
     public var usedFlow: String = "-- M"          // 已用流量，例如 "1191 M"
     public var availableFlow: String = "-- M"     // 可用流量，例如 "99809 M"
@@ -8,6 +58,7 @@ public struct CampusNetworkData: Codable {
     public var lastUpdated: Date? = nil
     public var errorMessage: String? = nil
     public var isLoggedIn: Bool = false
+    public var onlineDevices: [OnlineDeviceSession] = []
 
     public init(
         usedFlow: String = "-- M",
@@ -16,7 +67,8 @@ public struct CampusNetworkData: Codable {
         balance: String = "-- 元",
         lastUpdated: Date? = nil,
         errorMessage: String? = nil,
-        isLoggedIn: Bool = false
+        isLoggedIn: Bool = false,
+        onlineDevices: [OnlineDeviceSession] = []
     ) {
         self.usedFlow = usedFlow
         self.availableFlow = availableFlow
@@ -25,6 +77,7 @@ public struct CampusNetworkData: Codable {
         self.lastUpdated = lastUpdated
         self.errorMessage = errorMessage
         self.isLoggedIn = isLoggedIn
+        self.onlineDevices = onlineDevices
     }
 
     /// 提取可用流量的纯数值（转为 MB）

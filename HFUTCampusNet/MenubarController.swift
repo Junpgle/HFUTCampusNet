@@ -99,7 +99,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         oneClickLoginItem.target = self
         netSubmenu.addItem(oneClickLoginItem)
 
-        let logoutPortalItem = NSMenuItem(title: "🔌 注销校园网当前设备", action: #selector(logoutPortalAction), keyEquivalent: "")
+        let logoutPortalItem = NSMenuItem(title: "🔌 注销本机网关认证", action: #selector(logoutPortalAction), keyEquivalent: "")
         logoutPortalItem.target = self
         netSubmenu.addItem(logoutPortalItem)
 
@@ -247,11 +247,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         renderTitle()
         updateTopStatusLine()
 
+        let devCount = data.onlineDevices.count
+        let devSuffix = devCount > 0 ? " (\(devCount)台在线)" : ""
+
         if data.availableFlow != "-- M" {
-            networkSummaryMenuItem?.title = "📶 校园网: 可用 \(data.formattedAvailable) · 余额 \(data.balance)"
+            networkSummaryMenuItem?.title = "📶 校园网: 可用 \(data.formattedAvailable) · 余额 \(data.balance)\(devSuffix)"
             availFlowMenuItem.title = "📶 可用流量: \(data.availableFlow) (\(data.formattedAvailable))"
         } else {
-            networkSummaryMenuItem?.title = "📶 校园网: 已用 \(data.formattedUsed) · 余额 \(data.balance)"
+            networkSummaryMenuItem?.title = "📶 校园网: 已用 \(data.formattedUsed) · 余额 \(data.balance)\(devSuffix)"
             availFlowMenuItem.title = "📶 可用流量: 点击自服务授权查看..."
         }
         
@@ -265,7 +268,69 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             updateTimeMenuItem.title = "⏱️ 上次更新: \(formatter.string(from: time))"
         }
 
+        rebuildOnlineDevicesSection()
         updateWidgetMenuState()
+    }
+
+    private func rebuildOnlineDevicesSection() {
+        guard let netSubmenu = networkSummaryMenuItem?.submenu else { return }
+        // 移除旧的动态在线设备项 (tag == 9901)
+        for item in netSubmenu.items.reversed() where item.tag == 9901 {
+            netSubmenu.removeItem(item)
+        }
+
+        // 在 updateTimeMenuItem 之后插入在线设备列表
+        let baseIdx = netSubmenu.index(of: updateTimeMenuItem)
+        guard baseIdx >= 0 else { return }
+        var insertIdx = baseIdx + 1
+
+        let sep = NSMenuItem.separator()
+        sep.tag = 9901
+        netSubmenu.insertItem(sep, at: insertIdx)
+        insertIdx += 1
+
+        let devices = currentData.onlineDevices
+        let headerTitle = devices.isEmpty ? "📱 在线设备: 暂无或正在加载..." : "📱 当前在线设备 (\(devices.count) 台 · 点击即可强制注销):"
+        let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
+        headerItem.tag = 9901
+        netSubmenu.insertItem(headerItem, at: insertIdx)
+        insertIdx += 1
+
+        for dev in devices {
+            let devItem = NSMenuItem(
+                title: "\(dev.displayTitle)  — 🔌 点击注销",
+                action: #selector(kickDeviceAction(_:)),
+                keyEquivalent: ""
+            )
+            devItem.target = self
+            devItem.representedObject = dev.sessionId
+            devItem.toolTip = "上线时间: \(dev.loginTime) | MAC: \(dev.formattedMAC) | 会话ID: \(dev.sessionId)"
+            devItem.tag = 9901
+            netSubmenu.insertItem(devItem, at: insertIdx)
+            insertIdx += 1
+
+            let detailItem = NSMenuItem(
+                title: "    ↳ 上线: \(dev.loginTime)  ·  MAC: \(dev.formattedMAC)",
+                action: nil,
+                keyEquivalent: ""
+            )
+            detailItem.isEnabled = false
+            detailItem.tag = 9901
+            netSubmenu.insertItem(detailItem, at: insertIdx)
+            insertIdx += 1
+        }
+    }
+
+    @objc private func kickDeviceAction(_ sender: NSMenuItem) {
+        guard let sessionId = sender.representedObject as? String else { return }
+        CampusNetworkClient.shared.kickOnlineDevice(sessionId: sessionId) { success, msg in
+            let alert = NSAlert()
+            alert.messageText = success ? "设备强制注销成功" : "设备注销失败"
+            alert.informativeText = msg
+            alert.alertStyle = success ? .informational : .warning
+            alert.runModal()
+        }
     }
 
     private func renderTitle() {
@@ -306,6 +371,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         updateWidgetMenuState()
         updateCourseSubmenu()
         updateDormElectricityMenu()
+        CampusNetworkClient.shared.fetchOnlineDevices()
     }
 
     private func updateWidgetMenuState() {
