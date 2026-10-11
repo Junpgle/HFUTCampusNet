@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import WebKit
 
-public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate {
+public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     public static let shared = UnifiedLoginWebViewController()
 
     private var webView: WKWebView!
@@ -52,7 +52,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         topTitle.font = NSFont.systemFont(ofSize: 13, weight: .bold)
         topBar.addSubview(topTitle)
 
-        let topSubtitle = NSTextField(labelWithString: "登录信息门户后，本应用将自动无缝刷新课表排课、宿舍电费、校园网流量及历史统计！")
+        let topSubtitle = NSTextField(labelWithString: "登录信息门户后，本应用将自动记住账号密码并无缝刷新课表排课、宿舍电费、校园网流量及历史统计！")
         topSubtitle.frame = NSRect(x: 48, y: 5, width: 650, height: 16)
         topSubtitle.font = NSFont.systemFont(ofSize: 11)
         topSubtitle.textColor = .secondaryLabelColor
@@ -69,6 +69,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.userContentController.add(self, name: "casCredentialsHandler")
 
         let webViewHeight: CGFloat = 720 - 46 - 86
         webView = WKWebView(frame: NSRect(x: 0, y: 86, width: 1000, height: webViewHeight), configuration: config)
@@ -197,21 +198,78 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         progressIndicator.startAnimation(nil)
     }
 
+    public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "casCredentialsHandler",
+              let dict = message.body as? [String: String] else { return }
+        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            SettingsManager.shared.portalUsername = u
+        }
+        if let p = dict["password"], !p.isEmpty {
+            SettingsManager.shared.casPassword = p
+        }
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
         guard let url = webView.url else { return }
         let urlStr = url.absoluteString
 
-        // 尝试自动填充保存的学号
-        let savedU = SettingsManager.shared.portalUsername
-        if !savedU.isEmpty && urlStr.contains("cas.hfut.edu.cn/cas/login") {
+        // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
+        if urlStr.contains("cas.hfut.edu.cn") || urlStr.contains("/login") {
+            let savedU = SettingsManager.shared.portalUsername
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let savedP = SettingsManager.shared.casPassword
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+
             let js = """
-            if (document.getElementById('username') && !document.getElementById('username').value) {
-                document.getElementById('username').value = '\(savedU)';
-            }
-            if (document.getElementById('u') && !document.getElementById('u').value) {
-                document.getElementById('u').value = '\(savedU)';
-            }
+            (function() {
+                var uInput = document.getElementById('username') || document.getElementById('u') || document.querySelector('input[name="username"]');
+                var pInput = document.getElementById('pwd') || document.querySelector('input.password') || document.querySelector('input[type="password"]');
+
+                if (uInput && !uInput.value && '\(savedU)' !== '') {
+                    uInput.value = '\(savedU)';
+                    uInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    uInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                if (pInput && !pInput.value && '\(savedP)' !== '') {
+                    pInput.value = '\(savedP)';
+                    pInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    pInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+
+                function reportCredentials() {
+                    var u = uInput ? uInput.value.trim() : '';
+                    var p = pInput ? pInput.value : '';
+                    if ((u !== '' || p !== '') && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.casCredentialsHandler) {
+                        window.webkit.messageHandlers.casCredentialsHandler.postMessage({ username: u, password: p });
+                    }
+                }
+
+                if (uInput && !uInput._hfutBound) {
+                    uInput._hfutBound = true;
+                    uInput.addEventListener('input', reportCredentials);
+                    uInput.addEventListener('change', reportCredentials);
+                    uInput.addEventListener('blur', reportCredentials);
+                }
+                if (pInput && !pInput._hfutBound) {
+                    pInput._hfutBound = true;
+                    pInput.addEventListener('input', reportCredentials);
+                    pInput.addEventListener('change', reportCredentials);
+                    pInput.addEventListener('blur', reportCredentials);
+                }
+                var btn = document.getElementById('sb2') || document.querySelector('.button-submit');
+                if (btn && !btn._hfutBound) {
+                    btn._hfutBound = true;
+                    btn.addEventListener('click', reportCredentials, true);
+                }
+                var fm = document.getElementById('fm1') || document.querySelector('form');
+                if (fm && !fm._hfutBound) {
+                    fm._hfutBound = true;
+                    fm.addEventListener('submit', reportCredentials, true);
+                }
+            })();
             """
             webView.evaluateJavaScript(js, completionHandler: nil)
         }

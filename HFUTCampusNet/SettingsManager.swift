@@ -33,6 +33,7 @@ public class SettingsManager {
         static let dormRoomName = "campus_dorm_room_name"
         static let electricityLowWarningThreshold = "campus_electricity_low_threshold"
         static let lastNotifiedLowElectricityDate = "campus_last_notified_low_electricity_date"
+        static let casPassword = "campus_cas_password"
     }
 
     private init() {
@@ -130,8 +131,26 @@ public class SettingsManager {
     }
 
     public var portalPassword: String {
-        get { defaults.string(forKey: Keys.portalPassword) ?? "" }
+        get {
+            let p = defaults.string(forKey: Keys.portalPassword) ?? ""
+            if !p.isEmpty { return p }
+            return defaults.string(forKey: Keys.casPassword) ?? ""
+        }
         set { defaults.set(newValue, forKey: Keys.portalPassword) }
+    }
+
+    public var casPassword: String {
+        get {
+            let p = defaults.string(forKey: Keys.casPassword) ?? ""
+            if !p.isEmpty { return p }
+            return defaults.string(forKey: Keys.portalPassword) ?? ""
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.casPassword)
+            if (defaults.string(forKey: Keys.portalPassword) ?? "").isEmpty && !newValue.isEmpty {
+                defaults.set(newValue, forKey: Keys.portalPassword)
+            }
+        }
     }
 
     public var autoLoginPortal: Bool {

@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-public class SettingsWindowController: NSWindowController {
+public class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     public static let shared = SettingsWindowController()
 
     // 校园网网关控件
@@ -34,6 +34,7 @@ public class SettingsWindowController: NSWindowController {
         window.title = "合肥工业大学助手 - 综合服务配置"
         window.center()
         super.init(window: window)
+        window.delegate = self
         setupUI()
     }
 
@@ -107,6 +108,7 @@ public class SettingsWindowController: NSWindowController {
         dormBuildingField = NSTextField(frame: NSRect(x: 280, y: curY, width: 60, height: 22))
         dormBuildingField.placeholderString = "例如 7"
         dormBuildingField.stringValue = SettingsManager.shared.dormBuilding
+        dormBuildingField.delegate = self
         contentView.addSubview(dormBuildingField)
 
         let roomLabel = NSTextField(labelWithString: "房间：")
@@ -116,6 +118,7 @@ public class SettingsWindowController: NSWindowController {
         dormRoomField = NSTextField(frame: NSRect(x: 395, y: curY, width: 85, height: 22))
         dormRoomField.placeholderString = "例如 315"
         dormRoomField.stringValue = SettingsManager.shared.dormRoom
+        dormRoomField.delegate = self
         contentView.addSubview(dormRoomField)
         curY -= 30
 
@@ -147,6 +150,7 @@ public class SettingsWindowController: NSWindowController {
 
         dormThresholdField = NSTextField(frame: NSRect(x: 300, y: curY, width: 55, height: 22))
         dormThresholdField.stringValue = String(format: "%.0f", SettingsManager.shared.electricityLowWarningThreshold)
+        dormThresholdField.delegate = self
         contentView.addSubview(dormThresholdField)
 
         let yuanLabel = NSTextField(labelWithString: "元")
@@ -173,7 +177,7 @@ public class SettingsWindowController: NSWindowController {
         curY -= 22
 
         // 2. 校园网网关认证部分
-        let title = NSTextField(labelWithString: "📶 校园网网关认证 (http://172.18.3.3)")
+        let title = NSTextField(labelWithString: "📶 校园网网关与信息门户账号 (自动记忆与填充)")
         title.frame = NSRect(x: 24, y: curY, width: 440, height: 20)
         title.font = NSFont.systemFont(ofSize: 13, weight: .bold)
         contentView.addSubview(title)
@@ -186,16 +190,18 @@ public class SettingsWindowController: NSWindowController {
         usernameField = NSTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
         usernameField.placeholderString = "例如 2024xxxxxx"
         usernameField.stringValue = SettingsManager.shared.portalUsername
+        usernameField.delegate = self
         contentView.addSubview(usernameField)
         curY -= 28
 
-        let passLabel = NSTextField(labelWithString: "校园网密码：")
+        let passLabel = NSTextField(labelWithString: "登录密码：")
         passLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
         contentView.addSubview(passLabel)
 
         passwordField = NSSecureTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
-        passwordField.placeholderString = "请输入校园网认证密码"
+        passwordField.placeholderString = "输入后将自动保存并用于网页自动填充"
         passwordField.stringValue = SettingsManager.shared.portalPassword
+        passwordField.delegate = self
         contentView.addSubview(passwordField)
         curY -= 26
 
@@ -237,6 +243,7 @@ public class SettingsWindowController: NSWindowController {
         courseStudentIdField = NSTextField(frame: NSRect(x: 90, y: curY, width: 140, height: 22))
         courseStudentIdField.placeholderString = "例如 178506"
         courseStudentIdField.stringValue = SettingsManager.shared.courseStudentId
+        courseStudentIdField.delegate = self
         contentView.addSubview(courseStudentIdField)
 
         let semLabel = NSTextField(labelWithString: "学期代码：")
@@ -246,6 +253,7 @@ public class SettingsWindowController: NSWindowController {
         courseSemesterIdField = NSTextField(frame: NSRect(x: 320, y: curY, width: 160, height: 22))
         courseSemesterIdField.placeholderString = "例如 354"
         courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
+        courseSemesterIdField.delegate = self
         contentView.addSubview(courseSemesterIdField)
         curY -= 26
 
@@ -516,5 +524,13 @@ public class SettingsWindowController: NSWindowController {
         if let thresh = Double(dormThresholdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), thresh > 0 {
             SettingsManager.shared.electricityLowWarningThreshold = thresh
         }
+    }
+
+    public func windowWillClose(_ notification: Notification) {
+        saveCredentials()
+    }
+
+    public func controlTextDidChange(_ obj: Notification) {
+        saveCredentials()
     }
 }

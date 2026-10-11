@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import WebKit
 
-public class CourseLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate {
+public class CourseLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     public static let shared = CourseLoginWebViewController()
 
     private var webView: WKWebView!
@@ -35,6 +35,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.userContentController.add(self, name: "casCredentialsHandler")
 
         webView = WKWebView(frame: NSRect(x: 0, y: 52, width: 960, height: 628), configuration: config)
         webView.navigationDelegate = self
@@ -121,21 +122,78 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         statusLabel.stringValue = "正在加载页面..."
     }
 
+    public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "casCredentialsHandler",
+              let dict = message.body as? [String: String] else { return }
+        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            SettingsManager.shared.portalUsername = u
+        }
+        if let p = dict["password"], !p.isEmpty {
+            SettingsManager.shared.casPassword = p
+        }
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
         guard let currentURL = webView.url else { return }
         let urlStr = currentURL.absoluteString
 
-        // 尝试自动填充学号
-        let savedU = SettingsManager.shared.portalUsername
-        if !savedU.isEmpty && (urlStr.contains("/login") || urlStr.contains("cas.hfut.edu.cn")) {
+        // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
+        if urlStr.contains("/login") || urlStr.contains("cas.hfut.edu.cn") {
+            let savedU = SettingsManager.shared.portalUsername
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let savedP = SettingsManager.shared.casPassword
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+
             let js = """
-            if (document.getElementById('u') && !document.getElementById('u').value) {
-                document.getElementById('u').value = '\(savedU)';
-            }
-            if (document.getElementById('username') && !document.getElementById('username').value) {
-                document.getElementById('username').value = '\(savedU)';
-            }
+            (function() {
+                var uInput = document.getElementById('username') || document.getElementById('u') || document.querySelector('input[name="username"]');
+                var pInput = document.getElementById('pwd') || document.querySelector('input.password') || document.querySelector('input[type="password"]');
+
+                if (uInput && !uInput.value && '\(savedU)' !== '') {
+                    uInput.value = '\(savedU)';
+                    uInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    uInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                if (pInput && !pInput.value && '\(savedP)' !== '') {
+                    pInput.value = '\(savedP)';
+                    pInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    pInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+
+                function reportCredentials() {
+                    var u = uInput ? uInput.value.trim() : '';
+                    var p = pInput ? pInput.value : '';
+                    if ((u !== '' || p !== '') && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.casCredentialsHandler) {
+                        window.webkit.messageHandlers.casCredentialsHandler.postMessage({ username: u, password: p });
+                    }
+                }
+
+                if (uInput && !uInput._hfutBound) {
+                    uInput._hfutBound = true;
+                    uInput.addEventListener('input', reportCredentials);
+                    uInput.addEventListener('change', reportCredentials);
+                    uInput.addEventListener('blur', reportCredentials);
+                }
+                if (pInput && !pInput._hfutBound) {
+                    pInput._hfutBound = true;
+                    pInput.addEventListener('input', reportCredentials);
+                    pInput.addEventListener('change', reportCredentials);
+                    pInput.addEventListener('blur', reportCredentials);
+                }
+                var btn = document.getElementById('sb2') || document.querySelector('.button-submit');
+                if (btn && !btn._hfutBound) {
+                    btn._hfutBound = true;
+                    btn.addEventListener('click', reportCredentials, true);
+                }
+                var fm = document.getElementById('fm1') || document.querySelector('form');
+                if (fm && !fm._hfutBound) {
+                    fm._hfutBound = true;
+                    fm.addEventListener('submit', reportCredentials, true);
+                }
+            })();
             """
             webView.evaluateJavaScript(js, completionHandler: nil)
         }
@@ -144,7 +202,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         if urlStr.contains("/for-std/course-table/info/") || urlStr.contains("/for-std/course-table") {
             triggerAutoExtraction()
         } else if urlStr.contains("/login") || urlStr.contains("cas.hfut.edu.cn") {
-            statusLabel.stringValue = "请在上方网页输入密码并登录..."
+            statusLabel.stringValue = "已自动填充已存账号密码（首次登录输入后将自动保存）..."
             statusLabel.textColor = .secondaryLabelColor
         } else {
             statusLabel.stringValue = "已加载，如已登录可点击右下角「从当前页读取课表」"
