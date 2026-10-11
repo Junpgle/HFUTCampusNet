@@ -149,8 +149,15 @@ public class CampusHistoryManager {
                 if let b = balRMB { record.balanceRMB = b }
 
                 // 计算今日新增消耗
+                let todayOnlineMB = CampusNetworkClient.shared.latestData.onlineDevices
+                    .filter { $0.loginTime.hasPrefix(today) }
+                    .reduce(0.0) { $0 + $1.usedFlowMB }
+
                 if totalMB >= record.startOfDayUsedMB {
-                    record.dailyDeltaMB = totalMB - record.startOfDayUsedMB
+                    record.dailyDeltaMB = max(totalMB - record.startOfDayUsedMB, todayOnlineMB)
+                    if record.dailyDeltaMB == todayOnlineMB && totalMB >= todayOnlineMB {
+                        record.startOfDayUsedMB = totalMB - todayOnlineMB
+                    }
                 } else {
                     // 月初重置或计数器归零
                     record.startOfDayUsedMB = 0
@@ -164,11 +171,16 @@ public class CampusHistoryManager {
                 self.store.flowRecords[idx] = record
             } else {
                 // 今日首次记录
+                let todayOnlineMB = CampusNetworkClient.shared.latestData.onlineDevices
+                    .filter { $0.loginTime.hasPrefix(today) }
+                    .reduce(0.0) { $0 + $1.usedFlowMB }
+                let startMB = max(0.0, totalMB - todayOnlineMB)
+
                 let newRecord = DailyFlowRecord(
                     dateString: today,
                     totalUsedMB: totalMB,
-                    startOfDayUsedMB: totalMB,
-                    dailyDeltaMB: 0.0,
+                    startOfDayUsedMB: startMB,
+                    dailyDeltaMB: totalMB - startMB,
                     availableMB: availMB,
                     balanceRMB: balRMB,
                     peakSpeedMBs: currentSpeedMBs ?? 0.0,
@@ -260,7 +272,50 @@ public class CampusHistoryManager {
     /// 今日新增流量消耗 (MB)
     public var todayFlowDeltaMB: Double {
         let today = todayString()
-        return store.flowRecords.first(where: { $0.dateString == today })?.dailyDeltaMB ?? 0.0
+        let recorded = store.flowRecords.first(where: { $0.dateString == today })?.dailyDeltaMB ?? 0.0
+        let onlineToday = CampusNetworkClient.shared.latestData.onlineDevices
+            .filter { $0.loginTime.hasPrefix(today) }
+            .reduce(0.0) { $0 + $1.usedFlowMB }
+        return max(recorded, onlineToday)
+    }
+
+    /// 距离次日 00:00 单日限额重置倒计时文案
+    public var dailyResetCountdownString: String {
+        let cal = Calendar.current
+        let now = Date()
+        if let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)) {
+            let diff = Int(tomorrow.timeIntervalSince(now))
+            let hours = max(0, diff / 3600)
+            let mins = max(0, (diff % 3600) / 60)
+            return "\(hours) 小时 \(mins) 分钟后重置"
+        }
+        return "每日 00:00 重置"
+    }
+
+    /// 距离下月 1 日 00:00 月度限额重置倒计时文案
+    public var monthlyResetCountdownString: String {
+        let cal = Calendar.current
+        let now = Date()
+        var comps = cal.dateComponents([.year, .month], from: now)
+        if let m = comps.month, let y = comps.year {
+            if m == 12 {
+                comps.year = y + 1
+                comps.month = 1
+            } else {
+                comps.month = m + 1
+            }
+            comps.day = 1
+            comps.hour = 0
+            comps.minute = 0
+            comps.second = 0
+            if let nextMonthStart = cal.date(from: comps) {
+                let diff = Int(nextMonthStart.timeIntervalSince(now))
+                let days = max(0, diff / 86400)
+                let hours = max(0, (diff % 86400) / 3600)
+                return "\(days) 天 \(hours) 小时后重置"
+            }
+        }
+        return "每月 1 日重置"
     }
 
     /// 近 7 天流量总消耗 (MB)

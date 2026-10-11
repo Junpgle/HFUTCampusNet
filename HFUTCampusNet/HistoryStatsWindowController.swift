@@ -5,6 +5,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
     public static let shared = HistoryStatsWindowController()
 
     private var segmentedControl: NSSegmentedControl!
+    private var quotaCardView: CampusQuotaCardView!
     private var chartView: HistoryBarChartView!
     private var tableView: NSTableView!
     private var cardViews: [NSView] = []
@@ -17,7 +18,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 880, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 880, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -52,7 +53,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         window.contentView = contentView
 
         // 顶部控制条
-        let topBar = NSView(frame: NSRect(x: 0, y: 640 - 54, width: 880, height: 54))
+        let topBar = NSView(frame: NSRect(x: 0, y: 780 - 54, width: 880, height: 54))
         topBar.autoresizingMask = [.width, .minYMargin]
         topBar.wantsLayer = true
         topBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -83,7 +84,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         let cardH: CGFloat = 72
         let gap: CGFloat = 13
         let startX: CGFloat = 20
-        let cardY: CGFloat = 640 - 54 - 12 - cardH
+        let cardY: CGFloat = 780 - 54 - 12 - cardH
 
         cardViews.removeAll()
         cardValueLabels.removeAll()
@@ -122,9 +123,15 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             cardSubLabels.append(subLabel)
         }
 
+        // 套餐限额进度条卡片 (单日 30GB / 月度 200GB免费·400GB上限 / 3终端同时在线)
+        let quotaY: CGFloat = cardY - 148
+        quotaCardView = CampusQuotaCardView(frame: NSRect(x: 20, y: quotaY, width: 840, height: 138))
+        quotaCardView.autoresizingMask = [.width, .minYMargin]
+        contentView.addSubview(quotaCardView)
+
         // 中间图表区域
-        let chartY: CGFloat = cardY - 210
-        chartView = HistoryBarChartView(frame: NSRect(x: 20, y: chartY, width: 840, height: 198))
+        let chartY: CGFloat = quotaY - 196
+        chartView = HistoryBarChartView(frame: NSRect(x: 20, y: chartY, width: 840, height: 184))
         chartView.autoresizingMask = [.width, .minYMargin]
         contentView.addSubview(chartView)
 
@@ -207,6 +214,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
             self.currentElectricityRecords = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 90).reversed()
 
             self.updateCards()
+            self.quotaCardView.refresh(mode: self.currentMode)
             self.updateChart()
             self.setupTableColumns()
             self.tableView.reloadData()
@@ -487,5 +495,185 @@ public class HistoryBarChartView: NSView {
             let dSize = item.label.size(withAttributes: dateAttrs)
             item.label.draw(at: NSPoint(x: centerX - dSize.width / 2, y: 10), withAttributes: dateAttrs)
         }
+    }
+}
+
+/// 套餐限额进度条卡片（仿照单日限额 30GB + 每月限额 200GB免费/400GB上限 + 3终端同时在线）
+public class CampusQuotaCardView: NSView {
+    private var mode: Int = 0
+    public var isCompactMenuMode: Bool = false
+
+    public func refresh(mode: Int = 0) {
+        self.mode = mode
+        self.needsDisplay = true
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        // 外框圆角白底/自适应卡片
+        let bgPath = NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12)
+        NSColor.controlBackgroundColor.withAlphaComponent(isCompactMenuMode ? 0.85 : 0.65).setFill()
+        bgPath.fill()
+        NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
+        bgPath.lineWidth = 0.8
+        bgPath.stroke()
+
+        let padX: CGFloat = isCompactMenuMode ? 14 : 18
+
+        // 顶部说明标题
+        if !isCompactMenuMode {
+            let headerStr = (mode == 0)
+                ? "套餐限额  ·  访问校内资源免费；校外资源日限 30GB、月限 400GB（每月前 200GB 免费，超出 0.5元/GB）；最多 3 个终端同时在线"
+                : "宿舍用电限额与续航预估  ·  基于近期日均用电量动态测算剩余电费可用比例"
+            let headerAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+            headerStr.draw(at: NSPoint(x: padX, y: bounds.height - 24), withAttributes: headerAttrs)
+        }
+
+        if mode == 0 {
+            // 1. 单日限额 (30 GB = 30720 MB)
+            let dailyLimitMB = 30.0 * 1024.0
+            let dailyUsedMB = max(0.0, CampusHistoryManager.shared.todayFlowDeltaMB)
+            let dailyRemainRatio = max(0.0, min(1.0, (dailyLimitMB - dailyUsedMB) / dailyLimitMB))
+            let dailyRemainPct = Int(round(dailyRemainRatio * 100))
+            let dailyUsedGBStr = String(format: "%.2f GB", dailyUsedMB / 1024.0)
+            let dailySubLeft = isCompactMenuMode
+                ? "\(CampusHistoryManager.shared.dailyResetCountdownString) · 已用 \(dailyUsedGBStr)"
+                : "\(CampusHistoryManager.shared.dailyResetCountdownString)  ·  已用 \(dailyUsedGBStr) / 30 GB"
+            let dailySubRight = "剩余 \(dailyRemainPct)%"
+
+            // 2. 每月限额 (前 200 GB 免费，月总限额 400 GB)
+            let netData = CampusNetworkClient.shared.latestData
+            let monthlyUsedMB = max(0.0, netData.usedMB ?? 0.0)
+            let freeLimitMB = 200.0 * 1024.0
+            let maxLimitMB = 400.0 * 1024.0
+
+            let monthlyTitle: String
+            let monthlySubLeft: String
+            let monthlySubRight: String
+            let monthlyRemainRatio: Double
+
+            let onlineCount = netData.onlineDevices.count
+            let onlineBadge = isCompactMenuMode ? " · \(onlineCount)/3台在线" : "  (当前在线 \(onlineCount)/3 台终端)"
+
+            if monthlyUsedMB <= freeLimitMB {
+                monthlyRemainRatio = max(0.0, min(1.0, (freeLimitMB - monthlyUsedMB) / freeLimitMB))
+                let pct = Int(round(monthlyRemainRatio * 100))
+                let usedGB = String(format: "%.2f GB", monthlyUsedMB / 1024.0)
+                monthlyTitle = isCompactMenuMode
+                    ? "每月限额 (200GB免费/400GB\(onlineBadge))"
+                    : "每月免费限额 (200 GB 免费 / 月上限 400 GB)\(onlineBadge)"
+                monthlySubLeft = isCompactMenuMode
+                    ? "\(CampusHistoryManager.shared.monthlyResetCountdownString) · 已用 \(usedGB)"
+                    : "\(CampusHistoryManager.shared.monthlyResetCountdownString)  ·  已用 \(usedGB) / 200 GB 免费额度"
+                monthlySubRight = "剩余 \(pct)%"
+            } else {
+                monthlyRemainRatio = max(0.0, min(1.0, (maxLimitMB - monthlyUsedMB) / maxLimitMB))
+                let pct = Int(round(monthlyRemainRatio * 100))
+                let usedGB = monthlyUsedMB / 1024.0
+                let extraGB = max(0.0, usedGB - 200.0)
+                let extraFee = extraGB * 0.5
+                monthlyTitle = isCompactMenuMode
+                    ? "每月限额 (400GB上限·0.5元/G\(onlineBadge))"
+                    : "每月总限额 (400 GB 上限 · 超出 0.5元/GB)\(onlineBadge)"
+                monthlySubLeft = isCompactMenuMode
+                    ? String(format: "%@ · 已用 %.1fG (超%.1fG)", CampusHistoryManager.shared.monthlyResetCountdownString, usedGB, extraGB)
+                    : String(format: "%@  ·  已用 %.2f GB (超免费 %.1f GB ≈ ¥%.2f)", CampusHistoryManager.shared.monthlyResetCountdownString, usedGB, extraGB, extraFee)
+                monthlySubRight = "剩余 \(pct)%"
+            }
+
+            let row1Y: CGFloat = isCompactMenuMode ? bounds.height - 54 : bounds.height - 68
+            let row2Y: CGFloat = isCompactMenuMode ? 12 : 14
+
+            drawQuotaRow(
+                y: row1Y,
+                padX: padX,
+                title: "单日限额 (30 GB)",
+                subLeft: dailySubLeft,
+                subRight: dailySubRight,
+                remainRatio: dailyRemainRatio
+            )
+
+            drawQuotaRow(
+                y: row2Y,
+                padX: padX,
+                title: monthlyTitle,
+                subLeft: monthlySubLeft,
+                subRight: monthlySubRight,
+                remainRatio: monthlyRemainRatio
+            )
+        } else {
+            // 宿舍电费模式下的进度展示
+            let elec = ElectricityService.shared.latestData
+            let bal = elec?.balanceRMB ?? 0.0
+            let ratio = max(0.0, min(1.0, bal / 200.0))
+            let pct = Int(round(ratio * 100))
+            let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining ?? 0
+
+            drawQuotaRow(
+                y: bounds.height - 68,
+                padX: padX,
+                title: "宿舍电费余额充裕度 (按 200 元满额基准)",
+                subLeft: "当前余额 \(elec?.displayBalance ?? "--")  ·  \(elec?.displayPower ?? "--")",
+                subRight: "充裕度 \(pct)%",
+                remainRatio: ratio
+            )
+
+            let dayRatio = max(0.0, min(1.0, Double(daysLeft) / 60.0))
+            drawQuotaRow(
+                y: 14,
+                padX: padX,
+                title: "预计续航周期 (按 60 天满周期基准)",
+                subLeft: "近 7 天日均消费 \(String(format: "%.2f", CampusHistoryManager.shared.past7DaysElectricityDailyAverageCostRMB)) 元/天",
+                subRight: daysLeft > 0 ? "约余 \(daysLeft) 天" : "测算中",
+                remainRatio: dayRatio
+            )
+        }
+    }
+
+    private func drawQuotaRow(
+        y: CGFloat,
+        padX: CGFloat,
+        title: String,
+        subLeft: String,
+        subRight: String,
+        remainRatio: Double
+    ) {
+        let totalW = bounds.width - padX * 2
+
+        // 标题行
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: isCompactMenuMode ? 12.0 : 13.0, weight: .bold),
+            .foregroundColor: NSColor.labelColor
+        ]
+        title.draw(at: NSPoint(x: padX, y: y + 26), withAttributes: titleAttrs)
+
+        // 副标题左（重置时间）与右（剩余百分比）
+        let subAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: isCompactMenuMode ? 10.5 : 11.5, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        subLeft.draw(at: NSPoint(x: padX, y: y + 10), withAttributes: subAttrs)
+
+        let rightSize = subRight.size(withAttributes: subAttrs)
+        subRight.draw(at: NSPoint(x: padX + totalW - rightSize.width, y: y + 10), withAttributes: subAttrs)
+
+        // 进度条轨道
+        let barH: CGFloat = 6.5
+        let trackRect = NSRect(x: padX, y: y, width: totalW, height: barH)
+        let trackPath = NSBezierPath(roundedRect: trackRect, xRadius: barH / 2, yRadius: barH / 2)
+        NSColor.separatorColor.withAlphaComponent(0.35).setFill()
+        trackPath.fill()
+
+        // 进度条填充（长度对应剩余额度占比，与参考图一致）
+        let fillW = max(barH, totalW * CGFloat(max(0.0, min(1.0, remainRatio))))
+        let fillRect = NSRect(x: padX, y: y, width: fillW, height: barH)
+        let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: barH / 2, yRadius: barH / 2)
+        let fillColor: NSColor = remainRatio < 0.15 ? .systemRed : (remainRatio < 0.3 ? .systemOrange : .labelColor)
+        fillColor.setFill()
+        fillPath.fill()
     }
 }

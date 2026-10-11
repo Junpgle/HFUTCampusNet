@@ -17,6 +17,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var toggleWidgetMenuItem: NSMenuItem!
     private var courseParentMenuItem: NSMenuItem!
     private var dormElectricityMenuItem: NSMenuItem!
+    private var quotaMenuCardView: CampusQuotaCardView?
 
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedCompact: String = "↓ 0B/s  ↑ 0B/s"
@@ -72,6 +73,17 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         // 2. 三大核心服务概览（校园网、宿舍电费、今日课程）
         networkSummaryMenuItem = NSMenuItem(title: "📶 校园网: 检测中...", action: nil, keyEquivalent: "")
         let netSubmenu = NSMenu()
+
+        // 顶部嵌入「单日限额 30GB / 每月限额 200GB免费·400GB上限」进度卡片
+        let quotaContainer = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 118))
+        let qCard = CampusQuotaCardView(frame: NSRect(x: 10, y: 4, width: 320, height: 110))
+        qCard.isCompactMenuMode = true
+        quotaContainer.addSubview(qCard)
+        self.quotaMenuCardView = qCard
+        let quotaMenuItem = NSMenuItem()
+        quotaMenuItem.view = quotaContainer
+        netSubmenu.addItem(quotaMenuItem)
+        netSubmenu.addItem(NSMenuItem.separator())
 
         availFlowMenuItem = NSMenuItem(title: "📶 可用流量: 点击自服务授权查看", action: #selector(loginAction), keyEquivalent: "")
         availFlowMenuItem.target = self
@@ -269,6 +281,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         }
 
         rebuildOnlineDevicesSection()
+        quotaMenuCardView?.refresh(mode: 0)
         updateWidgetMenuState()
     }
 
@@ -371,6 +384,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         updateWidgetMenuState()
         updateCourseSubmenu()
         updateDormElectricityMenu()
+        quotaMenuCardView?.refresh(mode: 0)
         CampusNetworkClient.shared.fetchOnlineDevices()
     }
 
