@@ -269,6 +269,18 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     fm._hfutBound = true;
                     fm.addEventListener('submit', reportCredentials, true);
                 }
+
+                // 若无需验证码且无报错提示，自动触发登录
+                setTimeout(function() {
+                    var errU = document.getElementById('errorusername');
+                    var errP = document.getElementById('errorpassword');
+                    var errG = document.getElementById('error');
+                    var hasErr = (errU && errU.innerText.trim() !== '') || (errP && errP.innerText.trim() !== '') || (errG && errG.innerText.trim() !== '');
+                    var needCode = (typeof isCodeShow !== 'undefined' && isCodeShow) || (typeof isDynamicVercode !== 'undefined' && isDynamicVercode);
+                    if (!hasErr && !needCode && uInput && uInput.value && pInput && pInput.value && btn) {
+                        btn.click();
+                    }
+                }, 350);
             })();
             """
             webView.evaluateJavaScript(js, completionHandler: nil)

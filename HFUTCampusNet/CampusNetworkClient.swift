@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import AppKit
+import CryptoKit
 
 public protocol CampusNetworkClientDelegate: AnyObject {
     func clientDidUpdate(data: CampusNetworkData)
@@ -206,6 +207,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private func fetchDashboardData() {
         guard !isFetchingDashboard else { return }
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
+            silentLoginSelfServiceAndFetch()
             return
         }
 
@@ -227,38 +229,135 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 return
             }
 
+            if let httpResp = response as? HTTPURLResponse, (httpResp.statusCode == 302 || httpResp.statusCode == 301) {
+                // Cookie 已过期，静默重新登录自服务系统
+                self.silentLoginSelfServiceAndFetch()
+                return
+            }
+
             guard let data = data, let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
                 return
             }
 
             if html.contains("欢迎登录用户自助服务系统") && !html.contains("已用流量") {
+                self.silentLoginSelfServiceAndFetch()
                 return
             }
 
-            if let parsed = self.parseDashboardHTML(html) {
-                var result = self.latestData
-                result.availableFlow = parsed.availableFlow
-                result.flowProtection = parsed.flowProtection
-                if parsed.usedFlow != "-- M" {
-                    result.usedFlow = parsed.usedFlow
-                }
-                if parsed.balance != "-- 元" {
-                    result.balance = parsed.balance
-                }
-                result.lastUpdated = Date()
-                result.isLoggedIn = true
-                self.latestData = result
-                self.delegate?.clientDidUpdate(data: result)
-
-                // 记录历史流量
-                CampusHistoryManager.shared.recordFlow(
-                    usedFlowStr: result.usedFlow,
-                    availableFlowStr: result.availableFlow,
-                    balanceStr: result.balance
-                )
+            if !self.applyParsedDashboardHTML(html) {
+                self.silentLoginSelfServiceAndFetch()
             }
         }
         task.resume()
+    }
+
+    @discardableResult
+    private func applyParsedDashboardHTML(_ html: String) -> Bool {
+        guard let parsed = self.parseDashboardHTML(html) else { return false }
+        var result = self.latestData
+        result.availableFlow = parsed.availableFlow
+        result.flowProtection = parsed.flowProtection
+        if parsed.usedFlow != "-- M" {
+            result.usedFlow = parsed.usedFlow
+        }
+        if parsed.balance != "-- 元" {
+            result.balance = parsed.balance
+        }
+        result.lastUpdated = Date()
+        result.isLoggedIn = true
+        self.latestData = result
+        self.delegate?.clientDidUpdate(data: result)
+
+        CampusHistoryManager.shared.recordFlow(
+            usedFlowStr: result.usedFlow,
+            availableFlowStr: result.availableFlow,
+            balanceStr: result.balance
+        )
+        return true
+    }
+
+    /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取可用流量与消费保护
+    public func silentLoginSelfServiceAndFetch() {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !password.isEmpty, !isFetchingDashboard else { return }
+
+        isFetchingDashboard = true
+        let loginPageURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
+        var step1Req = URLRequest(url: loginPageURL)
+        step1Req.httpMethod = "GET"
+        step1Req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        session.dataTask(with: step1Req) { [weak self] data, response, error in
+            guard let self = self else { return }
+            guard error == nil, let data = data,
+                  let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
+                self.isFetchingDashboard = false
+                return
+            }
+
+            // 1. 提取 JSESSIONID
+            var jsessionId: String? = nil
+            if let httpResp = response as? HTTPURLResponse,
+               let setCookie = httpResp.allHeaderFields["Set-Cookie"] as? String,
+               let match = setCookie.range(of: #"JSESSIONID=([0-9A-Za-z_]+)"#, options: .regularExpression) {
+                jsessionId = String(setCookie[match]).replacingOccurrences(of: "JSESSIONID=", with: "")
+            }
+            if jsessionId == nil,
+               let match = html.range(of: #"jsessionid=([0-9A-Za-z_]+)"#, options: .regularExpression) {
+                jsessionId = String(html[match]).replacingOccurrences(of: "jsessionid=", with: "")
+            }
+
+            // 2. 提取隐藏字段 checkcode
+            var checkcode = ""
+            if let regex = try? NSRegularExpression(pattern: #"name="checkcode"\s+value="([^"]*)""#),
+               let m = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)) {
+                checkcode = (html as NSString).substring(with: m.range(at: 1))
+            }
+
+            guard let sid = jsessionId, !sid.isEmpty else {
+                self.isFetchingDashboard = false
+                return
+            }
+
+            let cookieHeader = "JSESSIONID=\(sid)"
+
+            // 3. 触发一次 randomCode 初始化会话验证码状态
+            let randomURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/randomCode?t=\(Double.random(in: 0.1...0.9))")!
+            var step2Req = URLRequest(url: randomURL)
+            step2Req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            step2Req.setValue(loginPageURL.absoluteString, forHTTPHeaderField: "Referer")
+
+            self.session.dataTask(with: step2Req) { [weak self] _, _, _ in
+                guard let self = self else { return }
+
+                // 4. 计算 MD5 密码并提交 POST /Self/login/verify
+                let md5Password = Insecure.MD5.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined()
+                let verifyURL = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/verify")!
+                var step3Req = URLRequest(url: verifyURL)
+                step3Req.httpMethod = "POST"
+                step3Req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+                step3Req.setValue(loginPageURL.absoluteString, forHTTPHeaderField: "Referer")
+                step3Req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                step3Req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+                let encUser = username.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? username
+                let bodyStr = "foo=&bar=&checkcode=\(checkcode)&account=\(encUser)&password=\(md5Password)&code="
+                step3Req.httpBody = bodyStr.data(using: .utf8)
+
+                self.session.dataTask(with: step3Req) { [weak self] verifyData, _, _ in
+                    guard let self = self else { return }
+                    self.isFetchingDashboard = false
+
+                    if let verifyData = verifyData,
+                       let dashHTML = String(data: verifyData, encoding: .utf8) ?? String(data: verifyData, encoding: .ascii),
+                       dashHTML.contains("可用流量") || dashHTML.contains("已用流量") {
+                        SettingsManager.shared.sessionCookie = sid
+                        self.applyParsedDashboardHTML(dashHTML)
+                    }
+                }.resume()
+            }.resume()
+        }.resume()
     }
 
     public func parseDashboardHTML(_ html: String) -> CampusNetworkData? {
@@ -339,7 +438,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         if let location = response.allHeaderFields["Location"] as? String, location.contains("login") {
             completionHandler(nil)
         } else {
-            completionHandler(request)
+            var redirectReq = request
+            if let origCookie = task.originalRequest?.value(forHTTPHeaderField: "Cookie") {
+                redirectReq.setValue(origCookie, forHTTPHeaderField: "Cookie")
+            }
+            completionHandler(redirectReq)
         }
     }
 }

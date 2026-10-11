@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import WebKit
 
-public class LoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate {
+public class LoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     public static let shared = LoginWebViewController()
 
     private var webView: WKWebView!
@@ -35,6 +35,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         config.websiteDataStore = .default()
         // 允许跨域与证书
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.userContentController.add(self, name: "selfServiceCredentialsHandler")
 
         webView = WKWebView(frame: NSRect(x: 0, y: 48, width: 900, height: 572), configuration: config)
         webView.navigationDelegate = self
@@ -81,13 +82,24 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
-        statusLabel.stringValue = "请在下方网页输入学号与密码登录，成功后将自动获取可用流量与保护配额..."
+        statusLabel.stringValue = "正在连接校园网自服务，若已保存账号密码将自动填充并登录..."
         statusLabel.textColor = .secondaryLabelColor
         webView.load(request)
     }
 
     @objc private func reloadPage() {
         showLoginWindow()
+    }
+
+    public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "selfServiceCredentialsHandler",
+              let dict = message.body as? [String: String] else { return }
+        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            SettingsManager.shared.portalUsername = u
+        }
+        if let p = dict["password"], !p.isEmpty {
+            SettingsManager.shared.portalPassword = p
+        }
     }
 
     // 处理自签名证书信任（关键：确保 HTTPS 8443 不报错白屏）
@@ -118,6 +130,66 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
+        if let urlStr = webView.url?.absoluteString, urlStr.contains("/Self/login") {
+            let savedU = SettingsManager.shared.portalUsername
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            let savedP = SettingsManager.shared.portalPassword
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+
+            let js = """
+            (function() {
+                var uInput = document.getElementById('account') || document.querySelector('input[name="account"]');
+                var pInput = document.getElementById('password') || document.querySelector('input[name="password"]');
+
+                function reportCreds() {
+                    var u = uInput ? uInput.value.trim() : '';
+                    var p = pInput ? pInput.value : '';
+                    // 避免把提交时已被 calcMD5 转换的 32 位哈希覆盖原密码
+                    if (p.length === 32 && /^[0-9a-f]{32}$/i.test(p)) {
+                        return;
+                    }
+                    if ((u !== '' || p !== '') && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.selfServiceCredentialsHandler) {
+                        window.webkit.messageHandlers.selfServiceCredentialsHandler.postMessage({ username: u, password: p });
+                    }
+                }
+
+                if (uInput && !uInput._hfutBound) {
+                    uInput._hfutBound = true;
+                    uInput.addEventListener('input', reportCreds);
+                    uInput.addEventListener('change', reportCreds);
+                    uInput.addEventListener('blur', reportCreds);
+                }
+                if (pInput && !pInput._hfutBound) {
+                    pInput._hfutBound = true;
+                    pInput.addEventListener('input', reportCreds);
+                    pInput.addEventListener('change', reportCreds);
+                    pInput.addEventListener('blur', reportCreds);
+                }
+
+                if (uInput && !uInput.value && '\(savedU)' !== '') {
+                    uInput.value = '\(savedU)';
+                }
+                if (pInput && !pInput.value && '\(savedP)' !== '') {
+                    pInput.value = '\(savedP)';
+                }
+
+                var errTip = document.getElementById('errorTip');
+                var hasErr = errTip && errTip.innerText.trim().length > 0;
+                var randDiv = document.getElementById('randomDiv');
+                var needCode = randDiv && !randDiv.classList.contains('hide');
+
+                if (!hasErr && !needCode && uInput && uInput.value && pInput && pInput.value) {
+                    setTimeout(function() {
+                        var btn = document.querySelector('button[name="submit"]') || document.querySelector('button[type="submit"]');
+                        if (btn) { btn.click(); }
+                    }, 250);
+                }
+            })();
+            """
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
         checkAndCaptureSession()
     }
 
