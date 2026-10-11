@@ -63,6 +63,21 @@ public struct CourseLesson: Codable, Identifiable, Equatable {
         return String(format: "%02d:%02d", eh, em)
     }
 
+    /// 距离当天 00:00 的开始分钟数（如 800 -> 480, 940 -> 580）
+    public var startMinutes: Int {
+        (startTime / 100) * 60 + (startTime % 100)
+    }
+
+    /// 距离当天 00:00 的结束分钟数（如 940 -> 580, 1140 -> 700）
+    public var endMinutes: Int {
+        (endTime / 100) * 60 + (endTime % 100)
+    }
+
+    /// 课程持续分钟数
+    public var durationMinutes: Int {
+        max(0, endMinutes - startMinutes)
+    }
+
     /// 解析后的开始日期对象
     public var startDate: Date? {
         let sh = startTime / 100
@@ -139,6 +154,37 @@ public struct CourseScheduleData: Codable, Equatable {
         }
     }
 
+    /// 推算指定周次中周一至周日 (1...7) 对应的日期对象
+    public func datesForWeek(_ week: Int) -> [Int: Date] {
+        var result: [Int: Date] = [:]
+        let cal = CourseCalendarHelper.beijingCalendar
+
+        // 优先从本周课程直接匹配
+        let weekItems = lessons.filter { $0.weekIndex == week }
+        if let anchor = weekItems.first,
+           let anchorDate = CourseCalendarHelper.parseDate(anchor.dateString, "00:00") {
+            for d in 1...7 {
+                if let targetDate = cal.date(byAdding: .day, value: d - anchor.weekday, to: anchorDate) {
+                    result[d] = targetDate
+                }
+            }
+            return result
+        }
+
+        // 若本周无课，从全学期任意有周次的课程推算
+        if let ref = lessons.first(where: { $0.weekIndex != nil }),
+           let refWeek = ref.weekIndex,
+           let refDate = CourseCalendarHelper.parseDate(ref.dateString, "00:00") {
+            for d in 1...7 {
+                let dayOffset = (week - refWeek) * 7 + (d - ref.weekday)
+                if let targetDate = cal.date(byAdding: .day, value: dayOffset, to: refDate) {
+                    result[d] = targetDate
+                }
+            }
+        }
+        return result
+    }
+
     /// 获取今天的所有课程（根据当前时间）
     public func todayLessons(at now: Date = Date()) -> [CourseLesson] {
         let dateStr = CourseCalendarHelper.dateString(from: now)
@@ -167,7 +213,22 @@ public struct CourseScheduleData: Codable, Equatable {
         if let match = lessons.first(where: { $0.dateString == todayStr && $0.weekIndex != nil }) {
             return match.weekIndex
         }
-        // 如果今天没课，寻找未来最近的一门课所在的周次
+        // 根据已知周次的锚点日期精确计算当前日期属于第几周
+        if let ref = lessons.first(where: { $0.weekIndex != nil }),
+           let refWeek = ref.weekIndex,
+           let refDate = CourseCalendarHelper.parseDate(ref.dateString, "00:00"),
+           let todayDate = CourseCalendarHelper.parseDate(todayStr, "00:00") {
+            let cal = CourseCalendarHelper.beijingCalendar
+            if let refMonday = cal.date(byAdding: .day, value: -(ref.weekday - 1), to: refDate),
+               let daysDiff = cal.dateComponents([.day], from: refMonday, to: todayDate).day,
+               daysDiff >= 0 {
+                let computedWeek = refWeek + (daysDiff / 7)
+                if computedWeek >= 1 && computedWeek <= 24 {
+                    return computedWeek
+                }
+            }
+        }
+        // 如果无法按锚点推算，寻找未来最近的一门课所在的周次
         let future = lessons.filter { $0.dateString >= todayStr && $0.weekIndex != nil }.sorted { $0.dateString < $1.dateString }
         return future.first?.weekIndex ?? allWeeks.first
     }

@@ -23,12 +23,12 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.5.0）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.6.0）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.5.0"
+        return "1.6.0"
     }
 
     /// 检查 GitHub Releases 最新版本
@@ -233,7 +233,7 @@ public class UpdateChecker {
     private func showUpdateAvailableAlert(release: GitHubReleaseInfo, manual: Bool) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "🎉 发现新版本 \(release.tagName)"
+        alert.messageText = "发现新版本 \(release.tagName)"
         let notes = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
         let notesText = notes.isEmpty ? "暂无详细更新说明。" : notes
         alert.informativeText = "当前版本：v\(currentVersion)\n最新版本：\(release.name)\n\n更新内容：\n\(notesText)"
@@ -277,7 +277,7 @@ public class UpdateChecker {
     private func showUpToDateAlert(latestVersion: String) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "✅ 当前已是最新版本"
+        alert.messageText = "当前已是最新版本"
         alert.informativeText = "您当前使用的 HFUT 校园网助手版本为 v\(currentVersion)（GitHub 最新版本：v\(latestVersion)），无需更新。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好")

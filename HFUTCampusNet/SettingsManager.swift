@@ -36,6 +36,13 @@ public class SettingsManager {
         static let casPassword = "campus_cas_password"
         static let skippedUpdateVersion = "campus_skipped_update_version"
         static let autoCheckUpdate = "campus_auto_check_update"
+        static let uniAppJwt = "campus_uniapp_jwt"
+        static let jxglstuDefaultPasswordCache = "campus_jxglstu_default_pwd_cache"
+        static let currentStudyRoomData = "campus_current_study_room_data"
+        static let nextDayStudyRoomData = "campus_next_day_study_room_data"
+        static let lastNotifiedStudyMorningDate = "campus_last_notified_study_morning_date"
+        static let lastNotifiedStudyEveningDate = "campus_last_notified_study_evening_date"
+        static let lastNotifiedStudyConflictId = "campus_last_notified_study_conflict_id"
     }
 
     private init() {
@@ -261,9 +268,63 @@ public class SettingsManager {
         get { defaults.object(forKey: Keys.autoCheckUpdate) == nil ? true : defaults.bool(forKey: Keys.autoCheckUpdate) }
         set { defaults.set(newValue, forKey: Keys.autoCheckUpdate) }
     }
+
+    public var uniAppJwt: String? {
+        get { defaults.string(forKey: Keys.uniAppJwt) }
+        set { defaults.set(newValue, forKey: Keys.uniAppJwt) }
+    }
+
+    public var jxglstuDefaultPasswordCache: String? {
+        get { defaults.string(forKey: Keys.jxglstuDefaultPasswordCache) }
+        set { defaults.set(newValue, forKey: Keys.jxglstuDefaultPasswordCache) }
+    }
+
+    public var currentStudyRoom: CurrentStudyRoomRecord? {
+        get {
+            guard let data = defaults.data(forKey: Keys.currentStudyRoomData) else { return nil }
+            return try? JSONDecoder().decode(CurrentStudyRoomRecord.self, from: data)
+        }
+        set {
+            if let record = newValue, let data = try? JSONEncoder().encode(record) {
+                defaults.set(data, forKey: Keys.currentStudyRoomData)
+            } else {
+                defaults.removeObject(forKey: Keys.currentStudyRoomData)
+            }
+        }
+    }
+
+    public var nextDayStudyRoom: CurrentStudyRoomRecord? {
+        get {
+            guard let data = defaults.data(forKey: Keys.nextDayStudyRoomData) else { return nil }
+            return try? JSONDecoder().decode(CurrentStudyRoomRecord.self, from: data)
+        }
+        set {
+            if let record = newValue, let data = try? JSONEncoder().encode(record) {
+                defaults.set(data, forKey: Keys.nextDayStudyRoomData)
+            } else {
+                defaults.removeObject(forKey: Keys.nextDayStudyRoomData)
+            }
+        }
+    }
+
+    public var lastNotifiedStudyMorningDate: String? {
+        get { defaults.string(forKey: Keys.lastNotifiedStudyMorningDate) }
+        set { defaults.set(newValue, forKey: Keys.lastNotifiedStudyMorningDate) }
+    }
+
+    public var lastNotifiedStudyEveningDate: String? {
+        get { defaults.string(forKey: Keys.lastNotifiedStudyEveningDate) }
+        set { defaults.set(newValue, forKey: Keys.lastNotifiedStudyEveningDate) }
+    }
+
+    public var lastNotifiedStudyConflictId: String? {
+        get { defaults.string(forKey: Keys.lastNotifiedStudyConflictId) }
+        set { defaults.set(newValue, forKey: Keys.lastNotifiedStudyConflictId) }
+    }
 }
 
 extension Notification.Name {
     public static let dormElectricityDidUpdate = Notification.Name("cn.edu.hfut.dormElectricityDidUpdate")
     public static let historyStatsDidUpdate = Notification.Name("cn.edu.hfut.historyStatsDidUpdate")
+    public static let emptyClassroomDidUpdate = Notification.Name("cn.edu.hfut.emptyClassroomDidUpdate")
 }

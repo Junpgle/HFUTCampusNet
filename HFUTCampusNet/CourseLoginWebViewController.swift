@@ -45,10 +45,9 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         containerView.addSubview(webView)
 
         // 底部状态与操作栏
-        let bottomBar = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 52))
+        let bottomBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 0, width: 960, height: 52))
         bottomBar.autoresizingMask = [.width, .maxYMargin]
-        bottomBar.wantsLayer = true
-        bottomBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        bottomBar.dynamicBackgroundColor = .windowBackgroundColor
 
         progressIndicator = NSProgressIndicator(frame: NSRect(x: 16, y: 18, width: 16, height: 16))
         progressIndicator.style = .spinning

@@ -16,6 +16,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var updateTimeMenuItem: NSMenuItem!
     private var toggleWidgetMenuItem: NSMenuItem!
     private var courseParentMenuItem: NSMenuItem!
+    private var emptyClassroomMenuItem: NSMenuItem!
     private var dormElectricityMenuItem: NSMenuItem!
     private var checkUpdateMenuItem: NSMenuItem!
     private var quotaMenuCardView: CampusQuotaCardView?
@@ -43,6 +44,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(onEmptyClassroomUpdated),
+            name: .emptyClassroomDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(onDormElectricityUpdated),
             name: .dormElectricityDidUpdate,
             object: nil
@@ -55,11 +62,37 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         )
     }
 
+    private func symbolImage(_ name: String, pointSize: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+        img?.isTemplate = true
+        return img
+    }
+
+    private func statusDotImage(color: NSColor, diameter: CGFloat = 7) -> NSImage {
+        let canvasSize = NSSize(width: 14, height: 14)
+        let img = NSImage(size: canvasSize, flipped: false) { rect in
+            let dotRect = NSRect(
+                x: (rect.width - diameter) / 2.0,
+                y: (rect.height - diameter) / 2.0,
+                width: diameter,
+                height: diameter
+            )
+            color.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
+            return true
+        }
+        img.isTemplate = false
+        return img
+    }
+
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.title = "📶 检测网络中..."
-            button.imagePosition = .imageLeft
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular)
+            button.image = symbolImage("wifi", pointSize: 12.5, weight: .medium)
+            button.imagePosition = .imageLeading
+            button.title = " 检测网络中..."
         }
 
         setupMenu()
@@ -71,19 +104,23 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu.delegate = self
 
         // 1. 顶部单行实时状态（在线状态 + 实时上下行网速合并）
-        networkStatusMenuItem = NSMenuItem(title: "🟢 已在线认证  ·  ↓ 0 B/s  ↑ 0 B/s", action: nil, keyEquivalent: "")
+        networkStatusMenuItem = NSMenuItem(title: "已在线认证  ·  ↓ 0 B/s  ↑ 0 B/s", action: nil, keyEquivalent: "")
+        networkStatusMenuItem.image = statusDotImage(color: .systemGreen)
         networkStatusMenuItem.isEnabled = false
         menu.addItem(networkStatusMenuItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        // 2. 三大核心服务概览（校园网、宿舍电费、今日课程）
-        networkSummaryMenuItem = NSMenuItem(title: "📶 校园网: 检测中...", action: nil, keyEquivalent: "")
+        // 2. 核心服务概览（校园网、宿舍电费、今日课程、自习教室）
+        networkSummaryMenuItem = NSMenuItem(title: "校园网：检测中...", action: nil, keyEquivalent: "")
+        networkSummaryMenuItem.image = symbolImage("wifi")
         let netSubmenu = NSMenu()
 
-        // 顶部嵌入「单日限额 30GB / 每月限额 200GB免费·400GB上限」进度卡片
-        let quotaContainer = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 118))
-        let qCard = CampusQuotaCardView(frame: NSRect(x: 10, y: 4, width: 320, height: 110))
+        // 顶部嵌入「单日限额 30GB / 每月限额 200GB免费·400GB上限」进度卡片（自适应子菜单宽度）
+        let quotaContainer = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 112))
+        quotaContainer.autoresizingMask = [.width]
+        let qCard = CampusQuotaCardView(frame: NSRect(x: 12, y: 4, width: 316, height: 104))
+        qCard.autoresizingMask = [.width]
         qCard.isCompactMenuMode = true
         quotaContainer.addSubview(qCard)
         self.quotaMenuCardView = qCard
@@ -92,70 +129,82 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         netSubmenu.addItem(quotaMenuItem)
         netSubmenu.addItem(NSMenuItem.separator())
 
-        availFlowMenuItem = NSMenuItem(title: "📶 可用流量: 点击自服务授权查看", action: #selector(loginAction), keyEquivalent: "")
+        availFlowMenuItem = NSMenuItem(title: "可用流量：点击自服务授权查看", action: #selector(loginAction), keyEquivalent: "")
         availFlowMenuItem.target = self
         netSubmenu.addItem(availFlowMenuItem)
 
-        usedFlowMenuItem = NSMenuItem(title: "📊 已用流量: --", action: nil, keyEquivalent: "")
+        usedFlowMenuItem = NSMenuItem(title: "已用流量：--", action: nil, keyEquivalent: "")
         usedFlowMenuItem.isEnabled = false
         netSubmenu.addItem(usedFlowMenuItem)
 
-        balMenuItem = NSMenuItem(title: "💰 账户余额: --", action: nil, keyEquivalent: "")
+        balMenuItem = NSMenuItem(title: "账户余额：--", action: nil, keyEquivalent: "")
         balMenuItem.isEnabled = false
         netSubmenu.addItem(balMenuItem)
 
-        protMenuItem = NSMenuItem(title: "🛡️ 消费保护: --", action: nil, keyEquivalent: "")
+        protMenuItem = NSMenuItem(title: "消费保护：--", action: nil, keyEquivalent: "")
         protMenuItem.isEnabled = false
         netSubmenu.addItem(protMenuItem)
 
-        updateTimeMenuItem = NSMenuItem(title: "⏱️ 上次更新: 等待初次抓取", action: nil, keyEquivalent: "")
+        updateTimeMenuItem = NSMenuItem(title: "上次更新：等待初次抓取", action: nil, keyEquivalent: "")
         updateTimeMenuItem.isEnabled = false
         netSubmenu.addItem(updateTimeMenuItem)
 
         netSubmenu.addItem(NSMenuItem.separator())
 
-        let oneClickLoginItem = NSMenuItem(title: "⚡ 一键登录校园网 (172.18.3.3)", action: #selector(oneClickLoginAction), keyEquivalent: "")
+        let oneClickLoginItem = NSMenuItem(title: "一键登录校园网 (172.18.3.3)", action: #selector(oneClickLoginAction), keyEquivalent: "")
         oneClickLoginItem.target = self
         netSubmenu.addItem(oneClickLoginItem)
 
-        let logoutPortalItem = NSMenuItem(title: "🔌 注销本机网关认证", action: #selector(logoutPortalAction), keyEquivalent: "")
+        let logoutPortalItem = NSMenuItem(title: "注销本机网关认证", action: #selector(logoutPortalAction), keyEquivalent: "")
         logoutPortalItem.target = self
         netSubmenu.addItem(logoutPortalItem)
 
-        let loginItem = NSMenuItem(title: "🔑 自服务授权 (获取可用流量/保护)...", action: #selector(loginAction), keyEquivalent: "l")
+        let loginItem = NSMenuItem(title: "自服务授权 (获取可用流量/保护)...", action: #selector(loginAction), keyEquivalent: "l")
         loginItem.target = self
         netSubmenu.addItem(loginItem)
 
-        let openWebItem = NSMenuItem(title: "🌍 打开校园网自服务网页...", action: #selector(openWebAction), keyEquivalent: "o")
+        let openWebItem = NSMenuItem(title: "打开校园网自服务网页...", action: #selector(openWebAction), keyEquivalent: "o")
         openWebItem.target = self
         netSubmenu.addItem(openWebItem)
 
         networkSummaryMenuItem.submenu = netSubmenu
         menu.addItem(networkSummaryMenuItem)
 
-        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openElectricityStatsAction), keyEquivalent: "")
+        dormElectricityMenuItem = NSMenuItem(title: "宿舍电费：加载中...", action: #selector(openElectricityStatsAction), keyEquivalent: "")
+        dormElectricityMenuItem.image = symbolImage("bolt")
         dormElectricityMenuItem.target = self
         menu.addItem(dormElectricityMenuItem)
         updateDormElectricityMenu()
 
-        courseParentMenuItem = NSMenuItem(title: "📚 今日课程: 加载中...", action: nil, keyEquivalent: "")
+        courseParentMenuItem = NSMenuItem(title: "今日课程：加载中...", action: nil, keyEquivalent: "")
+        courseParentMenuItem.image = symbolImage("calendar")
         let courseSubmenu = NSMenu()
         courseParentMenuItem.submenu = courseSubmenu
         menu.addItem(courseParentMenuItem)
         updateCourseSubmenu()
 
+        emptyClassroomMenuItem = NSMenuItem(title: "自习教室：未设定", action: nil, keyEquivalent: "")
+        emptyClassroomMenuItem.image = symbolImage("building.2")
+        let emptyRoomSubmenu = NSMenu()
+        emptyClassroomMenuItem.submenu = emptyRoomSubmenu
+        menu.addItem(emptyClassroomMenuItem)
+        updateEmptyClassroomSubmenu()
+
         menu.addItem(NSMenuItem.separator())
 
         // 3. 快捷分析与同步操作
-        let historyStatsItem = NSMenuItem(title: "📊 用量统计与历史分析...", action: #selector(openHistoryStatsAction), keyEquivalent: "h")
+        let historyStatsItem = NSMenuItem(title: "用量统计与历史分析...", action: #selector(openHistoryStatsAction), keyEquivalent: "h")
+        historyStatsItem.image = symbolImage("chart.bar")
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
-        let unifiedLoginItem = NSMenuItem(title: "🔑 统一身份认证同步...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
+        let unifiedLoginItem = NSMenuItem(title: "统一身份认证同步...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
+        unifiedLoginItem.image = symbolImage("person.badge.key")
         unifiedLoginItem.target = self
         menu.addItem(unifiedLoginItem)
 
-        let refreshItem = NSMenuItem(title: "🔄 立即刷新数据", action: #selector(refreshAction), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "立即刷新数据", action: #selector(refreshAction), keyEquivalent: "r")
+        refreshItem.image = symbolImage("arrow.clockwise")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
@@ -182,7 +231,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         ]
         let currentStyle = SettingsManager.shared.menubarStyle
         for (name, val) in styles {
-            let item = NSMenuItem(title: "  " + name, action: #selector(changeDisplayStyle(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: name, action: #selector(changeDisplayStyle(_:)), keyEquivalent: "")
             item.representedObject = val
             item.target = self
             if currentStyle == val {
@@ -215,19 +264,22 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         intervalParentItem.submenu = intervalMenu
         displaySubmenu.addItem(intervalParentItem)
 
-        let displayParentItem = NSMenuItem(title: "🎨 显示与刷新选项", action: nil, keyEquivalent: "")
+        let displayParentItem = NSMenuItem(title: "显示与刷新选项", action: nil, keyEquivalent: "")
+        displayParentItem.image = symbolImage("slider.horizontal.3")
         displayParentItem.submenu = displaySubmenu
         menu.addItem(displayParentItem)
 
-        let portalSettingsItem = NSMenuItem(title: "⚙️ 偏好设置...", action: #selector(openPortalSettingsAction), keyEquivalent: ",")
+        let portalSettingsItem = NSMenuItem(title: "偏好设置...", action: #selector(openPortalSettingsAction), keyEquivalent: ",")
+        portalSettingsItem.image = symbolImage("gearshape")
         portalSettingsItem.target = self
         menu.addItem(portalSettingsItem)
 
         checkUpdateMenuItem = NSMenuItem(
-            title: "🔄 检查软件更新 (v\(UpdateChecker.shared.currentVersion))...",
+            title: "检查软件更新 (v\(UpdateChecker.shared.currentVersion))...",
             action: #selector(checkUpdateAction),
             keyEquivalent: ""
         )
+        checkUpdateMenuItem.image = symbolImage("arrow.triangle.2.circlepath")
         checkUpdateMenuItem.target = self
         menu.addItem(checkUpdateMenuItem)
 
@@ -252,8 +304,9 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     }
 
     private func updateTopStatusLine() {
-        let statusPrefix = currentData.isLoggedIn ? "🟢 已在线" : "🟡 未认证"
-        networkStatusMenuItem?.title = "\(statusPrefix)  ·  🚀 ↓ \(currentDownloadSpeed)  ↑ \(currentUploadSpeed)"
+        let statusPrefix = currentData.isLoggedIn ? "已在线" : "未认证"
+        networkStatusMenuItem?.image = statusDotImage(color: currentData.isLoggedIn ? .systemGreen : .systemOrange)
+        networkStatusMenuItem?.title = "\(statusPrefix)  ·  ↓ \(currentDownloadSpeed)   ↑ \(currentUploadSpeed)"
     }
 
     public func speedMonitorDidUpdate(download: String, upload: String, compact: String) {
@@ -275,24 +328,24 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         updateTopStatusLine()
 
         let devCount = data.onlineDevices.count
-        let devSuffix = devCount > 0 ? " (\(devCount)台在线)" : ""
+        let devSuffix = devCount > 0 ? " (\(devCount) 台在线)" : ""
 
         if data.availableFlow != "-- M" {
-            networkSummaryMenuItem?.title = "📶 校园网: 可用 \(data.formattedAvailable) · 余额 \(data.balance)\(devSuffix)"
-            availFlowMenuItem.title = "📶 可用流量: \(data.availableFlow) (\(data.formattedAvailable))"
+            networkSummaryMenuItem?.title = "校园网：可用 \(data.formattedAvailable) · 余额 \(data.balance)\(devSuffix)"
+            availFlowMenuItem.title = "可用流量：\(data.availableFlow) (\(data.formattedAvailable))"
         } else {
-            networkSummaryMenuItem?.title = "📶 校园网: 已用 \(data.formattedUsed) · 余额 \(data.balance)\(devSuffix)"
-            availFlowMenuItem.title = "📶 可用流量: 点击自服务授权查看..."
+            networkSummaryMenuItem?.title = "校园网：已用 \(data.formattedUsed) · 余额 \(data.balance)\(devSuffix)"
+            availFlowMenuItem.title = "可用流量：点击自服务授权查看..."
         }
         
-        usedFlowMenuItem.title = "📊 已用流量: \(data.usedFlow) (\(data.formattedUsed))"
-        balMenuItem.title = "💰 账户余额: \(data.balance)"
-        protMenuItem.title = "🛡️ 消费保护: \(data.flowProtection)"
+        usedFlowMenuItem.title = "已用流量：\(data.usedFlow) (\(data.formattedUsed))"
+        balMenuItem.title = "账户余额：\(data.balance)"
+        protMenuItem.title = "消费保护：\(data.flowProtection)"
 
         if let time = data.lastUpdated {
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
-            updateTimeMenuItem.title = "⏱️ 上次更新: \(formatter.string(from: time))"
+            updateTimeMenuItem.title = "上次更新：\(formatter.string(from: time))"
         }
 
         rebuildOnlineDevicesSection()
@@ -318,7 +371,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         insertIdx += 1
 
         let devices = currentData.onlineDevices
-        let headerTitle = devices.isEmpty ? "📱 在线设备: 暂无或正在加载..." : "📱 当前在线设备 (\(devices.count) 台 · 点击即可强制注销):"
+        let headerTitle = devices.isEmpty ? "在线设备：暂无或正在加载..." : "当前在线设备 (\(devices.count) 台 · 点击即可强制下线)"
         let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
         headerItem.tag = 9901
@@ -327,10 +380,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         for dev in devices {
             let devItem = NSMenuItem(
-                title: "\(dev.displayTitle)  — 🔌 点击注销",
+                title: "\(dev.displayTitle)   点击注销",
                 action: #selector(kickDeviceAction(_:)),
                 keyEquivalent: ""
             )
+            devItem.image = symbolImage(dev.terminalType.contains("移动") ? "iphone" : "laptopcomputer", pointSize: 12)
             devItem.target = self
             devItem.representedObject = dev.sessionId
             devItem.toolTip = "上线时间: \(dev.loginTime) | MAC: \(dev.formattedMAC) | 会话ID: \(dev.sessionId)"
@@ -338,8 +392,9 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             netSubmenu.insertItem(devItem, at: insertIdx)
             insertIdx += 1
 
+            let macPart = (dev.formattedMAC == "00-00-00-00-00-00" || dev.mac.isEmpty) ? "" : "  ·  MAC: \(dev.formattedMAC)"
             let detailItem = NSMenuItem(
-                title: "    ↳ 上线: \(dev.loginTime)  ·  MAC: \(dev.formattedMAC)",
+                title: "    上线：\(dev.loginTime)\(macPart)",
                 action: nil,
                 keyEquivalent: ""
             )
@@ -365,32 +420,40 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         guard let button = statusItem.button else { return }
 
         let style = SettingsManager.shared.menubarStyle
+        let isOffline = !currentData.isLoggedIn && (currentData.usedFlow == "-- M" || currentData.usedFlow.isEmpty)
         let flowTitle: String
 
-        if !currentData.isLoggedIn && (currentData.usedFlow == "-- M" || currentData.usedFlow.isEmpty) {
-            flowTitle = "📶 离线/未认证"
+        if isOffline {
+            flowTitle = " 离线/未认证"
         } else if currentData.availableFlow != "-- M" {
-            flowTitle = "📶 \(currentData.formattedAvailable) | \(currentData.balance)"
+            flowTitle = " \(currentData.formattedAvailable) | \(currentData.balance)"
         } else {
-            // 网关数据
-            flowTitle = "📶 \(currentData.formattedUsed) | \(currentData.balance)"
+            flowTitle = " \(currentData.formattedUsed) | \(currentData.balance)"
         }
+
+        let wifiIcon = symbolImage(isOffline ? "wifi.slash" : "wifi", pointSize: 12.5, weight: .medium)
 
         switch style {
         case 0:
             if carouselToggle {
+                button.image = nil
                 button.title = currentSpeedCompact
             } else {
+                button.image = wifiIcon
                 button.title = flowTitle
             }
         case 1:
+            button.image = wifiIcon
             button.title = flowTitle
         case 2:
+            button.image = nil
             button.title = currentSpeedCompact
         case 3:
             let flowStr = (currentData.availableFlow != "-- M") ? currentData.formattedAvailable : currentData.formattedUsed
-            button.title = "📶 \(flowStr) · \(currentSpeedCompact)"
+            button.image = wifiIcon
+            button.title = " \(flowStr) · \(currentSpeedCompact)"
         default:
+            button.image = wifiIcon
             button.title = flowTitle
         }
     }
@@ -398,6 +461,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     public func menuWillOpen(_ menu: NSMenu) {
         updateWidgetMenuState()
         updateCourseSubmenu()
+        updateEmptyClassroomSubmenu()
         updateDormElectricityMenu()
         quotaMenuCardView?.refresh(mode: 0)
         CampusNetworkClient.shared.fetchOnlineDevices()
@@ -418,16 +482,16 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private func updateDormElectricityMenu() {
         guard let item = dormElectricityMenuItem else { return }
         if !SettingsManager.shared.isDormConfigured {
-            item.title = "⚡ 宿舍电费: 未配置宿舍 (点击前往设置)"
+            item.title = "宿舍电费：未配置宿舍 (点击设置)"
             return
         }
         if let elec = ElectricityService.shared.latestData {
-            let warnIcon = elec.isLowBalance ? "⚠️ " : ""
+            let warnSuffix = elec.isLowBalance ? " · 余额偏低" : ""
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
-            let daysStr = (daysLeft != nil) ? " (约余\(daysLeft!)天)" : ""
-            item.title = "\(warnIcon)⚡ 宿舍电费: \(elec.displayBalance)\(daysStr) @ \(elec.formattedRoom)"
+            let daysStr = (daysLeft != nil) ? " (约余 \(daysLeft!) 天)" : ""
+            item.title = "宿舍电费：\(elec.displayBalance)\(daysStr) · \(elec.formattedRoom)\(warnSuffix)"
         } else {
-            item.title = "⚡ 宿舍电费: 正在获取数据 (点击刷新)"
+            item.title = "宿舍电费：正在获取数据..."
         }
     }
 
@@ -498,6 +562,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func refreshAction() {
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
+        EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
     }
 
     @objc private func toggleWidgetAction() {
@@ -543,24 +608,26 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         if let schedule = schedule, !schedule.lessons.isEmpty {
             if todayLessons.isEmpty {
-                courseParent.title = "📚 今日课程 (今日无课 🎉)"
-                let noClassItem = NSMenuItem(title: "🎉 今日暂无排课，享受轻松时光！", action: nil, keyEquivalent: "")
+                courseParent.title = "今日课程：今日无课"
+                let noClassItem = NSMenuItem(title: "今日暂无排课", action: nil, keyEquivalent: "")
                 noClassItem.isEnabled = false
                 submenu.addItem(noClassItem)
             } else {
-                courseParent.title = "📚 今日课程 (\(todayLessons.count) 节)"
+                courseParent.title = "今日课程：\(todayLessons.count) 节课"
                 for lesson in todayLessons {
-                    let ongoing = lesson.isOngoing() ? "🟢 " : ""
-                    let room = lesson.classroom.map { "@ \($0)" } ?? ""
+                    let room = lesson.classroom.map { "· \($0)" } ?? ""
                     let teacher = lesson.teacher.map { "(\($0))" } ?? ""
-                    let title = "\(ongoing)\(lesson.formattedTime)  \(lesson.courseName) \(room) \(teacher)"
+                    let title = "\(lesson.formattedTime)  \(lesson.courseName) \(room) \(teacher)"
                     let item = NSMenuItem(title: title, action: #selector(openCourseTableAction), keyEquivalent: "")
+                    if lesson.isOngoing() {
+                        item.image = statusDotImage(color: .systemGreen)
+                    }
                     item.target = self
                     submenu.addItem(item)
                 }
             }
         } else {
-            courseParent.title = "📚 教务课表 (未同步)"
+            courseParent.title = "教务课表：未同步"
             let promptItem = NSMenuItem(title: "点击登录教务系统同步课表...", action: #selector(openCourseLoginAction), keyEquivalent: "")
             promptItem.target = self
             submenu.addItem(promptItem)
@@ -568,15 +635,15 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         submenu.addItem(NSMenuItem.separator())
 
-        let openTableItem = NSMenuItem(title: "📅 查看完整周课表...", action: #selector(openCourseTableAction), keyEquivalent: "k")
+        let openTableItem = NSMenuItem(title: "查看完整周课表...", action: #selector(openCourseTableAction), keyEquivalent: "k")
         openTableItem.target = self
         submenu.addItem(openTableItem)
 
-        let refreshCourseItem = NSMenuItem(title: "🔄 立即刷新教务课表", action: #selector(refreshCourseAction), keyEquivalent: "")
+        let refreshCourseItem = NSMenuItem(title: "立即刷新教务课表", action: #selector(refreshCourseAction), keyEquivalent: "")
         refreshCourseItem.target = self
         submenu.addItem(refreshCourseItem)
 
-        let authCourseItem = NSMenuItem(title: "🔑 教务系统登录/授权 (网页)...", action: #selector(openCourseLoginAction), keyEquivalent: "")
+        let authCourseItem = NSMenuItem(title: "教务系统登录与授权...", action: #selector(openCourseLoginAction), keyEquivalent: "")
         authCourseItem.target = self
         submenu.addItem(authCourseItem)
     }
@@ -596,7 +663,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                 switch result {
                 case .success(let schedule):
                     NotificationHelper.sendNotification(
-                        title: "🎉 课表刷新成功",
+                        title: "课表刷新成功",
                         body: "已同步 \(schedule.lessons.count) 节课程安排"
                     )
                 case .failure(let error):
@@ -614,8 +681,207 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         }
     }
 
+    // MARK: - 自习空教室查询与推荐
+
+    @objc private func onEmptyClassroomUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateEmptyClassroomSubmenu()
+        }
+    }
+
+    private func updateEmptyClassroomSubmenu() {
+        guard let emptyParent = emptyClassroomMenuItem, let submenu = emptyParent.submenu else { return }
+        submenu.removeAllItems()
+
+        let service = EmptyClassroomService.shared
+        let nowMin = EmptyClassroomService.currentMinutesOfDay()
+
+        if let record = SettingsManager.shared.currentStudyRoom {
+            if let liveRoom = service.currentStudyRoomItem() {
+                let (conflict, isOngoing, minsUntil, switches) = service.nearbySwitchRecommendations(for: liveRoom, limit: 4)
+                if let occ = conflict, isOngoing {
+                    emptyParent.title = "自习教室：\(liveRoom.nameZh) (\(occ.causeTitle)中 · 点击切换)"
+                    let warnItem = NSMenuItem(
+                        title: "当前 \(liveRoom.nameZh) 正在被\(occ.causeTitle)占用 (\(occ.startTimeString)-\(occ.endTimeString) \(occ.shortCourseName))",
+                        action: #selector(openEmptyClassroomWindowAction),
+                        keyEquivalent: ""
+                    )
+                    warnItem.image = statusDotImage(color: .systemRed)
+                    warnItem.target = self
+                    submenu.addItem(warnItem)
+                } else if let occ = conflict, let mins = minsUntil, mins <= 35 {
+                    emptyParent.title = "自习教室：\(liveRoom.nameZh) (\(mins) 分钟后有\(occ.causeTitle))"
+                    let warnItem = NSMenuItem(
+                        title: "\(mins) 分钟后 (\(occ.startTimeString)) 将有《\(occ.shortCourseName)》，建议提前切换",
+                        action: #selector(openEmptyClassroomWindowAction),
+                        keyEquivalent: ""
+                    )
+                    warnItem.image = statusDotImage(color: .systemOrange)
+                    warnItem.target = self
+                    submenu.addItem(warnItem)
+                } else if let nextOcc = liveRoom.nextOccupation(afterMinutes: nowMin) {
+                    emptyParent.title = "自习教室：\(liveRoom.nameZh) (空闲至 \(nextOcc.startTimeString))"
+                    let statusItem = NSMenuItem(
+                        title: "当前自习：\(liveRoom.nameZh) · 空闲至 \(nextOcc.startTimeString) (\(nextOcc.shortCourseName))",
+                        action: #selector(openEmptyClassroomWindowAction),
+                        keyEquivalent: ""
+                    )
+                    statusItem.image = statusDotImage(color: .systemGreen)
+                    statusItem.target = self
+                    submenu.addItem(statusItem)
+                } else {
+                    emptyParent.title = "自习教室：\(liveRoom.nameZh) (今日余下全空)"
+                    let statusItem = NSMenuItem(
+                        title: "当前自习：\(liveRoom.nameZh) · 今日余下时段全部空闲",
+                        action: #selector(openEmptyClassroomWindowAction),
+                        keyEquivalent: ""
+                    )
+                    statusItem.image = statusDotImage(color: .systemGreen)
+                    statusItem.target = self
+                    submenu.addItem(statusItem)
+                }
+
+                // 附近换教室推荐
+                if !switches.isEmpty {
+                    let switchHeader = NSMenuItem(title: "附近可切换空教室 (点击直接切换)", action: nil, keyEquivalent: "")
+                    switchHeader.isEnabled = false
+                    submenu.addItem(switchHeader)
+                    for rec in switches {
+                        let item = NSMenuItem(
+                            title: "切换至 \(rec.room.nameZh)  (\(rec.proximity.badgeText) · \(rec.freeUntilText))",
+                            action: #selector(quickSelectStudyRoomMenuAction(_:)),
+                            keyEquivalent: ""
+                        )
+                        item.target = self
+                        item.representedObject = rec.room
+                        submenu.addItem(item)
+                    }
+                }
+            } else {
+                emptyParent.title = "自习教室：\(record.roomName)"
+                let statusItem = NSMenuItem(
+                    title: "当前设定自习室：\(record.roomName) (正在同步占用状态...)",
+                    action: #selector(openEmptyClassroomWindowAction),
+                    keyEquivalent: ""
+                )
+                statusItem.target = self
+                submenu.addItem(statusItem)
+            }
+
+            let clearItem = NSMenuItem(title: "取消当前自习教室设定", action: #selector(clearStudyRoomMenuAction), keyEquivalent: "")
+            clearItem.target = self
+            submenu.addItem(clearItem)
+        } else {
+            let allDayCount = service.recommendedTodayAllDayFreeRooms(limit: 20).count
+            if allDayCount > 0 {
+                emptyParent.title = "自习教室：未设定 (今日 \(allDayCount)+ 间全天空闲)"
+            } else {
+                emptyParent.title = "自习教室：未设定"
+            }
+            let promptItem = NSMenuItem(
+                title: "尚未设定今日自习教室，可从下方列表直接选择",
+                action: #selector(openEmptyClassroomWindowAction),
+                keyEquivalent: ""
+            )
+            promptItem.target = self
+            submenu.addItem(promptItem)
+        }
+
+        // 当天全天空闲推荐
+        let todayPicks = service.recommendedTodayAllDayFreeRooms(limit: 5)
+        if !todayPicks.isEmpty {
+            submenu.addItem(NSMenuItem.separator())
+            let todayHeader = NSMenuItem(title: "今日全天空闲教室 (点击设为当前自习)", action: nil, keyEquivalent: "")
+            todayHeader.isEnabled = false
+            submenu.addItem(todayHeader)
+            for room in todayPicks {
+                let isCurrent = (SettingsManager.shared.currentStudyRoom?.roomId == room.id)
+                let seatText = room.seatsForLesson.map { "\($0)座 · " } ?? ""
+                let item = NSMenuItem(
+                    title: "\(room.nameZh)  (\(room.inferredFloor)楼 · \(seatText)全天无课)",
+                    action: #selector(quickSelectStudyRoomMenuAction(_:)),
+                    keyEquivalent: ""
+                )
+                item.state = isCurrent ? .on : .off
+                item.target = self
+                item.representedObject = room
+                submenu.addItem(item)
+            }
+        }
+
+        // 明日全天空闲（搬书推荐）
+        let tomorrowRec = service.buildTomorrowRecommendation(limit: 4)
+        if !tomorrowRec.candidates.isEmpty || tomorrowRec.isCurrentRoomAllDayFreeTomorrow {
+            submenu.addItem(NSMenuItem.separator())
+            let tmrHeaderTitle: String
+            if tomorrowRec.isCurrentRoomAllDayFreeTomorrow, let curName = tomorrowRec.currentStudyRoomName {
+                tmrHeaderTitle = "明日自习：\(curName) 明天继续全天无课"
+            } else {
+                tmrHeaderTitle = "明日全天空闲教室 (点击可预约明日自习)"
+            }
+            let tmrHeader = NSMenuItem(title: tmrHeaderTitle, action: nil, keyEquivalent: "")
+            tmrHeader.isEnabled = false
+            submenu.addItem(tmrHeader)
+
+            for cand in tomorrowRec.candidates {
+                let isNext = (SettingsManager.shared.nextDayStudyRoom?.roomId == cand.room.id)
+                let item = NSMenuItem(
+                    title: "\(cand.room.nameZh)  (\(cand.badgeText))",
+                    action: #selector(quickReserveTomorrowRoomMenuAction(_:)),
+                    keyEquivalent: ""
+                )
+                item.state = isNext ? .on : .off
+                item.target = self
+                item.representedObject = cand.room
+                submenu.addItem(item)
+            }
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let openWinItem = NSMenuItem(title: "打开空教室查询与自习管理面板...", action: #selector(openEmptyClassroomWindowAction), keyEquivalent: "e")
+        openWinItem.target = self
+        submenu.addItem(openWinItem)
+
+        let refreshRoomsItem = NSMenuItem(title: "立即刷新空教室占用数据", action: #selector(refreshEmptyClassroomsMenuAction), keyEquivalent: "")
+        refreshRoomsItem.target = self
+        submenu.addItem(refreshRoomsItem)
+    }
+
+    @objc private func openEmptyClassroomWindowAction() {
+        EmptyClassroomWindowController.shared.showWindowAndSync()
+    }
+
+    @objc private func quickSelectStudyRoomMenuAction(_ sender: NSMenuItem) {
+        guard let room = sender.representedObject as? EmptyClassroomItem else { return }
+        let campus = EmptyClassroomService.shared.currentPreferredCampus
+        EmptyClassroomService.shared.setCurrentStudyRoom(room, campus: campus)
+        NotificationHelper.sendNotification(
+            title: "已设定当前自习教室",
+            body: "当前自习室：\(room.nameZh)。当有课程或考试占用前会自动提醒切换。"
+        )
+    }
+
+    @objc private func quickReserveTomorrowRoomMenuAction(_ sender: NSMenuItem) {
+        guard let room = sender.representedObject as? EmptyClassroomItem else { return }
+        let campus = EmptyClassroomService.shared.currentPreferredCampus
+        EmptyClassroomService.shared.setNextDayStudyRoom(room, campus: campus)
+        NotificationHelper.sendNotification(
+            title: "已预约明日自习教室",
+            body: "明日自习室：\(room.nameZh)。明天打开软件时将自动切换为当前自习教室。"
+        )
+    }
+
+    @objc private func clearStudyRoomMenuAction() {
+        EmptyClassroomService.shared.clearCurrentStudyRoom()
+    }
+
+    @objc private func refreshEmptyClassroomsMenuAction() {
+        EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
+    }
+
     @objc private func checkUpdateAction() {
-        checkUpdateMenuItem?.title = "🔄 正在检查更新..."
+        checkUpdateMenuItem?.title = "正在检查更新..."
         UpdateChecker.shared.checkForUpdates(manual: true) { [weak self] _ in
             self?.refreshUpdateMenuItemTitle()
         }
@@ -629,9 +895,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     private func refreshUpdateMenuItemTitle() {
         if let release = UpdateChecker.shared.availableUpdate {
-            checkUpdateMenuItem?.title = "🔴 发现新版本 \(release.tagName) (点击下载更新)..."
+            checkUpdateMenuItem?.image = statusDotImage(color: .systemRed)
+            checkUpdateMenuItem?.title = "发现新版本 \(release.tagName) (点击下载更新)..."
         } else {
-            checkUpdateMenuItem?.title = "🔄 检查软件更新 (v\(UpdateChecker.shared.currentVersion))..."
+            checkUpdateMenuItem?.image = symbolImage("arrow.triangle.2.circlepath")
+            checkUpdateMenuItem?.title = "检查软件更新 (v\(UpdateChecker.shared.currentVersion))..."
         }
     }
 

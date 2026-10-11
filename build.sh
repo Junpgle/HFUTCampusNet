@@ -21,12 +21,15 @@ SOURCES=(
     "HFUTCampusNet/Models.swift"
     "HFUTCampusNet/ElectricityModels.swift"
     "HFUTCampusNet/CourseModels.swift"
+    "HFUTCampusNet/EmptyClassroomModels.swift"
     "HFUTCampusNet/CampusHistoryManager.swift"
     "HFUTCampusNet/ElectricityService.swift"
     "HFUTCampusNet/CourseScheduleService.swift"
+    "HFUTCampusNet/EmptyClassroomService.swift"
     "HFUTCampusNet/CourseLoginWebViewController.swift"
     "HFUTCampusNet/UnifiedLoginWebViewController.swift"
     "HFUTCampusNet/CourseScheduleWindowController.swift"
+    "HFUTCampusNet/EmptyClassroomWindowController.swift"
     "HFUTCampusNet/HistoryStatsWindowController.swift"
     "HFUTCampusNet/SettingsManager.swift"
     "HFUTCampusNet/NotificationHelper.swift"
@@ -74,7 +77,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.5.0</string>
+    <string>1.6.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>

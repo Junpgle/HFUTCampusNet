@@ -53,15 +53,14 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         window.contentView = contentView
 
         // 顶部控制条
-        let topBar = NSView(frame: NSRect(x: 0, y: 780 - 54, width: 880, height: 54))
+        let topBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 780 - 54, width: 880, height: 54))
         topBar.autoresizingMask = [.width, .minYMargin]
-        topBar.wantsLayer = true
-        topBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        topBar.dynamicBackgroundColor = .windowBackgroundColor
         contentView.addSubview(topBar)
 
-        segmentedControl = NSSegmentedControl(labels: ["📶 校园网流量统计", "⚡ 宿舍用电与电费"], trackingMode: .selectOne, target: self, action: #selector(onSegmentChanged(_:)))
+        segmentedControl = NSSegmentedControl(labels: ["校园网流量统计", "宿舍用电与电费"], trackingMode: .selectOne, target: self, action: #selector(onSegmentChanged(_:)))
         segmentedControl.selectedSegment = currentMode
-        segmentedControl.frame = NSRect(x: 20, y: 12, width: 280, height: 30)
+        segmentedControl.frame = NSRect(x: 20, y: 12, width: 260, height: 30)
         topBar.addSubview(segmentedControl)
 
         let refreshBtn = NSButton(title: "立即刷新", target: self, action: #selector(onRefreshClicked))
@@ -74,7 +73,7 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         ssoBtn.frame = NSRect(x: 480, y: 11, width: 140, height: 30)
         topBar.addSubview(ssoBtn)
 
-        let settingsBtn = NSButton(title: "⚙️ 宿舍配置", target: self, action: #selector(onOpenSettings))
+        let settingsBtn = NSButton(title: "宿舍配置...", target: self, action: #selector(onOpenSettings))
         settingsBtn.bezelStyle = .rounded
         settingsBtn.frame = NSRect(x: 330, y: 11, width: 110, height: 30)
         topBar.addSubview(settingsBtn)
@@ -91,13 +90,12 @@ public class HistoryStatsWindowController: NSWindowController, NSTableViewDataSo
         cardSubLabels.removeAll()
 
         for i in 0..<4 {
-            let card = NSView(frame: NSRect(x: startX + CGFloat(i) * (cardW + gap), y: cardY, width: cardW, height: cardH))
+            let card = AdaptiveBoxView(frame: NSRect(x: startX + CGFloat(i) * (cardW + gap), y: cardY, width: cardW, height: cardH))
             card.autoresizingMask = [.minYMargin]
-            card.wantsLayer = true
-            card.layer?.cornerRadius = 10
-            card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6).cgColor
-            card.layer?.borderWidth = 0.5
-            card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            card.dynamicCornerRadius = 10
+            card.dynamicBackgroundColor = NSColor.labelColor.withAlphaComponent(0.035)
+            card.dynamicBorderColor = NSColor.labelColor.withAlphaComponent(0.10)
+            card.dynamicBorderWidth = 1.0
 
             let titleLabel = NSTextField(labelWithString: "指标")
             titleLabel.frame = NSRect(x: 14, y: cardH - 24, width: cardW - 28, height: 16)
@@ -472,7 +470,7 @@ public class HistoryBarChartView: NSView {
 
         // 绘制刻度参考虚线
         context.saveGState()
-        context.setStrokeColor(NSColor.separatorColor.withAlphaComponent(0.25).cgColor)
+        NSColor.labelColor.withAlphaComponent(0.10).setStroke()
         context.setLineDash(phase: 0, lengths: [4, 4])
         for step in 1...3 {
             let y = chartBottom + chartHeight * CGFloat(step) / 3.0
@@ -514,7 +512,7 @@ public class HistoryBarChartView: NSView {
     }
 }
 
-/// 套餐限额进度条卡片（仿照单日限额 30GB + 每月限额 200GB免费/400GB上限 + 3终端同时在线）
+/// 套餐限额进度条卡片（单日限额 30GB + 每月限额 200GB免费/400GB上限 + 3终端同时在线）
 public class CampusQuotaCardView: NSView {
     private var mode: Int = 0
     public var isCompactMenuMode: Bool = false
@@ -527,15 +525,25 @@ public class CampusQuotaCardView: NSView {
     public override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        // 外框圆角白底/自适应卡片
-        let bgPath = NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12)
-        NSColor.controlBackgroundColor.withAlphaComponent(isCompactMenuMode ? 0.85 : 0.65).setFill()
-        bgPath.fill()
-        NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
-        bgPath.lineWidth = 0.8
-        bgPath.stroke()
+        // 外框圆角容器
+        let radius: CGFloat = isCompactMenuMode ? 8 : 10
+        let insetBounds = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let bgPath = NSBezierPath(roundedRect: insetBounds, xRadius: radius, yRadius: radius)
+        if isCompactMenuMode {
+            NSColor.labelColor.withAlphaComponent(0.045).setFill()
+            bgPath.fill()
+            NSColor.separatorColor.withAlphaComponent(0.22).setStroke()
+            bgPath.lineWidth = 0.5
+            bgPath.stroke()
+        } else {
+            NSColor.controlBackgroundColor.withAlphaComponent(0.65).setFill()
+            bgPath.fill()
+            NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
+            bgPath.lineWidth = 0.8
+            bgPath.stroke()
+        }
 
-        let padX: CGFloat = isCompactMenuMode ? 14 : 18
+        let padX: CGFloat = isCompactMenuMode ? 12 : 18
 
         // 顶部说明标题
         if !isCompactMenuMode {
@@ -573,14 +581,14 @@ public class CampusQuotaCardView: NSView {
             let monthlyRemainRatio: Double
 
             let onlineCount = netData.onlineDevices.count
-            let onlineBadge = isCompactMenuMode ? " · \(onlineCount)/3台在线" : "  (当前在线 \(onlineCount)/3 台终端)"
+            let onlineBadge = isCompactMenuMode ? " · \(onlineCount)/3 台在线" : "  (当前在线 \(onlineCount)/3 台终端)"
 
             if monthlyUsedMB <= freeLimitMB {
                 monthlyRemainRatio = max(0.0, min(1.0, (freeLimitMB - monthlyUsedMB) / freeLimitMB))
                 let pct = Int(round(monthlyRemainRatio * 100))
                 let usedGB = String(format: "%.2f GB", monthlyUsedMB / 1024.0)
                 monthlyTitle = isCompactMenuMode
-                    ? "每月限额 (200GB免费/400GB\(onlineBadge))"
+                    ? "每月限额 (200 GB 免费 / 400 GB\(onlineBadge))"
                     : "每月免费限额 (200 GB 免费 / 月上限 400 GB)\(onlineBadge)"
                 monthlySubLeft = isCompactMenuMode
                     ? "\(CampusHistoryManager.shared.monthlyResetCountdownString) · 已用 \(usedGB)"
@@ -593,16 +601,16 @@ public class CampusQuotaCardView: NSView {
                 let extraGB = max(0.0, usedGB - 200.0)
                 let extraFee = extraGB * 0.5
                 monthlyTitle = isCompactMenuMode
-                    ? "每月限额 (400GB上限·0.5元/G\(onlineBadge))"
+                    ? "每月限额 (400 GB 上限 · 0.5 元/G\(onlineBadge))"
                     : "每月总限额 (400 GB 上限 · 超出 0.5元/GB)\(onlineBadge)"
                 monthlySubLeft = isCompactMenuMode
-                    ? String(format: "%@ · 已用 %.1fG (超%.1fG)", CampusHistoryManager.shared.monthlyResetCountdownString, usedGB, extraGB)
+                    ? String(format: "%@ · 已用 %.1f G (超 %.1f G)", CampusHistoryManager.shared.monthlyResetCountdownString, usedGB, extraGB)
                     : String(format: "%@  ·  已用 %.2f GB (超免费 %.1f GB ≈ ¥%.2f)", CampusHistoryManager.shared.monthlyResetCountdownString, usedGB, extraGB, extraFee)
                 monthlySubRight = "剩余 \(pct)%"
             }
 
-            let row1Y: CGFloat = isCompactMenuMode ? bounds.height - 54 : bounds.height - 68
-            let row2Y: CGFloat = isCompactMenuMode ? 12 : 14
+            let row1Y: CGFloat = isCompactMenuMode ? bounds.height - 50 : bounds.height - 68
+            let row2Y: CGFloat = isCompactMenuMode ? 10 : 14
 
             drawQuotaRow(
                 y: row1Y,
@@ -662,33 +670,35 @@ public class CampusQuotaCardView: NSView {
 
         // 标题行
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: isCompactMenuMode ? 12.0 : 13.0, weight: .bold),
+            .font: NSFont.systemFont(ofSize: isCompactMenuMode ? 11.5 : 13.0, weight: .semibold),
             .foregroundColor: NSColor.labelColor
         ]
-        title.draw(at: NSPoint(x: padX, y: y + 26), withAttributes: titleAttrs)
+        title.draw(at: NSPoint(x: padX, y: y + (isCompactMenuMode ? 24 : 26)), withAttributes: titleAttrs)
 
         // 副标题左（重置时间）与右（剩余百分比）
         let subAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: isCompactMenuMode ? 10.5 : 11.5, weight: .regular),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: isCompactMenuMode ? 10.5 : 11.5, weight: .regular),
             .foregroundColor: NSColor.secondaryLabelColor
         ]
-        subLeft.draw(at: NSPoint(x: padX, y: y + 10), withAttributes: subAttrs)
+        subLeft.draw(at: NSPoint(x: padX, y: y + (isCompactMenuMode ? 8 : 10)), withAttributes: subAttrs)
 
         let rightSize = subRight.size(withAttributes: subAttrs)
-        subRight.draw(at: NSPoint(x: padX + totalW - rightSize.width, y: y + 10), withAttributes: subAttrs)
+        subRight.draw(at: NSPoint(x: padX + totalW - rightSize.width, y: y + (isCompactMenuMode ? 8 : 10)), withAttributes: subAttrs)
 
         // 进度条轨道
-        let barH: CGFloat = 6.5
+        let barH: CGFloat = isCompactMenuMode ? 5.0 : 6.0
         let trackRect = NSRect(x: padX, y: y, width: totalW, height: barH)
         let trackPath = NSBezierPath(roundedRect: trackRect, xRadius: barH / 2, yRadius: barH / 2)
-        NSColor.separatorColor.withAlphaComponent(0.35).setFill()
+        NSColor.quaternaryLabelColor.withAlphaComponent(0.45).setFill()
         trackPath.fill()
 
-        // 进度条填充（长度对应剩余额度占比，与参考图一致）
+        // 进度条填充（长度对应剩余额度占比）
         let fillW = max(barH, totalW * CGFloat(max(0.0, min(1.0, remainRatio))))
         let fillRect = NSRect(x: padX, y: y, width: fillW, height: barH)
         let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: barH / 2, yRadius: barH / 2)
-        let fillColor: NSColor = remainRatio < 0.15 ? .systemRed : (remainRatio < 0.3 ? .systemOrange : .labelColor)
+        let fillColor: NSColor = remainRatio < 0.15
+            ? .systemRed
+            : (remainRatio < 0.3 ? .systemOrange : NSColor.labelColor.withAlphaComponent(0.78))
         fillColor.setFill()
         fillPath.fill()
     }

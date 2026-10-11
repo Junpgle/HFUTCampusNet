@@ -1,0 +1,1087 @@
+import Foundation
+import Security
+
+public class EmptyClassroomService: NSObject, URLSessionDelegate {
+    public static let shared = EmptyClassroomService()
+
+    private static let uniAppBaseURL = "https://jwglapp.hfut.edu.cn"
+    private static let rsaPublicKeyBase64 = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCFY5N+9UX+0BF+xz1svFguI4CIDvmQTfINkOZ1HOO3ltBNHGQTUirUPQTyEph/+q/l8b16YYw3I2fyTH6y15s3tHf5jMei+R/20jFRGo5udwVJUwq/RozKQIRzCtPYkXG4YWBnHKhXalZ5K2fhd5i/QtB016nVugH/7eiBDWbKVwIDAQAB"
+
+    public private(set) var allBuildings: [ClassroomBuilding] = []
+    /// 内存缓存：key 为 "\(campus.rawValue)|\(dateString)|\(buildingIdsKey)"
+    private var roomsCache: [String: [EmptyClassroomItem]] = [:]
+    /// 按校区 + 日期汇总的主力教学楼空教室缓存：key 为 "\(campus.rawValue)|\(dateString)"
+    public private(set) var studyRoomsByDate: [String: [EmptyClassroomItem]] = [:]
+    public private(set) var lastSyncTime: Date?
+    /// 各校区上次成功刷新时间：key 为 campus.rawValue
+    public private(set) var lastSyncTimeByCampus: [Int: Date] = [:]
+    public private(set) var isSyncing: Bool = false
+    public private(set) var lastErrorMessage: String?
+
+    private var monitorTimer: Timer?
+    private let fileManager = FileManager.default
+
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 35.0
+        config.timeoutIntervalForResource = 40.0
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+
+    private var appSupportDir: URL {
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = base.appendingPathComponent("cn.edu.hfut.campusnet.monitor", isDirectory: true)
+        if !fileManager.fileExists(atPath: dir.path) {
+            try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    private var buildingsCacheURL: URL {
+        appSupportDir.appendingPathComponent("classroom_buildings.json")
+    }
+
+    private var studyRoomsCacheURL: URL {
+        appSupportDir.appendingPathComponent("study_rooms_cache.json")
+    }
+
+    private var syncMetaCacheURL: URL {
+        appSupportDir.appendingPathComponent("study_rooms_sync_meta.json")
+    }
+
+    private override init() {
+        super.init()
+        loadLocalCache()
+        checkStudyRoomDayRollover()
+    }
+
+    // MARK: - SSL Trust Delegate (兼容校园网内部证书)
+
+    public func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    // MARK: - 本地缓存读写
+
+    private func loadLocalCache() {
+        if fileManager.fileExists(atPath: buildingsCacheURL.path),
+           let data = try? Data(contentsOf: buildingsCacheURL),
+           let decoded = try? JSONDecoder().decode([ClassroomBuilding].self, from: data) {
+            self.allBuildings = decoded
+        }
+        if fileManager.fileExists(atPath: studyRoomsCacheURL.path),
+           let data = try? Data(contentsOf: studyRoomsCacheURL),
+           let decoded = try? JSONDecoder().decode([String: [EmptyClassroomItem]].self, from: data) {
+            self.studyRoomsByDate = decoded
+        }
+        if fileManager.fileExists(atPath: syncMetaCacheURL.path),
+           let data = try? Data(contentsOf: syncMetaCacheURL),
+           let decoded = try? JSONDecoder().decode([Int: Date].self, from: data) {
+            self.lastSyncTimeByCampus = decoded
+            self.lastSyncTime = decoded.values.max()
+        } else if fileManager.fileExists(atPath: studyRoomsCacheURL.path),
+                  let attrs = try? fileManager.attributesOfItem(atPath: studyRoomsCacheURL.path),
+                  let modDate = attrs[.modificationDate] as? Date {
+            // 兼容已有缓存文件：用缓存文件的最后修改时间初始化对应校区的刷新时间
+            for key in studyRoomsByDate.keys {
+                let parts = key.split(separator: "|")
+                if let first = parts.first, let rawCampus = Int(first) {
+                    lastSyncTimeByCampus[rawCampus] = modDate
+                }
+            }
+            self.lastSyncTime = modDate
+        }
+    }
+
+    private func saveBuildingsCache(_ buildings: [ClassroomBuilding]) {
+        self.allBuildings = buildings
+        if let data = try? JSONEncoder().encode(buildings) {
+            try? data.write(to: buildingsCacheURL, options: .atomic)
+        }
+    }
+
+    private func saveStudyRoomsCache() {
+        // 仅保留今天、明天与近期缓存，避免无限增长
+        let today = Self.todayDateString()
+        let filtered = studyRoomsByDate.filter { key, _ in
+            let parts = key.split(separator: "|")
+            guard parts.count >= 2 else { return false }
+            return String(parts[1]) >= today
+        }
+        self.studyRoomsByDate = filtered
+        if let data = try? JSONEncoder().encode(filtered) {
+            try? data.write(to: studyRoomsCacheURL, options: .atomic)
+        }
+    }
+
+    public func recordCampusSyncTime(_ campus: StudyCampus, date: Date = Date()) {
+        lastSyncTime = date
+        lastSyncTimeByCampus[campus.rawValue] = date
+        if let data = try? JSONEncoder().encode(lastSyncTimeByCampus) {
+            try? data.write(to: syncMetaCacheURL, options: .atomic)
+        }
+    }
+
+    public func lastSyncDate(for campus: StudyCampus) -> Date? {
+        return lastSyncTimeByCampus[campus.rawValue] ?? lastSyncTime
+    }
+
+    /// 供顶部筛选栏刷新按钮旁展示的简短上次刷新时间（如「上次刷新 19:12 (刚刚)」）
+    public func formattedShortLastSync(for campus: StudyCampus) -> String {
+        guard let date = lastSyncDate(for: campus) else {
+            return "上次刷新：暂未同步"
+        }
+        let fmt = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            fmt.dateFormat = "HH:mm"
+        } else {
+            fmt.dateFormat = "MM-dd HH:mm"
+        }
+        let timeStr = fmt.string(from: date)
+        let rel = Self.relativeTimeDescription(from: date)
+        return "上次刷新 \(timeStr) (\(rel))"
+    }
+
+    /// 供底部状态栏与悬停提示展示的完整上次刷新时间（如「上次刷新：今天 19:12:08（2 分钟前）」）
+    public func formattedFullLastSync(for campus: StudyCampus) -> String {
+        guard let date = lastSyncDate(for: campus) else {
+            return "上次刷新：暂未同步"
+        }
+        let fmt = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            fmt.dateFormat = "HH:mm:ss"
+            let rel = Self.relativeTimeDescription(from: date)
+            return "上次刷新：今天 \(fmt.string(from: date))（\(rel)）"
+        } else {
+            fmt.dateFormat = "MM-dd HH:mm:ss"
+            let rel = Self.relativeTimeDescription(from: date)
+            return "上次刷新：\(fmt.string(from: date))（\(rel)）"
+        }
+    }
+
+    private static func relativeTimeDescription(from date: Date) -> String {
+        let secs = max(0, Int(Date().timeIntervalSince(date)))
+        if secs < 60 {
+            return "刚刚"
+        }
+        let mins = secs / 60
+        if mins < 60 {
+            return "\(mins)分钟前"
+        }
+        let hours = mins / 60
+        if hours < 24 {
+            return "\(hours)小时前"
+        }
+        let days = hours / 24
+        return "\(days)天前"
+    }
+
+    // MARK: - 定时监测与每日自动推进
+
+    public func startMonitoring() {
+        stopMonitoring()
+        checkStudyRoomDayRollover()
+
+        // 启动时自动拉取今日与明日的主力自习教学楼空教室数据
+        let campus = currentPreferredCampus
+        syncTodayAndTomorrowStudyRooms(campus: campus) { [weak self] _ in
+            self?.evaluateAndNotifyIfNeeded()
+        }
+
+        // 每 60 秒检查一次当前自习教室是否即将上课或进入晚间搬书时段
+        monitorTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.checkStudyRoomDayRollover()
+            self.evaluateAndNotifyIfNeeded()
+        }
+    }
+
+    public func stopMonitoring() {
+        monitorTimer?.invalidate()
+        monitorTimer = nil
+    }
+
+    public var currentPreferredCampus: StudyCampus {
+        if let record = SettingsManager.shared.currentStudyRoom,
+           let c = StudyCampus(rawValue: record.campusAssoc) {
+            return c
+        }
+        return StudyCampus.from(dormCampusString: SettingsManager.shared.dormCampus)
+    }
+
+    /// 检查跨天结转：若昨晚预订了「明日自习教室」，到了今天自动切换为「当前自习教室」
+    public func checkStudyRoomDayRollover() {
+        let todayStr = Self.todayDateString()
+        if let nextRoom = SettingsManager.shared.nextDayStudyRoom {
+            if nextRoom.dateString == todayStr {
+                SettingsManager.shared.currentStudyRoom = nextRoom
+                SettingsManager.shared.nextDayStudyRoom = nil
+                notifyUIUpdate()
+            } else if nextRoom.dateString < todayStr {
+                SettingsManager.shared.nextDayStudyRoom = nil
+            }
+        }
+        if let curRoom = SettingsManager.shared.currentStudyRoom, curRoom.dateString < todayStr {
+            // 跨天后若旧自习室仍存在于今日缓存，则自动续期日期以便继续监测或提醒
+            var updated = curRoom
+            updated.dateString = todayStr
+            SettingsManager.shared.currentStudyRoom = updated
+        }
+    }
+
+    // MARK: - 设定与切换当前自习空教室
+
+    public func setCurrentStudyRoom(_ room: EmptyClassroomItem, campus: StudyCampus) {
+        let todayStr = Self.todayDateString()
+        let record = CurrentStudyRoomRecord(
+            roomId: room.id,
+            roomName: room.nameZh,
+            buildingId: room.buildingId,
+            campusAssoc: campus.rawValue,
+            dateString: todayStr
+        )
+        SettingsManager.shared.currentStudyRoom = record
+        SettingsManager.shared.lastNotifiedStudyConflictId = nil
+        notifyUIUpdate()
+        evaluateAndNotifyIfNeeded(forceConflictCheck: true)
+    }
+
+    public func clearCurrentStudyRoom() {
+        SettingsManager.shared.currentStudyRoom = nil
+        SettingsManager.shared.lastNotifiedStudyConflictId = nil
+        notifyUIUpdate()
+    }
+
+    public func setNextDayStudyRoom(_ room: EmptyClassroomItem, campus: StudyCampus) {
+        let tomorrowStr = Self.tomorrowDateString()
+        let record = CurrentStudyRoomRecord(
+            roomId: room.id,
+            roomName: room.nameZh,
+            buildingId: room.buildingId,
+            campusAssoc: campus.rawValue,
+            dateString: tomorrowStr
+        )
+        SettingsManager.shared.nextDayStudyRoom = record
+        notifyUIUpdate()
+    }
+
+    public func clearNextDayStudyRoom() {
+        SettingsManager.shared.nextDayStudyRoom = nil
+        notifyUIUpdate()
+    }
+
+    private func notifyUIUpdate() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .emptyClassroomDidUpdate, object: nil)
+        }
+    }
+
+    // MARK: - 智能推荐算法（全天空闲推荐 / 上课附近换座推荐 / 晚间明日搬书推荐）
+
+    /// 获取指定日期与校区缓存的自习室列表
+    public func cachedStudyRooms(campus: StudyCampus? = nil, dateString: String? = nil) -> [EmptyClassroomItem] {
+        let c = campus ?? currentPreferredCampus
+        let d = dateString ?? Self.todayDateString()
+        return studyRoomsByDate["\(c.rawValue)|\(d)"] ?? []
+    }
+
+    /// 查找当前自习室对应的最新详情对象
+    public func currentStudyRoomItem(on dateString: String? = nil) -> EmptyClassroomItem? {
+        guard let record = SettingsManager.shared.currentStudyRoom else { return nil }
+        let targetDate = dateString ?? Self.todayDateString()
+        let campus = StudyCampus(rawValue: record.campusAssoc) ?? currentPreferredCampus
+        let rooms = cachedStudyRooms(campus: campus, dateString: targetDate)
+        if let matchById = rooms.first(where: { $0.id == record.roomId }) {
+            return matchById
+        }
+        return rooms.first(where: { $0.nameZh == record.roomName })
+    }
+
+    /// 【功能 1】当天刚打开时推荐一批全天空闲的教室（优先主力教学楼低楼层，一坐一整天不用搬）
+    public func recommendedTodayAllDayFreeRooms(campus: StudyCampus? = nil, limit: Int = 12) -> [EmptyClassroomItem] {
+        let c = campus ?? currentPreferredCampus
+        let todayStr = Self.todayDateString()
+        let rooms = cachedStudyRooms(campus: c, dateString: todayStr)
+        let nowMin = Self.currentMinutesOfDay()
+
+        // 优先筛选全天完全无课 (08:00-22:00) 的教室
+        let allDayFree = rooms.filter { $0.isAllDayFree }
+        let sortedAllDay = sortRoomsForSelfStudy(allDayFree, campus: c)
+
+        if sortedAllDay.count >= limit {
+            return Array(sortedAllDay.prefix(limit))
+        }
+
+        // 若全天无课教室不足，补充「当前至 22:00 余下全空」的教室
+        let restOfDayFree = rooms.filter { !$0.isAllDayFree && $0.isRestOfDayFree(atMinutes: nowMin) }
+        let combined = sortedAllDay + sortRoomsForSelfStudy(restOfDayFree, campus: c)
+        return Array(combined.prefix(limit))
+    }
+
+    /// 【功能 2】当当前自习教室有课程/占用时，推荐附近的空教室进行切换（同楼层隔壁优先 + 余下全空优先）
+    public func nearbySwitchRecommendations(
+        for sourceRoom: EmptyClassroomItem? = nil,
+        campus: StudyCampus? = nil,
+        limit: Int = 6
+    ) -> (conflictOccupation: ClassroomOccupation?, isCurrentlyOccupied: Bool, minutesUntilConflict: Int?, recommendations: [RecommendedSwitchRoom]) {
+        guard let currentRoom = sourceRoom ?? currentStudyRoomItem() else {
+            return (nil, false, nil, [])
+        }
+        let c = campus ?? currentPreferredCampus
+        let todayStr = Self.todayDateString()
+        let nowMin = Self.currentMinutesOfDay()
+
+        let ongoing = currentRoom.currentOccupation(atMinutes: nowMin)
+        let upcoming = currentRoom.nextOccupation(afterMinutes: nowMin)
+        guard let conflict = ongoing ?? upcoming else {
+            // 当前教室今日余下时间全空，无需换座
+            return (nil, false, nil, [])
+        }
+
+        let isOngoing = (ongoing != nil)
+        let minsUntil = isOngoing ? 0 : max(0, conflict.startMinutes - nowMin)
+
+        // 需要保证目标教室在 [min(nowMin, conflict.startMinutes), conflict.endMinutes] 内完全空闲且当前也空闲
+        let requiredFreeStart = min(nowMin, conflict.startMinutes)
+        let requiredFreeEnd = max(conflict.endMinutes, requiredFreeStart + 45)
+
+        let allRooms = cachedStudyRooms(campus: c, dateString: todayStr)
+        var candidates: [RecommendedSwitchRoom] = []
+
+        for candidate in allRooms where candidate.id != currentRoom.id {
+            // 候选教室当前不能正在上课，且在整个冲突时间段内必须空闲
+            guard candidate.currentOccupation(atMinutes: nowMin) == nil,
+                  candidate.isFree(from: requiredFreeStart, to: requiredFreeEnd) else {
+                continue
+            }
+            let prox = candidate.proximity(to: currentRoom)
+            let restFree = candidate.isRestOfDayFree(atMinutes: requiredFreeStart)
+            let freeUntilText: String
+            if candidate.isAllDayFree {
+                freeUntilText = "全天空闲 (至22:00)"
+            } else if restFree {
+                freeUntilText = "今日余下全空 (至22:00)"
+            } else if let nextOcc = candidate.nextOccupation(afterMinutes: requiredFreeStart) {
+                freeUntilText = "可自习至 \(nextOcc.startTimeString)"
+            } else {
+                freeUntilText = "今日余下全空"
+            }
+
+            candidates.append(
+                RecommendedSwitchRoom(
+                    room: candidate,
+                    proximity: prox,
+                    isRestOfDayFree: restFree,
+                    freeUntilText: freeUntilText
+                )
+            )
+        }
+
+        // 排序规则：
+        // 1. 同教学楼同楼层且余下全空 最优先
+        // 2. 物理距离层级 (tier: 同楼层 0 -> 同楼相邻层 1 -> 邻楼 2)
+        // 3. 是否今日余下全空 (避免换一次又要换第二次)
+        // 4. 房间间隔距离 sortScore
+        candidates.sort { a, b in
+            if a.proximity.tier != b.proximity.tier {
+                return a.proximity.tier < b.proximity.tier
+            }
+            if a.isRestOfDayFree != b.isRestOfDayFree {
+                return a.isRestOfDayFree && !b.isRestOfDayFree
+            }
+            return a.proximity.sortScore < b.proximity.sortScore
+        }
+
+        return (conflict, isOngoing, minsUntil, Array(candidates.prefix(limit)))
+    }
+
+    /// 【功能 3】晚上要走之前推荐第二天空闲的教室方便搬东西过去
+    public func buildTomorrowRecommendation(campus: StudyCampus? = nil, limit: Int = 8) -> TomorrowStudyRecommendation {
+        let c = campus ?? currentPreferredCampus
+        let todayStr = Self.todayDateString()
+        let tomorrowStr = Self.tomorrowDateString()
+        let nowMin = Self.currentMinutesOfDay()
+
+        let todayRooms = cachedStudyRooms(campus: c, dateString: todayStr)
+        let tomorrowRooms = cachedStudyRooms(campus: c, dateString: tomorrowStr)
+        let todayRoomMap = Dictionary(uniqueKeysWithValues: todayRooms.map { ($0.id, $0) })
+
+        let curRecord = SettingsManager.shared.currentStudyRoom
+        let curTodayItem = currentStudyRoomItem(on: todayStr)
+        let curTomorrowItem: EmptyClassroomItem? = {
+            guard let rec = curRecord else { return nil }
+            return tomorrowRooms.first(where: { $0.id == rec.roomId || $0.nameZh == rec.roomName })
+        }()
+
+        // 判断明天当前自习室是否全天空闲
+        let isCurrentFreeTomorrow = curTomorrowItem?.isAllDayFree ?? false
+        let currentFirstOccTomorrow = curTomorrowItem?.sortedOccupations.first
+
+        // 筛选明天全天空闲的教室，并结合今晚当前是否空闲、距离当前自习室远近排序
+        var candidates: [TomorrowCandidateRoom] = []
+        for rm in tomorrowRooms where rm.isAllDayFree {
+            if let cur = curTomorrowItem, rm.id == cur.id {
+                continue
+            }
+            let todayCounterpart = todayRoomMap[rm.id]
+            let tonightFree = (todayCounterpart?.currentOccupation(atMinutes: nowMin) == nil)
+            let prox = curTodayItem.map { rm.proximity(to: $0) }
+
+            let badge: String
+            if let p = prox {
+                badge = tonightFree ? "\(p.badgeText) · 今晚空闲可搬" : "\(p.badgeText) · 明日全空"
+            } else {
+                badge = tonightFree ? "\(rm.inferredFloor)F · 今晚空闲 · 明日全空" : "\(rm.inferredFloor)F · 明日全天空闲"
+            }
+
+            candidates.append(
+                TomorrowCandidateRoom(
+                    room: rm,
+                    isTonightCurrentlyFree: tonightFree,
+                    proximityToCurrent: prox,
+                    badgeText: badge
+                )
+            )
+        }
+
+        candidates.sort { a, b in
+            // 优先今晚此刻空闲（方便现在直接把书搬过去不打扰别人上课）
+            if a.isTonightCurrentlyFree != b.isTonightCurrentlyFree {
+                return a.isTonightCurrentlyFree && !b.isTonightCurrentlyFree
+            }
+            // 若设定了当前自习室，优先同楼层隔壁
+            if let pa = a.proximityToCurrent, let pb = b.proximityToCurrent {
+                if pa.tier != pb.tier { return pa.tier < pb.tier }
+                if pa.sortScore != pb.sortScore { return pa.sortScore < pb.sortScore }
+            }
+            // 否则按低楼层与房间号排序
+            if a.room.inferredFloor != b.room.inferredFloor {
+                return a.room.inferredFloor < b.room.inferredFloor
+            }
+            return a.room.inferredRoomNumber < b.room.inferredRoomNumber
+        }
+
+        let topCandidates = Array(candidates.prefix(limit))
+
+        let headline: String
+        let subheadline: String
+
+        if let cur = curTomorrowItem {
+            if isCurrentFreeTomorrow {
+                headline = "🎉 当前自习室「\(cur.nameZh)」明天全天无课！东西不用搬！"
+                subheadline = "明日 (08:00 - 22:00) 没有任何排课或占用，今晚离开前可将书本直接留在原位，或参考下方同楼层明日全空教室。"
+            } else if let firstOcc = currentFirstOccTomorrow {
+                let occCount = cur.sortedOccupations.count
+                let topNames = topCandidates.prefix(3).map { $0.room.nameZh }.joined(separator: "、")
+                headline = "📦 当前「\(cur.nameZh)」明天 \(firstOcc.startTimeString) 有课（共\(occCount)节），走前建议搬书！"
+                subheadline = topNames.isEmpty
+                    ? "明天最早 \(firstOcc.startTimeString) 将有《\(firstOcc.shortCourseName)》，建议今晚走前切换至明日全空教室。"
+                    : "为您精选最近的【明日全天空闲 + 今晚可随时搬入】教室：\(topNames)"
+            } else {
+                headline = "🌙 明日 (\(tomorrowStr)) 全天空闲教室搬书推荐"
+                subheadline = "晚上离开前可挑选一间明日全天无课的教室提前放书占座"
+            }
+        } else {
+            let topNames = topCandidates.prefix(4).map { $0.room.nameZh }.joined(separator: "、")
+            headline = "🌙 明日 (\(tomorrowStr)) 全天空闲教室推荐 · 方便今晚提前搬书"
+            subheadline = topNames.isEmpty
+                ? "正在同步明日空教室排课数据..."
+                : "明日全天无课且今晚当前空闲首选：\(topNames)"
+        }
+
+        return TomorrowStudyRecommendation(
+            tomorrowDateString: tomorrowStr,
+            currentStudyRoomName: curTomorrowItem?.nameZh ?? curRecord?.roomName,
+            isCurrentRoomAllDayFreeTomorrow: isCurrentFreeTomorrow,
+            currentRoomTomorrowFirstOccupation: currentFirstOccTomorrow,
+            headline: headline,
+            subheadline: subheadline,
+            candidates: topCandidates
+        )
+    }
+
+    private func sortRoomsForSelfStudy(_ rooms: [EmptyClassroomItem], campus: StudyCampus) -> [EmptyClassroomItem] {
+        let preferredNames = campus.preferredStudyBuildingNames
+        return rooms.sorted { a, b in
+            let idxA = preferredNames.firstIndex(where: { a.nameZh.contains($0) }) ?? 99
+            let idxB = preferredNames.firstIndex(where: { b.nameZh.contains($0) }) ?? 99
+            if idxA != idxB {
+                return idxA < idxB
+            }
+            if a.inferredFloor != b.inferredFloor {
+                return a.inferredFloor < b.inferredFloor
+            }
+            return a.inferredRoomNumber < b.inferredRoomNumber
+        }
+    }
+
+    // MARK: - 智能通知提醒触发（早间全空推荐 / 课前附近换座提醒 / 晚间明日搬书提醒）
+
+    public func evaluateAndNotifyIfNeeded(forceConflictCheck: Bool = false) {
+        let todayStr = Self.todayDateString()
+        let nowMin = Self.currentMinutesOfDay()
+
+        // 1. 当天刚打开时（且尚未设置今日自习室）：每天首次同步成功后推送一次「今日全天空闲教室推荐」
+        if SettingsManager.shared.lastNotifiedStudyMorningDate != todayStr {
+            let todayAllFree = recommendedTodayAllDayFreeRooms(limit: 5)
+            if !todayAllFree.isEmpty {
+                SettingsManager.shared.lastNotifiedStudyMorningDate = todayStr
+                if SettingsManager.shared.currentStudyRoom == nil {
+                    let names = todayAllFree.prefix(4).map { $0.nameZh }.joined(separator: "、")
+                    NotificationHelper.showNotification(
+                        title: "☀️ 今日自习全天空闲教室推荐",
+                        subtitle: "一坐一整天无需换座（共 \(todayAllFree.count)+ 间全空）",
+                        body: "推荐前往：\(names)。可在状态栏「🏫 自习空教室」中一键设为当前自习室！"
+                    )
+                }
+            }
+        }
+
+        // 2. 当前自习教室即将上课（提前 25 分钟内）或正在上课时，自动推送附近空教室切换提醒
+        if let currentRoom = currentStudyRoomItem(on: todayStr) {
+            let (conflict, isOngoing, minsUntil, recs) = nearbySwitchRecommendations(for: currentRoom, limit: 3)
+            if let occ = conflict, let mins = minsUntil, (isOngoing || mins <= 25 || forceConflictCheck) {
+                if isOngoing || mins <= 30 {
+                    let conflictKey = "\(todayStr)-\(currentRoom.id)-\(occ.startTimeString)"
+                    if SettingsManager.shared.lastNotifiedStudyConflictId != conflictKey {
+                        SettingsManager.shared.lastNotifiedStudyConflictId = conflictKey
+                        let recText = recs.isEmpty
+                            ? "请打开空教室窗口查看附近空闲教室"
+                            : recs.map { "\($0.room.nameZh)(\($0.proximity.badgeText))" }.joined(separator: "、")
+                        let statusDesc = isOngoing
+                            ? "当前正在上《\(occ.shortCourseName)》(\(occ.startTimeString)-\(occ.endTimeString))"
+                            : "\(mins)分钟后 (\(occ.startTimeString)) 将有《\(occ.shortCourseName)》"
+                        NotificationHelper.showNotification(
+                            title: "⚠️ 自习室换座提醒 · \(currentRoom.nameZh)",
+                            subtitle: statusDesc,
+                            body: "推荐就近切换至：\(recText)"
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. 晚上 18:30 之后（离开教学楼前）：每天推送一次「第二天空闲教室搬书/留座指南」
+        if nowMin >= 18 * 60 + 30 && SettingsManager.shared.lastNotifiedStudyEveningDate != todayStr {
+            let tomorrowRooms = cachedStudyRooms(dateString: Self.tomorrowDateString())
+            if !tomorrowRooms.isEmpty {
+                SettingsManager.shared.lastNotifiedStudyEveningDate = todayStr
+                let tomorrowRec = buildTomorrowRecommendation(limit: 4)
+                if tomorrowRec.isCurrentRoomAllDayFreeTomorrow, let curName = tomorrowRec.currentStudyRoomName {
+                    NotificationHelper.showNotification(
+                        title: "🌙 明日自习留座好消息 · \(curName)",
+                        subtitle: "当前自习室明天全天无课，东西不用搬！",
+                        body: "明天 08:00-22:00 全天无排课，书本可直接留原位。"
+                    )
+                } else if !tomorrowRec.candidates.isEmpty {
+                    let names = tomorrowRec.candidates.prefix(3).map { "\($0.room.nameZh)(\($0.badgeText))" }.joined(separator: "、")
+                    NotificationHelper.showNotification(
+                        title: "🌙 晚上走前 · 明日空教室搬书推荐",
+                        subtitle: tomorrowRec.headline,
+                        body: "推荐搬至：\(names)"
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - 网络同步（自动登录合工大教务移动端接口 + 同步今日与明日自习教室）
+
+    /// 一键同步指定校区「今天」和「明天」的主力教学楼空教室数据
+    public func syncTodayAndTomorrowStudyRooms(
+        campus: StudyCampus? = nil,
+        forceRefresh: Bool = false,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let targetCampus = campus ?? currentPreferredCampus
+        let todayStr = Self.todayDateString()
+        let tomorrowStr = Self.tomorrowDateString()
+
+        if !forceRefresh,
+           let todayCached = studyRoomsByDate["\(targetCampus.rawValue)|\(todayStr)"], !todayCached.isEmpty,
+           let tomorrowCached = studyRoomsByDate["\(targetCampus.rawValue)|\(tomorrowStr)"], !tomorrowCached.isEmpty {
+            completion(.success(()))
+            return
+        }
+
+        isSyncing = true
+        lastErrorMessage = nil
+        notifyUIUpdate()
+
+        fetchBuildings(forceRefresh: forceRefresh) { [weak self] bResult in
+            guard let self = self else { return }
+            switch bResult {
+            case .failure(let err):
+                self.isSyncing = false
+                self.lastErrorMessage = err.localizedDescription
+                self.notifyUIUpdate()
+                completion(.failure(err))
+
+            case .success(let buildings):
+                let campusBuildings = buildings.filter { $0.campusAssoc == targetCampus.rawValue }
+                let preferredIds = campusBuildings.filter { $0.isPreferredStudyBuilding }.map { $0.id }
+                let targetBuildingIds = preferredIds.isEmpty ? campusBuildings.map { $0.id } : preferredIds
+
+                let group = DispatchGroup()
+                var firstError: Error?
+
+                group.enter()
+                self.fetchRooms(
+                    dateString: todayStr,
+                    campus: targetCampus,
+                    buildingIds: targetBuildingIds,
+                    forceRefresh: forceRefresh
+                ) { res in
+                    if case .success(let rooms) = res {
+                        self.studyRoomsByDate["\(targetCampus.rawValue)|\(todayStr)"] = rooms
+                    } else if case .failure(let e) = res {
+                        firstError = e
+                    }
+                    group.leave()
+                }
+
+                group.enter()
+                self.fetchRooms(
+                    dateString: tomorrowStr,
+                    campus: targetCampus,
+                    buildingIds: targetBuildingIds,
+                    forceRefresh: forceRefresh
+                ) { res in
+                    if case .success(let rooms) = res {
+                        self.studyRoomsByDate["\(targetCampus.rawValue)|\(tomorrowStr)"] = rooms
+                    } else if case .failure(let e) = res, firstError == nil {
+                        firstError = e
+                    }
+                    group.leave()
+                }
+
+                group.notify(queue: .main) {
+                    self.isSyncing = false
+                    if let err = firstError, self.studyRoomsByDate["\(targetCampus.rawValue)|\(todayStr)"] == nil {
+                        self.lastErrorMessage = err.localizedDescription
+                        self.notifyUIUpdate()
+                        completion(.failure(err))
+                    } else {
+                        self.recordCampusSyncTime(targetCampus)
+                        self.lastErrorMessage = nil
+                        self.saveStudyRoomsCache()
+                        self.notifyUIUpdate()
+                        self.evaluateAndNotifyIfNeeded()
+                        completion(.success(()))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 获取全部教学楼列表
+
+    public func fetchBuildings(
+        forceRefresh: Bool = false,
+        completion: @escaping (Result<[ClassroomBuilding], Error>) -> Void
+    ) {
+        if !forceRefresh, !allBuildings.isEmpty {
+            completion(.success(allBuildings))
+            return
+        }
+
+        ensureValidToken(forceRelogin: false) { [weak self] tokenResult in
+            guard let self = self else { return }
+            switch tokenResult {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let token):
+                self.requestBuildingsWithToken(token, allowRetry: true, completion: completion)
+            }
+        }
+    }
+
+    private func requestBuildingsWithToken(
+        _ token: String,
+        allowRetry: Bool,
+        completion: @escaping (Result<[ClassroomBuilding], Error>) -> Void
+    ) {
+        guard let url = URL(string: "\(Self.uniAppBaseURL)/eams-micro-server/api/v1/room/place/building?campusAssoc=") else {
+            completion(.failure(NSError(domain: "EmptyClassroom", code: -1, userInfo: [NSLocalizedDescriptionKey: "教学楼请求地址无效"])))
+            return
+        }
+
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30.0)
+        req.httpMethod = "GET"
+        req.setValue(token, forHTTPHeaderField: "Authorization")
+
+        session.dataTask(with: req) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+
+            let http = response as? HTTPURLResponse
+            let statusCode = http?.statusCode ?? 0
+
+            struct BuildingResponseRoot: Decodable {
+                let data: [ClassroomBuilding]?
+            }
+
+            if statusCode == 200,
+               let data = data,
+               let root = try? JSONDecoder().decode(BuildingResponseRoot.self, from: data),
+               let list = root.data, !list.isEmpty {
+                let validCampuses = Set(StudyCampus.allCases.map { $0.rawValue })
+                let filtered = list.filter { validCampuses.contains($0.campusAssoc) }
+                self.saveBuildingsCache(filtered)
+                completion(.success(filtered))
+                return
+            }
+
+            // Token 失效或返回 401/500，自动重新登录一次
+            if allowRetry {
+                self.ensureValidToken(forceRelogin: true) { retryTokenRes in
+                    switch retryTokenRes {
+                    case .success(let newToken):
+                        self.requestBuildingsWithToken(newToken, allowRetry: false, completion: completion)
+                    case .failure(let err):
+                        completion(.failure(err))
+                    }
+                }
+            } else {
+                completion(.failure(NSError(domain: "EmptyClassroom", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "拉取教学楼列表失败 (HTTP \(statusCode))"])))
+            }
+        }.resume()
+    }
+
+    // MARK: - 获取指定条件下的空教室与占用时间轴列表
+
+    public func fetchRooms(
+        dateString: String,
+        campus: StudyCampus,
+        buildingIds: [Int]?,
+        forceRefresh: Bool = false,
+        completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
+    ) {
+        let sortedIds = (buildingIds ?? []).sorted()
+        let cacheKey = "\(campus.rawValue)|\(dateString)|\(sortedIds.map(String.init).joined(separator: ","))"
+        if !forceRefresh, let cached = roomsCache[cacheKey], !cached.isEmpty {
+            completion(.success(cached))
+            return
+        }
+
+        ensureValidToken(forceRelogin: false) { [weak self] tokenResult in
+            guard let self = self else { return }
+            switch tokenResult {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let token):
+                self.requestRoomsWithToken(
+                    token: token,
+                    dateString: dateString,
+                    campus: campus,
+                    buildingIds: sortedIds,
+                    cacheKey: cacheKey,
+                    allowRetry: true,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func requestRoomsWithToken(
+        token: String,
+        dateString: String,
+        campus: StudyCampus,
+        buildingIds: [Int],
+        cacheKey: String,
+        allowRetry: Bool,
+        completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
+    ) {
+        guard let url = URL(string: "\(Self.uniAppBaseURL)/eams-micro-server/api/v1/room/place/rooms") else {
+            completion(.failure(NSError(domain: "EmptyClassroom", code: -1, userInfo: [NSLocalizedDescriptionKey: "空教室请求地址无效"])))
+            return
+        }
+
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 35.0)
+        req.httpMethod = "POST"
+        req.setValue(token, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+
+        var bodyDict: [String: Any] = [
+            "currentPage": 1,
+            "date": dateString,
+            "campusAssoc": campus.rawValue,
+            "pageSize": 350
+        ]
+        if !buildingIds.isEmpty {
+            bodyDict["buildingIds"] = buildingIds
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: bodyDict)
+
+        session.dataTask(with: req) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+
+            let http = response as? HTTPURLResponse
+            let statusCode = http?.statusCode ?? 0
+
+            struct RoomsResponseRoot: Decodable {
+                struct RoomsDataWrapper: Decodable {
+                    let data: [EmptyClassroomItem]?
+                }
+                let data: RoomsDataWrapper?
+            }
+
+            if statusCode == 200,
+               let data = data,
+               let root = try? JSONDecoder().decode(RoomsResponseRoot.self, from: data),
+               let rooms = root.data?.data {
+                let sortedRooms = rooms.sorted { a, b in
+                    if a.buildingPrefix != b.buildingPrefix {
+                        return a.buildingPrefix < b.buildingPrefix
+                    }
+                    if a.inferredFloor != b.inferredFloor {
+                        return a.inferredFloor < b.inferredFloor
+                    }
+                    return a.inferredRoomNumber < b.inferredRoomNumber
+                }
+                self.roomsCache[cacheKey] = sortedRooms
+                DispatchQueue.main.async {
+                    self.recordCampusSyncTime(campus)
+                }
+                completion(.success(sortedRooms))
+                return
+            }
+
+            if allowRetry {
+                self.ensureValidToken(forceRelogin: true) { retryRes in
+                    switch retryRes {
+                    case .success(let newToken):
+                        self.requestRoomsWithToken(
+                            token: newToken,
+                            dateString: dateString,
+                            campus: campus,
+                            buildingIds: buildingIds,
+                            cacheKey: cacheKey,
+                            allowRetry: false,
+                            completion: completion
+                        )
+                    case .failure(let err):
+                        completion(.failure(err))
+                    }
+                }
+            } else {
+                completion(.failure(NSError(domain: "EmptyClassroom", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "获取空教室数据失败 (HTTP \(statusCode))"])))
+            }
+        }.resume()
+    }
+
+    // MARK: - 合工大教务移动端 (UniApp) 自动认证与 RSA 加密
+
+    private func ensureValidToken(
+        forceRelogin: Bool,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        if !forceRelogin,
+           let savedJwt = SettingsManager.shared.uniAppJwt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !savedJwt.isEmpty {
+            completion(.success(savedJwt))
+            return
+        }
+
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else {
+            completion(.failure(NSError(domain: "EmptyClassroom", code: 401, userInfo: [NSLocalizedDescriptionKey: "请先在偏好设置或统一身份认证中填写学号"])))
+            return
+        }
+
+        // 获取候选教务密码列表（1. 教务系统学生信息推导的默认密码 Hfut@#$%+身份证后6位；2. 门户密码；3. 校园网密码）
+        resolveCandidatePasswords { [weak self] passwords in
+            guard let self = self else { return }
+            guard !passwords.isEmpty else {
+                completion(.failure(NSError(domain: "EmptyClassroom", code: 401, userInfo: [NSLocalizedDescriptionKey: "无法获取教务系统登录凭证，请先完成统一身份认证或教务授权"])))
+                return
+            }
+            self.tryLoginUniAppSequential(username: username, passwords: passwords, index: 0, completion: completion)
+        }
+    }
+
+    private func tryLoginUniAppSequential(
+        username: String,
+        passwords: [String],
+        index: Int,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard index < passwords.count else {
+            completion(.failure(NSError(domain: "EmptyClassroom", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录合工大教务移动端失败，请检查账号或重新执行统一身份认证"])))
+            return
+        }
+
+        let rawPwd = passwords[index]
+        guard let encryptedPwd = Self.rsaEncrypt(rawPwd, publicKeyBase64: Self.rsaPublicKeyBase64) else {
+            tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+            return
+        }
+
+        var comps = URLComponents(string: "\(Self.uniAppBaseURL)/token/password/passwordLogin")!
+        comps.queryItems = [
+            URLQueryItem(name: "username", value: username),
+            URLQueryItem(name: "password", value: encryptedPwd),
+            URLQueryItem(name: "appId", value: "APP_ID"),
+            URLQueryItem(name: "deviceId", value: "DEVICE_ID")
+        ]
+
+        guard let loginURL = comps.url else {
+            tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+            return
+        }
+
+        var req = URLRequest(url: loginURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30.0)
+        req.httpMethod = "POST"
+        req.httpBody = Data() // 必须发送空 Body 以带上 Content-Length: 0
+
+        session.dataTask(with: req) { [weak self] data, response, _ in
+            guard let self = self else { return }
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let dataObj = json["data"] as? [String: Any],
+               let idToken = dataObj["idToken"] as? String,
+               !idToken.isEmpty {
+                SettingsManager.shared.uniAppJwt = idToken
+                completion(.success(idToken))
+            } else {
+                self.tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+            }
+        }.resume()
+    }
+
+    /// 自动从树维教务 `for-std/student-info/info/{studentId}` 提取身份证后6位拼接 `Hfut@#$%`（与 HFUT-Schedule 一致）
+    private func resolveCandidatePasswords(completion: @escaping ([String]) -> Void) {
+        var list: [String] = []
+        if let cachedDefault = SettingsManager.shared.jxglstuDefaultPasswordCache, !cachedDefault.isEmpty {
+            list.append(cachedDefault)
+        }
+        let casPwd = SettingsManager.shared.casPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !casPwd.isEmpty && !list.contains(casPwd) {
+            list.append(casPwd)
+        }
+        let portalPwd = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !portalPwd.isEmpty && !list.contains(portalPwd) {
+            list.append(portalPwd)
+        }
+
+        // 如果已经缓存过 Hfut@#$% 默认密码，直接返回
+        if SettingsManager.shared.jxglstuDefaultPasswordCache != nil {
+            completion(list)
+            return
+        }
+
+        fetchJxglstuDefaultPassword { derivedPwd in
+            if let pwd = derivedPwd, !pwd.isEmpty {
+                SettingsManager.shared.jxglstuDefaultPasswordCache = pwd
+                list.insert(pwd, at: 0)
+            }
+            completion(list)
+        }
+    }
+
+    private func fetchJxglstuDefaultPassword(completion: @escaping (String?) -> Void) {
+        let stdId = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stdId.isEmpty,
+              let infoURL = URL(string: "http://jxglstu.hfut.edu.cn/eams5-student/for-std/student-info/info/\(stdId)") else {
+            completion(nil)
+            return
+        }
+
+        let performFetch: (@escaping (String?) -> Void) -> Void = { done in
+            guard let savedCookie = SettingsManager.shared.courseSessionCookie?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !savedCookie.isEmpty else {
+                done(nil)
+                return
+            }
+            let cookieHeader = savedCookie.contains("SESSION=") ? savedCookie : "SESSION=\(savedCookie)"
+            var req = URLRequest(url: infoURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12.0)
+            req.httpShouldHandleCookies = false
+            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+
+            URLSession.shared.dataTask(with: req) { data, _, _ in
+                guard let data = data, let html = String(data: data, encoding: .utf8) else {
+                    done(nil)
+                    return
+                }
+                let pattern = #"证件号[\s\S]{0,200}?<span[^>]*>\s*([0-9Xx]{15,18})\s*</span>"#
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                   let range = Range(match.range(at: 1), in: html) {
+                    let idCard = String(html[range])
+                    let last6 = String(idCard.suffix(6))
+                    done("Hfut@#$%\(last6)")
+                } else {
+                    done(nil)
+                }
+            }.resume()
+        }
+
+        performFetch { firstTry in
+            if let pwd = firstTry {
+                completion(pwd)
+            } else {
+                // 若教务 Cookie 过期，先触发一次后台 CAS TGC 单点登录再重试
+                CourseScheduleService.shared.tryBackgroundLogin { success in
+                    if success {
+                        performFetch(completion)
+                    } else {
+                        completion(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    /// RSA/ECB/PKCS1Padding 加密（与 HFUT-Schedule 的 CryptoUtil.rsaEncrypt 完全一致）
+    public static func rsaEncrypt(_ plainText: String, publicKeyBase64: String) -> String? {
+        guard let keyData = Data(base64Encoded: publicKeyBase64),
+              let plainData = plainText.data(using: .utf8) else {
+            return nil
+        }
+        let attributes: [CFString: Any] = [
+            kSecAttrKeyType: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass: kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits: 1024
+        ]
+        var error: Unmanaged<CFError>?
+        guard let secKey = SecKeyCreateWithData(keyData as CFData, attributes as CFDictionary, &error),
+              let cipherData = SecKeyCreateEncryptedData(secKey, .rsaEncryptionPKCS1, plainData as CFData, &error) as Data? else {
+            return nil
+        }
+        return cipherData.base64EncodedString()
+    }
+
+    // MARK: - 日期与时间辅助函数
+
+    public static func todayDateString(at now: Date = Date()) -> String {
+        CourseCalendarHelper.dateString(from: now)
+    }
+
+    public static func tomorrowDateString(at now: Date = Date()) -> String {
+        let cal = CourseCalendarHelper.beijingCalendar
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86400)
+        return CourseCalendarHelper.dateString(from: tomorrow)
+    }
+
+    public static func currentMinutesOfDay(at now: Date = Date()) -> Int {
+        let comps = CourseCalendarHelper.beijingCalendar.dateComponents([.hour, .minute], from: now)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+}

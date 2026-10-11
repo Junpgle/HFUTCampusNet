@@ -44,9 +44,8 @@ public struct OnlineDeviceSession: Codable {
     }
 
     public var displayTitle: String {
-        let icon = terminalType.contains("移动") ? "📱" : "💻"
         let hostPart = hostName.isEmpty ? "" : " (\(hostName))"
-        return "\(icon) \(terminalType)\(hostPart) · \(ip)  [\(String(format: "%.1f M", usedFlowMB)) · \(useMinutes)分钟]"
+        return "\(terminalType)\(hostPart) · \(ip)  [\(String(format: "%.1f M", usedFlowMB)) · \(useMinutes) 分钟]"
     }
 }
 

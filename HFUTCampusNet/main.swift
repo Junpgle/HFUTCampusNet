@@ -21,6 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
         if SettingsManager.shared.courseTableEnabled {
             CourseScheduleService.shared.syncSchedule { _ in }
         }
+        EmptyClassroomService.shared.startMonitoring()
 
         // 启动后延迟 3 秒在后台静默检查 GitHub Releases 更新
         if SettingsManager.shared.autoCheckUpdate {

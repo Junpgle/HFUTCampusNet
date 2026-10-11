@@ -27,12 +27,12 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 590),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "合肥工业大学助手 - 综合服务配置"
+        window.title = "偏好设置"
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -43,91 +43,165 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func makeGroupCard(frame: NSRect) -> FlippedTimelineView {
+        let box = FlippedTimelineView(frame: frame)
+        box.dynamicCornerRadius = 8
+        box.dynamicBackgroundColor = NSColor.labelColor.withAlphaComponent(0.035)
+        box.dynamicBorderColor = NSColor.labelColor.withAlphaComponent(0.10)
+        box.dynamicBorderWidth = 1.0
+        return box
+    }
+
+    private func makeFieldLabel(_ text: String, frame: NSRect) -> NSTextField {
+        let lbl = NSTextField(labelWithString: text)
+        lbl.frame = frame
+        lbl.alignment = .right
+        lbl.font = NSFont.systemFont(ofSize: 12)
+        lbl.textColor = .labelColor
+        return lbl
+    }
+
+    private func makeStatusAttributedString(dotColor: NSColor, text: String, textColor: NSColor = .secondaryLabelColor) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let dotAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .bold),
+            .foregroundColor: dotColor,
+            .baselineOffset: 1.0
+        ]
+        result.append(NSAttributedString(string: "● ", attributes: dotAttrs))
+        let textAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: textColor
+        ]
+        result.append(NSAttributedString(string: text, attributes: textAttrs))
+        return result
+    }
+
     private func setupUI() {
         guard let window = self.window else { return }
-        let contentView = NSView(frame: window.contentView!.bounds)
+        let contentView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 590))
 
-        var curY: CGFloat = 760 - 36
+        // 0. 顶部统一身份认证与统计栏
+        let ssoBox = makeGroupCard(frame: NSRect(x: 20, y: 16, width: 500, height: 54))
 
-        // 0. 顶部统一身份认证快捷入口卡片
-        let ssoBox = NSView(frame: NSRect(x: 20, y: curY - 60, width: 480, height: 60))
-        ssoBox.wantsLayer = true
-        ssoBox.layer?.cornerRadius = 8
-        ssoBox.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.08).cgColor
-        ssoBox.layer?.borderWidth = 1.0
-        ssoBox.layer?.borderColor = NSColor.systemBlue.withAlphaComponent(0.25).cgColor
-
-        let ssoIcon = NSImageView(frame: NSRect(x: 12, y: 18, width: 24, height: 24))
-        ssoIcon.image = NSImage(systemSymbolName: "person.badge.key.fill", accessibilityDescription: nil)
-        ssoIcon.contentTintColor = NSColor.systemBlue
-        ssoBox.addSubview(ssoIcon)
-
-        let ssoTitle = NSTextField(labelWithString: "统一身份认证 · 一键自动刷新全部")
-        ssoTitle.frame = NSRect(x: 44, y: 32, width: 260, height: 18)
-        ssoTitle.font = NSFont.systemFont(ofSize: 12.5, weight: .bold)
+        let ssoTitle = NSTextField(labelWithString: "统一身份认证与全量同步")
+        ssoTitle.frame = NSRect(x: 16, y: 9, width: 260, height: 18)
+        ssoTitle.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        ssoTitle.textColor = .labelColor
         ssoBox.addSubview(ssoTitle)
 
         let ssoSub = NSTextField(labelWithString: "登录信息门户后，自动联动课表、电费与校园网自服务")
-        ssoSub.frame = NSRect(x: 44, y: 12, width: 280, height: 16)
-        ssoSub.font = NSFont.systemFont(ofSize: 10.5)
+        ssoSub.frame = NSRect(x: 16, y: 29, width: 280, height: 16)
+        ssoSub.font = NSFont.systemFont(ofSize: 11)
         ssoSub.textColor = .secondaryLabelColor
         ssoBox.addSubview(ssoSub)
 
-        let ssoLoginBtn = NSButton(title: "🔑 一键登录", target: self, action: #selector(openUnifiedLoginWindow))
-        ssoLoginBtn.bezelStyle = .rounded
-        ssoLoginBtn.frame = NSRect(x: 335, y: 14, width: 85, height: 30)
-        ssoBox.addSubview(ssoLoginBtn)
-
-        let statsBtn = NSButton(title: "📊 统计", target: self, action: #selector(openHistoryStatsWindow))
+        let statsBtn = NSButton(title: "用量统计...", target: self, action: #selector(openHistoryStatsWindow))
         statsBtn.bezelStyle = .rounded
-        statsBtn.frame = NSRect(x: 420, y: 14, width: 55, height: 30)
+        statsBtn.font = NSFont.systemFont(ofSize: 12)
+        statsBtn.frame = NSRect(x: 298, y: 13, width: 88, height: 28)
         ssoBox.addSubview(statsBtn)
 
+        let ssoLoginBtn = NSButton(title: "统一认证登录", target: self, action: #selector(openUnifiedLoginWindow))
+        ssoLoginBtn.bezelStyle = .rounded
+        ssoLoginBtn.font = NSFont.systemFont(ofSize: 12)
+        ssoLoginBtn.frame = NSRect(x: 390, y: 13, width: 98, height: 28)
+        ssoBox.addSubview(ssoLoginBtn)
+
         contentView.addSubview(ssoBox)
-        curY -= 72
 
-        // 1. 宿舍电费设置部分
-        let elecTitle = NSTextField(labelWithString: "⚡ 宿舍电费配置 (慧新易校)")
-        elecTitle.frame = NSRect(x: 24, y: curY, width: 440, height: 20)
-        elecTitle.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        // 1. 校园网与门户账号分区
+        let netHeader = NSTextField(labelWithString: "校园网网关与信息门户账号")
+        netHeader.frame = NSRect(x: 22, y: 84, width: 180, height: 18)
+        netHeader.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        netHeader.textColor = .labelColor
+        contentView.addSubview(netHeader)
+
+        statusLabel = NSTextField(labelWithString: "")
+        statusLabel.frame = NSRect(x: 200, y: 85, width: 318, height: 16)
+        statusLabel.alignment = .right
+        statusLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        contentView.addSubview(statusLabel)
+
+        let netCard = makeGroupCard(frame: NSRect(x: 20, y: 106, width: 500, height: 142))
+
+        netCard.addSubview(makeFieldLabel("学号 / 账号：", frame: NSRect(x: 12, y: 15, width: 86, height: 18)))
+        usernameField = NSTextField(frame: NSRect(x: 104, y: 12, width: 380, height: 22))
+        usernameField.placeholderString = "例如 2024xxxxxx"
+        usernameField.stringValue = SettingsManager.shared.portalUsername
+        usernameField.delegate = self
+        netCard.addSubview(usernameField)
+
+        netCard.addSubview(makeFieldLabel("校园网密码：", frame: NSRect(x: 12, y: 47, width: 86, height: 18)))
+        passwordField = NSSecureTextField(frame: NSRect(x: 104, y: 44, width: 380, height: 22))
+        passwordField.placeholderString = "用于校园网网关 (172.18.3.3) 与自服务系统 (xywzz:8443)"
+        passwordField.stringValue = SettingsManager.shared.portalPassword
+        passwordField.delegate = self
+        netCard.addSubview(passwordField)
+
+        netCard.addSubview(makeFieldLabel("信息门户密码：", frame: NSRect(x: 12, y: 79, width: 86, height: 18)))
+        casPasswordField = NSSecureTextField(frame: NSRect(x: 104, y: 76, width: 380, height: 22))
+        casPasswordField.placeholderString = "用于统一身份认证 (cas.hfut.edu.cn) 与教务课表同步"
+        casPasswordField.stringValue = SettingsManager.shared.casPassword
+        casPasswordField.delegate = self
+        netCard.addSubview(casPasswordField)
+
+        autoLoginCheckbox = NSButton(checkboxWithTitle: "断网或切换 Wi-Fi 时自动重连并发送通知", target: nil, action: nil)
+        autoLoginCheckbox.font = NSFont.systemFont(ofSize: 12)
+        autoLoginCheckbox.frame = NSRect(x: 104, y: 110, width: 266, height: 20)
+        autoLoginCheckbox.state = SettingsManager.shared.autoLoginPortal ? .on : .off
+        netCard.addSubview(autoLoginCheckbox)
+
+        let openSelfBtn = NSButton(title: "自服务授权...", target: self, action: #selector(openSelfLoginWindow))
+        openSelfBtn.bezelStyle = .rounded
+        openSelfBtn.controlSize = .small
+        openSelfBtn.font = NSFont.systemFont(ofSize: 11.5)
+        openSelfBtn.frame = NSRect(x: 384, y: 108, width: 102, height: 24)
+        netCard.addSubview(openSelfBtn)
+
+        contentView.addSubview(netCard)
+
+        // 2. 宿舍电费配置分区
+        let elecTitle = NSTextField(labelWithString: "宿舍电费配置 (慧新易校)")
+        elecTitle.frame = NSRect(x: 22, y: 262, width: 170, height: 18)
+        elecTitle.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        elecTitle.textColor = .labelColor
         contentView.addSubview(elecTitle)
-        curY -= 28
 
-        let campusLabel = NSTextField(labelWithString: "校区：")
-        campusLabel.frame = NSRect(x: 24, y: curY, width: 60, height: 20)
-        contentView.addSubview(campusLabel)
+        dormStatusLabel = NSTextField(labelWithString: "")
+        dormStatusLabel.frame = NSRect(x: 195, y: 263, width: 323, height: 16)
+        dormStatusLabel.alignment = .right
+        dormStatusLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        dormStatusLabel.textColor = .secondaryLabelColor
+        dormStatusLabel.lineBreakMode = .byTruncatingTail
+        contentView.addSubview(dormStatusLabel)
 
-        dormCampusPopup = NSPopUpButton(frame: NSRect(x: 85, y: curY - 2, width: 140, height: 26))
+        let elecCard = makeGroupCard(frame: NSRect(x: 20, y: 284, width: 500, height: 80))
+
+        elecCard.addSubview(makeFieldLabel("校区：", frame: NSRect(x: 12, y: 15, width: 46, height: 18)))
+        dormCampusPopup = NSPopUpButton(frame: NSRect(x: 62, y: 11, width: 148, height: 25))
         dormCampusPopup.addItems(withTitles: ["宣城校区", "合肥翡翠湖校区", "合肥屯溪路校区"])
         dormCampusPopup.selectItem(withTitle: SettingsManager.shared.dormCampus)
-        contentView.addSubview(dormCampusPopup)
+        elecCard.addSubview(dormCampusPopup)
 
-        let buildLabel = NSTextField(labelWithString: "楼栋：")
-        buildLabel.frame = NSRect(x: 235, y: curY, width: 45, height: 20)
-        contentView.addSubview(buildLabel)
-
-        dormBuildingField = NSTextField(frame: NSRect(x: 280, y: curY, width: 60, height: 22))
+        elecCard.addSubview(makeFieldLabel("楼栋：", frame: NSRect(x: 216, y: 15, width: 44, height: 18)))
+        dormBuildingField = NSTextField(frame: NSRect(x: 264, y: 12, width: 68, height: 22))
         dormBuildingField.placeholderString = "例如 7"
         dormBuildingField.stringValue = SettingsManager.shared.dormBuilding
         dormBuildingField.delegate = self
-        contentView.addSubview(dormBuildingField)
+        elecCard.addSubview(dormBuildingField)
 
-        let roomLabel = NSTextField(labelWithString: "房间：")
-        roomLabel.frame = NSRect(x: 350, y: curY, width: 45, height: 20)
-        contentView.addSubview(roomLabel)
-
-        dormRoomField = NSTextField(frame: NSRect(x: 395, y: curY, width: 85, height: 22))
+        elecCard.addSubview(makeFieldLabel("房间：", frame: NSRect(x: 340, y: 15, width: 44, height: 18)))
+        dormRoomField = NSTextField(frame: NSRect(x: 388, y: 12, width: 96, height: 22))
         dormRoomField.placeholderString = "例如 315"
         dormRoomField.stringValue = SettingsManager.shared.dormRoom
         dormRoomField.delegate = self
-        contentView.addSubview(dormRoomField)
-        curY -= 30
+        elecCard.addSubview(dormRoomField)
 
-        let portLabel = NSTextField(labelWithString: "电表端口：")
-        portLabel.frame = NSRect(x: 24, y: curY, width: 70, height: 20)
-        contentView.addSubview(portLabel)
-
-        dormEndPopup = NSPopUpButton(frame: NSRect(x: 95, y: curY - 2, width: 130, height: 26))
+        elecCard.addSubview(makeFieldLabel("端口：", frame: NSRect(x: 12, y: 47, width: 46, height: 18)))
+        dormEndPopup = NSPopUpButton(frame: NSRect(x: 62, y: 43, width: 148, height: 25))
         dormEndPopup.addItem(withTitle: "南楼/南照明 (11)")
         dormEndPopup.lastItem?.representedObject = "11"
         dormEndPopup.addItem(withTitle: "南楼空调 (12)")
@@ -143,195 +217,113 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
                 break
             }
         }
-        contentView.addSubview(dormEndPopup)
+        elecCard.addSubview(dormEndPopup)
 
-        let threshLabel = NSTextField(labelWithString: "预警阈值：")
-        threshLabel.frame = NSRect(x: 235, y: curY, width: 65, height: 20)
-        contentView.addSubview(threshLabel)
-
-        dormThresholdField = NSTextField(frame: NSRect(x: 300, y: curY, width: 55, height: 22))
+        elecCard.addSubview(makeFieldLabel("预警阈值：", frame: NSRect(x: 216, y: 47, width: 66, height: 18)))
+        dormThresholdField = NSTextField(frame: NSRect(x: 286, y: 44, width: 54, height: 22))
         dormThresholdField.stringValue = String(format: "%.0f", SettingsManager.shared.electricityLowWarningThreshold)
         dormThresholdField.delegate = self
-        contentView.addSubview(dormThresholdField)
+        elecCard.addSubview(dormThresholdField)
 
         let yuanLabel = NSTextField(labelWithString: "元")
-        yuanLabel.frame = NSRect(x: 358, y: curY, width: 25, height: 20)
-        contentView.addSubview(yuanLabel)
+        yuanLabel.frame = NSRect(x: 344, y: 47, width: 20, height: 18)
+        yuanLabel.font = NSFont.systemFont(ofSize: 12)
+        yuanLabel.textColor = .secondaryLabelColor
+        elecCard.addSubview(yuanLabel)
 
-        let testElecBtn = NSButton(title: "⚡ 查询电费", target: self, action: #selector(testElectricityClicked))
+        let testElecBtn = NSButton(title: "查询电费", target: self, action: #selector(testElectricityClicked))
         testElecBtn.bezelStyle = .rounded
-        testElecBtn.frame = NSRect(x: 388, y: curY - 4, width: 95, height: 28)
-        contentView.addSubview(testElecBtn)
-        curY -= 26
+        testElecBtn.controlSize = .small
+        testElecBtn.font = NSFont.systemFont(ofSize: 11.5)
+        testElecBtn.frame = NSRect(x: 388, y: 43, width: 98, height: 24)
+        elecCard.addSubview(testElecBtn)
 
-        dormStatusLabel = NSTextField(labelWithString: "")
-        dormStatusLabel.frame = NSRect(x: 24, y: curY, width: 460, height: 18)
-        dormStatusLabel.font = NSFont.systemFont(ofSize: 11)
-        dormStatusLabel.textColor = .secondaryLabelColor
-        contentView.addSubview(dormStatusLabel)
-        curY -= 16
+        contentView.addSubview(elecCard)
 
-        // 分割线 1
-        let sep1 = NSBox(frame: NSRect(x: 20, y: curY, width: 480, height: 1))
-        sep1.boxType = .separator
-        contentView.addSubview(sep1)
-        curY -= 22
-
-        // 2. 校园网网关认证部分
-        let title = NSTextField(labelWithString: "📶 校园网网关与信息门户账号 (自动记忆与填充)")
-        title.frame = NSRect(x: 24, y: curY, width: 440, height: 20)
-        title.font = NSFont.systemFont(ofSize: 13, weight: .bold)
-        contentView.addSubview(title)
-        curY -= 28
-
-        let userLabel = NSTextField(labelWithString: "学号 / 账号：")
-        userLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
-        contentView.addSubview(userLabel)
-
-        usernameField = NSTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
-        usernameField.placeholderString = "例如 2024xxxxxx"
-        usernameField.stringValue = SettingsManager.shared.portalUsername
-        usernameField.delegate = self
-        contentView.addSubview(usernameField)
-        curY -= 28
-
-        let passLabel = NSTextField(labelWithString: "校园网密码：")
-        passLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
-        contentView.addSubview(passLabel)
-
-        passwordField = NSSecureTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
-        passwordField.placeholderString = "用于校园网认证 (172.18.3.3) 与自服务系统 (xywzz:8443)"
-        passwordField.stringValue = SettingsManager.shared.portalPassword
-        passwordField.delegate = self
-        contentView.addSubview(passwordField)
-        curY -= 28
-
-        let casPassLabel = NSTextField(labelWithString: "信息门户密码：")
-        casPassLabel.frame = NSRect(x: 24, y: curY, width: 95, height: 20)
-        contentView.addSubview(casPassLabel)
-
-        casPasswordField = NSSecureTextField(frame: NSRect(x: 125, y: curY, width: 355, height: 22))
-        casPasswordField.placeholderString = "用于统一身份认证 (cas.hfut.edu.cn) 与教务课表同步"
-        casPasswordField.stringValue = SettingsManager.shared.casPassword
-        casPasswordField.delegate = self
-        contentView.addSubview(casPasswordField)
-        curY -= 26
-
-        autoLoginCheckbox = NSButton(checkboxWithTitle: "断网或切换 Wi-Fi 时自动重连并发送系统通知", target: nil, action: nil)
-        autoLoginCheckbox.frame = NSRect(x: 125, y: curY, width: 355, height: 20)
-        autoLoginCheckbox.state = SettingsManager.shared.autoLoginPortal ? .on : .off
-        contentView.addSubview(autoLoginCheckbox)
-        curY -= 26
-
-        let selfTitle = NSTextField(labelWithString: "自服务系统 (xywzz:8443 可用流量与消费保护)：")
-        selfTitle.frame = NSRect(x: 24, y: curY, width: 310, height: 20)
-        selfTitle.font = NSFont.systemFont(ofSize: 11)
-        selfTitle.textColor = .secondaryLabelColor
-        contentView.addSubview(selfTitle)
-
-        let openSelfBtn = NSButton(title: "🔑 自服务授权", target: self, action: #selector(openSelfLoginWindow))
-        openSelfBtn.bezelStyle = .rounded
-        openSelfBtn.frame = NSRect(x: 345, y: curY - 4, width: 135, height: 28)
-        contentView.addSubview(openSelfBtn)
-        curY -= 20
-
-        // 分割线 2
-        let sep2 = NSBox(frame: NSRect(x: 20, y: curY, width: 480, height: 1))
-        sep2.boxType = .separator
-        contentView.addSubview(sep2)
-        curY -= 22
-
-        // 3. 教务课表设置部分
-        let courseTitle = NSTextField(labelWithString: "📚 合工大教务课表 (jxglstu.hfut.edu.cn)")
-        courseTitle.frame = NSRect(x: 24, y: curY, width: 440, height: 20)
-        courseTitle.font = NSFont.systemFont(ofSize: 13, weight: .bold)
+        // 3. 教务课表设置分区
+        let courseTitle = NSTextField(labelWithString: "教务课表 (jxglstu.hfut.edu.cn)")
+        courseTitle.frame = NSRect(x: 22, y: 378, width: 200, height: 18)
+        courseTitle.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        courseTitle.textColor = .labelColor
         contentView.addSubview(courseTitle)
-        curY -= 28
 
-        let stdLabel = NSTextField(labelWithString: "学生ID：")
-        stdLabel.frame = NSRect(x: 24, y: curY, width: 65, height: 20)
-        contentView.addSubview(stdLabel)
+        courseStatusLabel = NSTextField(labelWithString: "")
+        courseStatusLabel.frame = NSRect(x: 225, y: 379, width: 293, height: 16)
+        courseStatusLabel.alignment = .right
+        courseStatusLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        courseStatusLabel.textColor = .secondaryLabelColor
+        courseStatusLabel.lineBreakMode = .byTruncatingTail
+        contentView.addSubview(courseStatusLabel)
 
-        courseStudentIdField = NSTextField(frame: NSRect(x: 90, y: curY, width: 140, height: 22))
+        let courseCard = makeGroupCard(frame: NSRect(x: 20, y: 400, width: 500, height: 112))
+
+        courseCard.addSubview(makeFieldLabel("学生 ID：", frame: NSRect(x: 12, y: 15, width: 66, height: 18)))
+        courseStudentIdField = NSTextField(frame: NSRect(x: 82, y: 12, width: 150, height: 22))
         courseStudentIdField.placeholderString = "例如 178506"
         courseStudentIdField.stringValue = SettingsManager.shared.courseStudentId
         courseStudentIdField.delegate = self
-        contentView.addSubview(courseStudentIdField)
+        courseCard.addSubview(courseStudentIdField)
 
-        let semLabel = NSTextField(labelWithString: "学期代码：")
-        semLabel.frame = NSRect(x: 245, y: curY, width: 75, height: 20)
-        contentView.addSubview(semLabel)
-
-        courseSemesterIdField = NSTextField(frame: NSRect(x: 320, y: curY, width: 160, height: 22))
+        courseCard.addSubview(makeFieldLabel("学期代码：", frame: NSRect(x: 246, y: 15, width: 68, height: 18)))
+        courseSemesterIdField = NSTextField(frame: NSRect(x: 318, y: 12, width: 166, height: 22))
         courseSemesterIdField.placeholderString = "例如 354"
         courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
         courseSemesterIdField.delegate = self
-        contentView.addSubview(courseSemesterIdField)
-        curY -= 26
+        courseCard.addSubview(courseSemesterIdField)
 
-        courseTableCheckbox = NSButton(checkboxWithTitle: "在桌面悬浮小组件与状态栏菜单中显示今日课程", target: nil, action: nil)
-        courseTableCheckbox.frame = NSRect(x: 90, y: curY, width: 390, height: 20)
+        courseTableCheckbox = NSButton(checkboxWithTitle: "在桌面悬浮组件与状态栏菜单中显示今日课程", target: nil, action: nil)
+        courseTableCheckbox.font = NSFont.systemFont(ofSize: 12)
+        courseTableCheckbox.frame = NSRect(x: 82, y: 44, width: 390, height: 20)
         courseTableCheckbox.state = SettingsManager.shared.courseTableEnabled ? .on : .off
-        contentView.addSubview(courseTableCheckbox)
-        curY -= 32
+        courseCard.addSubview(courseTableCheckbox)
 
-        let webAuthBtn = NSButton(title: "🌐 网页同步", target: self, action: #selector(openCourseLoginWindow))
+        let webAuthBtn = NSButton(title: "网页授权同步", target: self, action: #selector(openCourseLoginWindow))
         webAuthBtn.bezelStyle = .rounded
-        webAuthBtn.frame = NSRect(x: 90, y: curY, width: 110, height: 28)
-        contentView.addSubview(webAuthBtn)
+        webAuthBtn.controlSize = .small
+        webAuthBtn.font = NSFont.systemFont(ofSize: 11.5)
+        webAuthBtn.frame = NSRect(x: 82, y: 74, width: 104, height: 24)
+        courseCard.addSubview(webAuthBtn)
 
-        let syncCourseBtn = NSButton(title: "⚡ 一键同步", target: self, action: #selector(syncCourseClicked))
+        let syncCourseBtn = NSButton(title: "一键同步", target: self, action: #selector(syncCourseClicked))
         syncCourseBtn.bezelStyle = .rounded
-        syncCourseBtn.frame = NSRect(x: 210, y: curY, width: 100, height: 28)
-        contentView.addSubview(syncCourseBtn)
+        syncCourseBtn.controlSize = .small
+        syncCourseBtn.font = NSFont.systemFont(ofSize: 11.5)
+        syncCourseBtn.frame = NSRect(x: 194, y: 74, width: 88, height: 24)
+        courseCard.addSubview(syncCourseBtn)
 
-        let viewTableBtn = NSButton(title: "📅 查看完整课表", target: self, action: #selector(viewTableClicked))
+        let viewTableBtn = NSButton(title: "查看完整课表", target: self, action: #selector(viewTableClicked))
         viewTableBtn.bezelStyle = .rounded
-        viewTableBtn.frame = NSRect(x: 320, y: curY, width: 160, height: 28)
-        contentView.addSubview(viewTableBtn)
-        curY -= 26
+        viewTableBtn.controlSize = .small
+        viewTableBtn.font = NSFont.systemFont(ofSize: 11.5)
+        viewTableBtn.frame = NSRect(x: 290, y: 74, width: 104, height: 24)
+        courseCard.addSubview(viewTableBtn)
 
-        courseStatusLabel = NSTextField(labelWithString: "")
-        courseStatusLabel.frame = NSRect(x: 24, y: curY, width: 460, height: 18)
-        courseStatusLabel.font = NSFont.systemFont(ofSize: 11)
-        courseStatusLabel.textColor = .secondaryLabelColor
-        contentView.addSubview(courseStatusLabel)
-        curY -= 16
+        contentView.addSubview(courseCard)
 
-        // 分割线 3
-        let sep3 = NSBox(frame: NSRect(x: 20, y: curY, width: 480, height: 1))
-        sep3.boxType = .separator
-        contentView.addSubview(sep3)
-        curY -= 24
+        // 4. 底部分割线与操作栏
+        let bottomSep = NSBox(frame: NSRect(x: 20, y: 528, width: 500, height: 1))
+        bottomSep.boxType = .separator
+        contentView.addSubview(bottomSep)
 
-        // 网关状态信息
-        statusLabel = NSTextField(labelWithString: "")
-        statusLabel.frame = NSRect(x: 24, y: curY, width: 460, height: 20)
-        statusLabel.font = NSFont.systemFont(ofSize: 11.5)
-        statusLabel.textColor = .secondaryLabelColor
-        contentView.addSubview(statusLabel)
-        curY -= 36
-
-        // 底部保存与测试按钮
-        let updateBtn = NSButton(title: "🔄 检查更新", target: self, action: #selector(checkUpdateClicked))
+        let updateBtn = NSButton(title: "检查更新...", target: self, action: #selector(checkUpdateClicked))
         updateBtn.bezelStyle = .rounded
-        updateBtn.frame = NSRect(x: 20, y: 14, width: 105, height: 32)
+        updateBtn.frame = NSRect(x: 20, y: 542, width: 96, height: 30)
         contentView.addSubview(updateBtn)
 
         let testBtn = NSButton(title: "测试网关登录", target: self, action: #selector(testLoginClicked))
         testBtn.bezelStyle = .rounded
-        testBtn.frame = NSRect(x: 132, y: 14, width: 115, height: 32)
+        testBtn.frame = NSRect(x: 202, y: 542, width: 106, height: 30)
         contentView.addSubview(testBtn)
 
         let logoutBtn = NSButton(title: "注销网关", target: self, action: #selector(logoutClicked))
         logoutBtn.bezelStyle = .rounded
-        logoutBtn.frame = NSRect(x: 254, y: 14, width: 90, height: 32)
+        logoutBtn.frame = NSRect(x: 314, y: 542, width: 86, height: 30)
         contentView.addSubview(logoutBtn)
 
         let saveBtn = NSButton(title: "保存设置", target: self, action: #selector(saveClicked))
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
-        saveBtn.frame = NSRect(x: 352, y: 14, width: 148, height: 32)
+        saveBtn.frame = NSRect(x: 406, y: 542, width: 114, height: 30)
         contentView.addSubview(saveBtn)
 
         window.contentView = contentView
@@ -367,16 +359,23 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         PortalAuthService.shared.checkStatus { [weak self] status in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 switch status {
                 case .online(let uid, let ip, _, let fee, _):
-                    self?.statusLabel.stringValue = "🟢 网关已认证在线 (学号: \(uid), IP: \(ip), 余额: \(String(format: "%.2f", fee))元)"
-                    self?.statusLabel.textColor = .systemGreen
+                    self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
+                        dotColor: .systemGreen,
+                        text: "网关已在线 (\(uid) · \(ip) · 余额 \(String(format: "%.2f", fee)) 元)"
+                    )
                 case .offline(let reason):
-                    self?.statusLabel.stringValue = "🟡 网关离线未认证: \(reason)"
-                    self?.statusLabel.textColor = .systemOrange
+                    self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
+                        dotColor: .systemOrange,
+                        text: "网关未认证：\(reason)"
+                    )
                 case .notInCampusNet:
-                    self?.statusLabel.stringValue = "🔴 未连接校园网络 Wi-Fi"
-                    self?.statusLabel.textColor = .systemRed
+                    self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
+                        dotColor: .systemRed,
+                        text: "未连接校园网"
+                    )
                 }
             }
         }
@@ -388,13 +387,15 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private func updateCourseStatusDisplay() {
         if let schedule = CourseScheduleService.shared.currentSchedule, !schedule.lessons.isEmpty {
             let f = DateFormatter()
-            f.dateFormat = "yyyy-MM-dd HH:mm"
+            f.dateFormat = "MM-dd HH:mm"
             let timeStr = schedule.lastSyncTime.map { f.string(from: $0) } ?? "未知"
-            courseStatusLabel.stringValue = "✓ 已同步 \(schedule.lessons.count) 节课程 (最后更新: \(timeStr))"
-            courseStatusLabel.textColor = .systemGreen
+            courseStatusLabel.attributedStringValue = makeStatusAttributedString(
+                dotColor: .systemGreen,
+                text: "已同步 \(schedule.lessons.count) 节课程 (\(timeStr))"
+            )
         } else {
-            courseStatusLabel.stringValue = "尚未同步课表，可点击「网页同步」或「一键同步」"
-            courseStatusLabel.textColor = .secondaryLabelColor
+            courseStatusLabel.stringValue = "尚未同步课表"
+            courseStatusLabel.textColor = .tertiaryLabelColor
         }
     }
 
@@ -402,33 +403,40 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if let elec = ElectricityService.shared.latestData {
             let bal = elec.displayBalance
             let pwr = elec.displayPower
-            let warn = elec.isLowBalance ? " (⚠️ 低电费预警)" : ""
-            dormStatusLabel.stringValue = "✓ 最新剩余: \(bal) | 剩余: \(pwr)\(warn)"
-            dormStatusLabel.textColor = elec.isLowBalance ? .systemRed : .systemGreen
+            let warn = elec.isLowBalance ? " · 低电费预警" : ""
+            dormStatusLabel.attributedStringValue = makeStatusAttributedString(
+                dotColor: elec.isLowBalance ? .systemRed : .systemGreen,
+                text: "剩余 \(bal) · \(pwr)\(warn)",
+                textColor: elec.isLowBalance ? .systemRed : .secondaryLabelColor
+            )
         } else {
-            dormStatusLabel.stringValue = "尚未抓取到电费数据，可点击「查询电费」或「一键登录」"
-            dormStatusLabel.textColor = .secondaryLabelColor
+            dormStatusLabel.stringValue = "尚未获取电费数据"
+            dormStatusLabel.textColor = .tertiaryLabelColor
         }
     }
 
     @objc private func testElectricityClicked() {
         saveCredentials()
-        dormStatusLabel.stringValue = "正在连接慧新易校查询宿舍电费..."
+        dormStatusLabel.stringValue = "正在查询宿舍电费..."
         dormStatusLabel.textColor = .secondaryLabelColor
 
         ElectricityService.shared.fetchData { [weak self] result in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 switch result {
                 case .success(let elec):
-                    self?.updateDormStatusDisplay()
+                    self.updateDormStatusDisplay()
                     NotificationHelper.showNotification(
-                        title: "⚡ 宿舍电费查询成功",
+                        title: "宿舍电费查询成功",
                         subtitle: "\(SettingsManager.shared.dormRoomName)",
                         body: "当前剩余电费: \(elec.displayBalance)  剩余电量: \(elec.displayPower)"
                     )
                 case .failure(let err):
-                    self?.dormStatusLabel.stringValue = "❌ 查询失败: \(err.localizedDescription)"
-                    self?.dormStatusLabel.textColor = .systemRed
+                    self.dormStatusLabel.attributedStringValue = self.makeStatusAttributedString(
+                        dotColor: .systemRed,
+                        text: "查询失败：\(err.localizedDescription)",
+                        textColor: .systemRed
+                    )
                 }
             }
         }
@@ -459,25 +467,33 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     @objc private func syncCourseClicked() {
         saveCredentials()
-        courseStatusLabel.stringValue = "正在从合工大教务系统同步课表..."
+        courseStatusLabel.stringValue = "正在同步教务课表..."
         courseStatusLabel.textColor = .secondaryLabelColor
 
         CourseScheduleService.shared.syncSchedule { [weak self] result in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 switch result {
                 case .success(let schedule):
-                    self?.updateCourseStatusDisplay()
+                    self.updateCourseStatusDisplay()
                     NotificationHelper.sendNotification(
-                        title: "🎉 课表同步成功",
+                        title: "课表同步成功",
                         body: "已同步 \(schedule.lessons.count) 门排课数据"
                     )
                 case .failure(let error):
                     if let syncErr = error as? CourseScheduleService.CourseSyncError, case .needLogin = syncErr {
-                        self?.courseStatusLabel.stringValue = "⚠️ 需要教务系统授权，正在打开登录页面..."
+                        self.courseStatusLabel.attributedStringValue = self.makeStatusAttributedString(
+                            dotColor: .systemOrange,
+                            text: "需要教务授权，正在打开登录页...",
+                            textColor: .systemOrange
+                        )
                         CourseLoginWebViewController.shared.showLoginWindow()
                     } else {
-                        self?.courseStatusLabel.stringValue = "❌ 同步失败: \(error.localizedDescription)"
-                        self?.courseStatusLabel.textColor = .systemRed
+                        self.courseStatusLabel.attributedStringValue = self.makeStatusAttributedString(
+                            dotColor: .systemRed,
+                            text: "同步失败：\(error.localizedDescription)",
+                            textColor: .systemRed
+                        )
                     }
                 }
             }
@@ -489,8 +505,11 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         let pass = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !user.isEmpty else {
-            statusLabel.stringValue = "⚠️ 请先输入学号"
-            statusLabel.textColor = .systemOrange
+            statusLabel.attributedStringValue = makeStatusAttributedString(
+                dotColor: .systemOrange,
+                text: "请先输入学号",
+                textColor: .systemOrange
+            )
             return
         }
 
@@ -499,10 +518,14 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         PortalAuthService.shared.login(username: user, password: pass) { [weak self] success, msg in
             DispatchQueue.main.async {
-                self?.statusLabel.stringValue = (success ? "✓ " : "❌ ") + msg
-                self?.statusLabel.textColor = success ? .systemGreen : .systemRed
+                guard let self = self else { return }
+                self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
+                    dotColor: success ? .systemGreen : .systemRed,
+                    text: msg,
+                    textColor: success ? .secondaryLabelColor : .systemRed
+                )
                 if success {
-                    self?.saveCredentials()
+                    self.saveCredentials()
                     CampusNetworkClient.shared.fetchData()
                 }
             }
@@ -511,10 +534,14 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     @objc private func logoutClicked() {
         statusLabel.stringValue = "正在注销当前网关设备..."
+        statusLabel.textColor = .secondaryLabelColor
         PortalAuthService.shared.logout { [weak self] success, msg in
             DispatchQueue.main.async {
-                self?.statusLabel.stringValue = msg
-                self?.statusLabel.textColor = success ? .systemOrange : .systemRed
+                guard let self = self else { return }
+                self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
+                    dotColor: success ? .systemOrange : .systemRed,
+                    text: msg
+                )
                 CampusNetworkClient.shared.fetchData()
             }
         }

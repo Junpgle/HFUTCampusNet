@@ -60,11 +60,24 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(onEmptyClassroomUpdated),
+            name: .emptyClassroomDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(onDormElectricityUpdated),
             name: .dormElectricityDidUpdate,
             object: nil
         )
         updateCourseDisplay()
+    }
+
+    @objc private func onEmptyClassroomUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateCourseDisplay()
+            self?.renderBottomLabel()
+        }
     }
 
     @objc private func onDormElectricityUpdated() {
@@ -214,14 +227,13 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             button.action = act
             card = button
         } else {
-            card = NSView(frame: frame)
+            let box = AdaptiveBoxView(frame: frame)
+            box.dynamicCornerRadius = 10
+            box.dynamicBackgroundColor = NSColor.labelColor.withAlphaComponent(0.05)
+            box.dynamicBorderColor = NSColor.labelColor.withAlphaComponent(0.10)
+            box.dynamicBorderWidth = 1.0
+            card = box
         }
-
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 10
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
-        card.layer?.borderWidth = 0.5
-        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
 
         if hasHelpIcon {
             let helpImg = NSImageView(frame: NSRect(x: 8, y: frame.height - 20, width: 12, height: 12))
@@ -257,18 +269,13 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         let button = ClickableCardButton(frame: frame)
         button.target = self
         button.action = #selector(courseCardClicked)
-        button.wantsLayer = true
-        button.layer?.cornerRadius = 10
-        button.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.45).cgColor
-        button.layer?.borderWidth = 0.5
-        button.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
 
         let icon = NSImageView(frame: NSRect(x: 10, y: 14, width: 16, height: 16))
         icon.image = NSImage(systemSymbolName: "book.closed.fill", accessibilityDescription: nil)
         icon.contentTintColor = NSColor.systemIndigo
         button.addSubview(icon)
 
-        let titleLabel = NSTextField(labelWithString: "📚 正在加载今日课程...")
+        let titleLabel = NSTextField(labelWithString: "正在加载今日课程...")
         titleLabel.frame = NSRect(x: 32, y: 22, width: frame.width - 40, height: 18)
         titleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .bold)
         titleLabel.textColor = .labelColor
@@ -294,38 +301,81 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private func updateCourseDisplay() {
         guard let titleLabel = courseTitleLabel, let detailLabel = courseDetailLabel else { return }
 
+        let now = Date()
+        let nowMin = EmptyClassroomService.currentMinutesOfDay(at: now)
+        let service = EmptyClassroomService.shared
+
+        // 如果当前自习室正在被占用或即将被占用（35分钟内），优先在卡片弹出醒目换教室提醒
+        if let studyRoom = service.currentStudyRoomItem() {
+            let (conflict, isOngoing, minsUntil, recs) = service.nearbySwitchRecommendations(for: studyRoom, limit: 2)
+            if let occ = conflict, isOngoing {
+                let nearNames = recs.map { "\($0.room.nameZh)(\($0.proximity.badgeText))" }.joined(separator: "、")
+                titleLabel.stringValue = "自习冲突：\(studyRoom.nameZh) 正在\(occ.causeTitle)"
+                titleLabel.textColor = NSColor.systemRed
+                detailLabel.stringValue = nearNames.isEmpty ? "占用时段 \(occ.startTimeString)-\(occ.endTimeString) · 点击打开空教室面板切换" : "推荐换至：\(nearNames)"
+                detailLabel.textColor = .labelColor
+                return
+            } else if let occ = conflict, let mins = minsUntil, mins <= 35 {
+                let nearNames = recs.map { "\($0.room.nameZh)(\($0.proximity.badgeText))" }.joined(separator: "、")
+                titleLabel.stringValue = "自习提醒：\(studyRoom.nameZh) \(mins) 分钟后有\(occ.causeTitle)"
+                titleLabel.textColor = NSColor.systemOrange
+                detailLabel.stringValue = nearNames.isEmpty ? "\(occ.startTimeString)-\(occ.endTimeString) 占用 · 点击查看附近空教室" : "建议切换：\(nearNames)"
+                detailLabel.textColor = .labelColor
+                return
+            }
+        }
+
         guard let schedule = CourseScheduleService.shared.currentSchedule, !schedule.lessons.isEmpty else {
-            titleLabel.stringValue = "📚 教务课表: 点击同步课程"
+            if let studyRoom = service.currentStudyRoomItem() {
+                titleLabel.stringValue = "当前自习：\(studyRoom.nameZh)"
+                titleLabel.textColor = NSColor.systemGreen
+                if let nextOcc = studyRoom.nextOccupation(afterMinutes: nowMin) {
+                    detailLabel.stringValue = "空闲至 \(nextOcc.startTimeString) (\(nextOcc.shortCourseName)) · 点击查看空教室推荐"
+                } else {
+                    detailLabel.stringValue = "今日余下时段全部空闲 · 点击查看明日自习推荐"
+                }
+                detailLabel.textColor = .secondaryLabelColor
+                return
+            }
+            titleLabel.stringValue = "教务课表：点击同步课程"
             titleLabel.textColor = NSColor.systemBlue
-            detailLabel.stringValue = "支持合工大 EAMS 5.0 课表自动读取与提醒"
+            detailLabel.stringValue = "支持合工大 EAMS 5.0 课表与自习空教室智能推荐"
             detailLabel.textColor = .secondaryLabelColor
             return
         }
 
-        let now = Date()
         let todayLessons = schedule.todayLessons(at: now)
         let currentWeek = schedule.currentWeek(at: now) ?? 1
         let weekStr = "第 \(currentWeek) 周"
 
         if let ongoing = schedule.currentLesson(at: now) {
-            titleLabel.stringValue = "🟢 上课中: \(ongoing.courseName)"
+            titleLabel.stringValue = "上课中：\(ongoing.courseName)"
             titleLabel.textColor = NSColor.systemGreen
-            let room = ongoing.classroom.map { "@ \($0)" } ?? ""
+            let room = ongoing.classroom.map { "· \($0)" } ?? ""
             detailLabel.stringValue = "\(ongoing.formattedTime) \(room) | 教师: \(ongoing.teacher ?? "--")"
             detailLabel.textColor = .labelColor
         } else if let next = schedule.nextLesson(at: now) {
-            titleLabel.stringValue = "📚 下一节: \(next.formattedStartTime) \(next.courseName)"
+            titleLabel.stringValue = "下一节：\(next.formattedStartTime) \(next.courseName)"
             titleLabel.textColor = NSColor.systemIndigo
-            let room = next.classroom.map { "@ \($0)" } ?? "待定"
+            let room = next.classroom.map { $0 } ?? "待定"
             detailLabel.stringValue = "地点: \(room) | \(next.formattedTime)"
             detailLabel.textColor = .secondaryLabelColor
+        } else if let studyRoom = service.currentStudyRoomItem() {
+            titleLabel.stringValue = "当前自习：\(studyRoom.nameZh)"
+            titleLabel.textColor = NSColor.systemGreen
+            if let nextOcc = studyRoom.nextOccupation(afterMinutes: nowMin) {
+                detailLabel.stringValue = "空闲至 \(nextOcc.startTimeString) · 点击查看附近空教室与明日推荐"
+            } else {
+                detailLabel.stringValue = "今日余下全空 · 点击查看明日自习推荐"
+            }
+            detailLabel.textColor = .secondaryLabelColor
         } else if !todayLessons.isEmpty {
-            titleLabel.stringValue = "🎉 今日课程已全部结束"
+            titleLabel.stringValue = "今日课程已全部结束"
             titleLabel.textColor = .labelColor
             detailLabel.stringValue = "今日共 \(todayLessons.count) 节课 · \(weekStr) · 点击查看完整课表"
             detailLabel.textColor = .secondaryLabelColor
         } else {
-            titleLabel.stringValue = "🎉 今日暂无排课"
+            titleLabel.stringValue = "今日暂无排课"
             titleLabel.textColor = .labelColor
             detailLabel.stringValue = "\(weekStr) · 周\(CourseCalendarHelper.weekday(from: now)) · 点击查看完整周课表"
             detailLabel.textColor = .secondaryLabelColor
@@ -333,6 +383,19 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     @objc private func courseCardClicked() {
+        let now = Date()
+        let nowMin = EmptyClassroomService.currentMinutesOfDay(at: now)
+        if let studyRoom = EmptyClassroomService.shared.currentStudyRoomItem() {
+            if studyRoom.currentOccupation(atMinutes: nowMin) != nil || (studyRoom.minutesUntilNextOccupation(atMinutes: nowMin) ?? 999) <= 35 {
+                EmptyClassroomWindowController.shared.showWindowAndSync()
+                return
+            }
+            let schedule = CourseScheduleService.shared.currentSchedule
+            if schedule?.currentLesson(at: now) == nil && schedule?.nextLesson(at: now) == nil {
+                EmptyClassroomWindowController.shared.showWindowAndSync()
+                return
+            }
+        }
         CourseScheduleWindowController.shared.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -376,7 +439,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     private func renderBottomLabel() {
-        carouselIndex = (carouselIndex + 1) % 3
+        carouselIndex = (carouselIndex + 1) % 4
 
         if let err = currentData.errorMessage {
             updateTimeLabel.stringValue = err
@@ -387,7 +450,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         switch carouselIndex {
         case 0:
             // 实时网速
-            updateTimeLabel.stringValue = "🚀 实时速率: \(currentSpeedString)"
+            updateTimeLabel.stringValue = "实时速率：\(currentSpeedString)"
             updateTimeLabel.textColor = NSColor.systemTeal
         case 1:
             // 更新时间与百分比
@@ -402,22 +465,47 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             let percentage = currentData.usagePercentage * 100.0
             updateTimeLabel.stringValue = "\(timeStr) · 已用 \(String(format: "%.1f", percentage))%"
             updateTimeLabel.textColor = .tertiaryLabelColor
-        default:
+        case 2:
             // 宿舍电费与历史用量提示
             if let elec = ElectricityService.shared.latestData {
-                let warn = elec.isLowBalance ? "⚠️ " : ""
+                let warn = elec.isLowBalance ? "余额偏低 · " : ""
                 let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
-                let daysText = (daysLeft != nil) ? " · 约余\(daysLeft!)天" : ""
-                updateTimeLabel.stringValue = "\(warn)⚡ 宿舍电费: \(elec.displayBalance)\(daysText)"
+                let daysText = (daysLeft != nil) ? " · 约余 \(daysLeft!) 天" : ""
+                updateTimeLabel.stringValue = "\(warn)宿舍电费：\(elec.displayBalance)\(daysText)"
                 updateTimeLabel.textColor = elec.isLowBalance ? NSColor.systemRed : NSColor.systemOrange
             } else {
-                updateTimeLabel.stringValue = "⚡ 宿舍电费: 点击查看历史用量与配置"
+                updateTimeLabel.stringValue = "宿舍电费：点击查看历史用量与配置"
                 updateTimeLabel.textColor = NSColor.systemOrange
+            }
+        default:
+            // 自习空教室状态与推荐
+            let nowMin = EmptyClassroomService.currentMinutesOfDay()
+            if let record = SettingsManager.shared.currentStudyRoom {
+                if let live = EmptyClassroomService.shared.currentStudyRoomItem(),
+                   let nextOcc = live.nextOccupation(afterMinutes: nowMin) {
+                    updateTimeLabel.stringValue = "自习室：\(record.roomName) (空至 \(nextOcc.startTimeString) · 点击管理)"
+                } else {
+                    updateTimeLabel.stringValue = "自习室：\(record.roomName) (今日余下全空 · 点击管理)"
+                }
+                updateTimeLabel.textColor = NSColor.systemGreen
+            } else {
+                let picks = EmptyClassroomService.shared.recommendedTodayAllDayFreeRooms(limit: 2)
+                if !picks.isEmpty {
+                    let names = picks.map { $0.nameZh }.joined(separator: "、")
+                    updateTimeLabel.stringValue = "今日全空推荐：\(names) (点击设定自习室)"
+                } else {
+                    updateTimeLabel.stringValue = "自习空教室：点击查询全天空闲教室与自习管理"
+                }
+                updateTimeLabel.textColor = NSColor.systemBlue
             }
         }
     }
 
     @objc private func bottomLabelClicked() {
+        if carouselIndex == 3 {
+            EmptyClassroomWindowController.shared.showWindowAndSync()
+            return
+        }
         let mode = (carouselIndex == 2) ? 1 : 0
         HistoryStatsWindowController.shared.showWindow(mode: mode)
     }
@@ -469,7 +557,7 @@ class CustomDraggableWindow: NSWindow {
     }
 }
 
-// 可点击的卡片按钮
+// 可点击的卡片按钮（基于 draw(_:) 自适应浅色与深色模式）
 class ClickableCardButton: NSButton {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -478,6 +566,15 @@ class ClickableCardButton: NSButton {
     }
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
+        NSColor.labelColor.withAlphaComponent(0.05).setFill()
+        path.fill()
+        NSColor.labelColor.withAlphaComponent(0.10).setStroke()
+        path.lineWidth = 1.0
+        path.stroke()
     }
     override func resetCursorRects() {
         super.resetCursorRects()

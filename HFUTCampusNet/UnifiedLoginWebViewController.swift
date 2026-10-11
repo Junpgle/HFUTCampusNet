@@ -37,10 +37,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         containerView.autoresizingMask = [.width, .height]
 
         // 顶部说明条
-        let topBar = NSView(frame: NSRect(x: 0, y: 720 - 46, width: 1000, height: 46))
+        let topBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 720 - 46, width: 1000, height: 46))
         topBar.autoresizingMask = [.width, .minYMargin]
-        topBar.wantsLayer = true
-        topBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        topBar.dynamicBackgroundColor = .windowBackgroundColor
 
         let topIcon = NSImageView(frame: NSRect(x: 16, y: 11, width: 24, height: 24))
         topIcon.image = NSImage(systemSymbolName: "person.badge.key.fill", accessibilityDescription: nil)
@@ -80,10 +79,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         containerView.addSubview(webView)
 
         // 底部服务同步状态栏
-        let bottomBar = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 86))
+        let bottomBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 0, width: 1000, height: 86))
         bottomBar.autoresizingMask = [.width, .maxYMargin]
-        bottomBar.wantsLayer = true
-        bottomBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        bottomBar.dynamicBackgroundColor = .windowBackgroundColor
 
         progressIndicator = NSProgressIndicator(frame: NSRect(x: 20, y: 48, width: 20, height: 20))
         progressIndicator.style = .spinning
@@ -178,16 +176,16 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         let label = stepLabels[index]
         switch status {
         case .waiting:
-            label.stringValue = "⏳ " + text
+            label.stringValue = "○ " + text
             label.textColor = .tertiaryLabelColor
         case .inProgress:
-            label.stringValue = "🔄 " + text
+            label.stringValue = "● " + text
             label.textColor = NSColor.systemBlue
         case .success:
-            label.stringValue = "✅ " + text
+            label.stringValue = "● " + text
             label.textColor = NSColor.systemGreen
         case .failure:
-            label.stringValue = "❌ " + text
+            label.stringValue = "● " + text
             label.textColor = NSColor.systemRed
         }
     }
@@ -338,9 +336,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         isSyncingAll = true
         progressIndicator.startAnimation(nil)
 
-        statusTitleLabel.stringValue = "🎉 统一身份认证成功！正在自动同步所有校园服务..."
+        statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
         statusTitleLabel.textColor = NSColor.systemBlue
-        statusDetailLabel.stringValue = "请稍候，系统正在通过 SSO 依次拉取课表排课、宿舍电费、校园网流量..."
+        statusDetailLabel.stringValue = "正在通过单点登录依次拉取课表排课、宿舍电费与校园网流量..."
         updateStep(index: 0, text: "1. 统一身份认证", status: .success)
 
         // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
@@ -379,6 +377,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 semesterId: SettingsManager.shared.courseSemesterId,
                 bizTypeId: SettingsManager.shared.courseBizTypeId
             ) { [weak self] result in
+                // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室与自习推荐
+                EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     switch result {
@@ -468,14 +468,14 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         syncCompletedCount += 1
         if syncCompletedCount >= 3 {
             progressIndicator.stopAnimation(nil)
-            statusTitleLabel.stringValue = "✨ 全部校园服务已同步完成！"
+            statusTitleLabel.stringValue = "全部校园服务已同步完成"
             statusTitleLabel.textColor = NSColor.systemGreen
-            statusDetailLabel.stringValue = "课表排课、宿舍电费、校园网流量及历史统计均已成功就绪！"
+            statusDetailLabel.stringValue = "课表排课、宿舍电费、校园网流量及历史统计均已同步就绪。"
 
             NotificationHelper.showNotification(
-                title: "🎉 合工大统一身份认证全量同步完成",
+                title: "统一身份认证全量同步完成",
                 subtitle: "课表、宿舍电费、校园网与历史统计已自动刷新",
-                body: "可在顶部状态栏、桌面组件及历史分析窗口中查看全部数据！"
+                body: "可在顶部状态栏、桌面组件及历史分析窗口中查看全部数据。"
             )
 
             // 3 秒后自动关闭并打开桌面组件
