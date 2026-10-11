@@ -8,7 +8,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var menu: NSMenu!
 
     private var networkStatusMenuItem: NSMenuItem!
-    private var speedMenuItem: NSMenuItem!
+    private var networkSummaryMenuItem: NSMenuItem!
     private var usedFlowMenuItem: NSMenuItem!
     private var availFlowMenuItem: NSMenuItem!
     private var protMenuItem: NSMenuItem!
@@ -62,41 +62,62 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu = NSMenu()
         menu.delegate = self
 
-        let titleItem = NSMenuItem(title: "合肥工业大学校园网监测", action: nil, keyEquivalent: "")
-        titleItem.isEnabled = false
-        menu.addItem(titleItem)
-
-        networkStatusMenuItem = NSMenuItem(title: "网络状态: 🟢 已在线", action: nil, keyEquivalent: "")
+        // 1. 顶部单行实时状态（在线状态 + 实时上下行网速合并）
+        networkStatusMenuItem = NSMenuItem(title: "🟢 已在线认证  ·  ↓ 0 B/s  ↑ 0 B/s", action: nil, keyEquivalent: "")
         networkStatusMenuItem.isEnabled = false
         menu.addItem(networkStatusMenuItem)
 
-        speedMenuItem = NSMenuItem(title: "实时网速: ↓ 0 B/s   ↑ 0 B/s", action: nil, keyEquivalent: "")
-        speedMenuItem.isEnabled = false
-        menu.addItem(speedMenuItem)
-
         menu.addItem(NSMenuItem.separator())
 
-        availFlowMenuItem = NSMenuItem(title: "可用流量: --", action: nil, keyEquivalent: "")
-        availFlowMenuItem.isEnabled = false
-        menu.addItem(availFlowMenuItem)
+        // 2. 三大核心服务概览（校园网、宿舍电费、今日课程）
+        networkSummaryMenuItem = NSMenuItem(title: "📶 校园网: 检测中...", action: nil, keyEquivalent: "")
+        let netSubmenu = NSMenu()
 
-        usedFlowMenuItem = NSMenuItem(title: "已用流量: --", action: nil, keyEquivalent: "")
+        availFlowMenuItem = NSMenuItem(title: "📶 可用流量: 点击自服务授权查看", action: #selector(loginAction), keyEquivalent: "")
+        availFlowMenuItem.target = self
+        netSubmenu.addItem(availFlowMenuItem)
+
+        usedFlowMenuItem = NSMenuItem(title: "📊 已用流量: --", action: nil, keyEquivalent: "")
         usedFlowMenuItem.isEnabled = false
-        menu.addItem(usedFlowMenuItem)
+        netSubmenu.addItem(usedFlowMenuItem)
 
-        balMenuItem = NSMenuItem(title: "账户余额: --", action: nil, keyEquivalent: "")
+        balMenuItem = NSMenuItem(title: "💰 账户余额: --", action: nil, keyEquivalent: "")
         balMenuItem.isEnabled = false
-        menu.addItem(balMenuItem)
+        netSubmenu.addItem(balMenuItem)
 
-        protMenuItem = NSMenuItem(title: "消费保护: --", action: nil, keyEquivalent: "")
+        protMenuItem = NSMenuItem(title: "🛡️ 消费保护: --", action: nil, keyEquivalent: "")
         protMenuItem.isEnabled = false
-        menu.addItem(protMenuItem)
+        netSubmenu.addItem(protMenuItem)
 
-        updateTimeMenuItem = NSMenuItem(title: "上次更新: 等待初次抓取", action: nil, keyEquivalent: "")
+        updateTimeMenuItem = NSMenuItem(title: "⏱️ 上次更新: 等待初次抓取", action: nil, keyEquivalent: "")
         updateTimeMenuItem.isEnabled = false
-        menu.addItem(updateTimeMenuItem)
+        netSubmenu.addItem(updateTimeMenuItem)
 
-        menu.addItem(NSMenuItem.separator())
+        netSubmenu.addItem(NSMenuItem.separator())
+
+        let oneClickLoginItem = NSMenuItem(title: "⚡ 一键登录校园网 (172.18.3.3)", action: #selector(oneClickLoginAction), keyEquivalent: "")
+        oneClickLoginItem.target = self
+        netSubmenu.addItem(oneClickLoginItem)
+
+        let logoutPortalItem = NSMenuItem(title: "🔌 注销校园网当前设备", action: #selector(logoutPortalAction), keyEquivalent: "")
+        logoutPortalItem.target = self
+        netSubmenu.addItem(logoutPortalItem)
+
+        let loginItem = NSMenuItem(title: "🔑 自服务授权 (获取可用流量/保护)...", action: #selector(loginAction), keyEquivalent: "l")
+        loginItem.target = self
+        netSubmenu.addItem(loginItem)
+
+        let openWebItem = NSMenuItem(title: "🌍 打开校园网自服务网页...", action: #selector(openWebAction), keyEquivalent: "o")
+        openWebItem.target = self
+        netSubmenu.addItem(openWebItem)
+
+        networkSummaryMenuItem.submenu = netSubmenu
+        menu.addItem(networkSummaryMenuItem)
+
+        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openElectricityStatsAction), keyEquivalent: "")
+        dormElectricityMenuItem.target = self
+        menu.addItem(dormElectricityMenuItem)
+        updateDormElectricityMenu()
 
         courseParentMenuItem = NSMenuItem(title: "📚 今日课程: 加载中...", action: nil, keyEquivalent: "")
         let courseSubmenu = NSMenu()
@@ -104,24 +125,36 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu.addItem(courseParentMenuItem)
         updateCourseSubmenu()
 
-        dormElectricityMenuItem = NSMenuItem(title: "⚡ 宿舍电费: 加载中...", action: #selector(openElectricityStatsAction), keyEquivalent: "")
-        dormElectricityMenuItem.target = self
-        menu.addItem(dormElectricityMenuItem)
-        updateDormElectricityMenu()
-
         menu.addItem(NSMenuItem.separator())
 
-        let unifiedLoginItem = NSMenuItem(title: "🔑 统一身份认证登录 (信息门户 · 自动刷新全部)...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
-        unifiedLoginItem.target = self
-        menu.addItem(unifiedLoginItem)
-
-        let historyStatsItem = NSMenuItem(title: "📊 校园用量统计与历史分析...", action: #selector(openHistoryStatsAction), keyEquivalent: "h")
+        // 3. 快捷分析与同步操作
+        let historyStatsItem = NSMenuItem(title: "📊 用量统计与历史分析...", action: #selector(openHistoryStatsAction), keyEquivalent: "h")
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
+        let unifiedLoginItem = NSMenuItem(title: "🔑 统一身份认证同步...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
+        unifiedLoginItem.target = self
+        menu.addItem(unifiedLoginItem)
+
+        let refreshItem = NSMenuItem(title: "🔄 立即刷新数据", action: #selector(refreshAction), keyEquivalent: "r")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+
         menu.addItem(NSMenuItem.separator())
 
-        let styleMenu = NSMenu()
+        // 4. 外观、刷新频率与偏好设置
+        let displaySubmenu = NSMenu()
+
+        toggleWidgetMenuItem = NSMenuItem(title: "显示桌面悬浮卡片", action: #selector(toggleWidgetAction), keyEquivalent: "w")
+        toggleWidgetMenuItem.target = self
+        displaySubmenu.addItem(toggleWidgetMenuItem)
+
+        displaySubmenu.addItem(NSMenuItem.separator())
+
+        let styleHeader = NSMenuItem(title: "状态栏显示模式", action: nil, keyEquivalent: "")
+        styleHeader.isEnabled = false
+        displaySubmenu.addItem(styleHeader)
+
         let styles: [(String, Int)] = [
             ("智能轮播 (流量与网速交替)", 0),
             ("仅显示校园网流量与余额", 1),
@@ -130,43 +163,16 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         ]
         let currentStyle = SettingsManager.shared.menubarStyle
         for (name, val) in styles {
-            let item = NSMenuItem(title: name, action: #selector(changeDisplayStyle(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: "  " + name, action: #selector(changeDisplayStyle(_:)), keyEquivalent: "")
             item.representedObject = val
             item.target = self
             if currentStyle == val {
                 item.state = .on
             }
-            styleMenu.addItem(item)
+            displaySubmenu.addItem(item)
         }
-        let styleParentItem = NSMenuItem(title: "状态栏显示模式", action: nil, keyEquivalent: "")
-        styleParentItem.submenu = styleMenu
-        menu.addItem(styleParentItem)
 
-        let oneClickLoginItem = NSMenuItem(title: "⚡ 一键登录校园网 (172.18.3.3)", action: #selector(oneClickLoginAction), keyEquivalent: "")
-        oneClickLoginItem.target = self
-        menu.addItem(oneClickLoginItem)
-
-        let logoutPortalItem = NSMenuItem(title: "🔌 注销校园网当前设备", action: #selector(logoutPortalAction), keyEquivalent: "")
-        logoutPortalItem.target = self
-        menu.addItem(logoutPortalItem)
-
-        let portalSettingsItem = NSMenuItem(title: "⚙️ 自动登录与账号设置...", action: #selector(openPortalSettingsAction), keyEquivalent: ",")
-        portalSettingsItem.target = self
-        menu.addItem(portalSettingsItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let refreshItem = NSMenuItem(title: "立即刷新数据", action: #selector(refreshAction), keyEquivalent: "r")
-        refreshItem.target = self
-        menu.addItem(refreshItem)
-
-        toggleWidgetMenuItem = NSMenuItem(title: "显示桌面悬浮卡片", action: #selector(toggleWidgetAction), keyEquivalent: "w")
-        toggleWidgetMenuItem.target = self
-        menu.addItem(toggleWidgetMenuItem)
-
-        let loginItem = NSMenuItem(title: "自服务授权 (xywzz:8443)...", action: #selector(loginAction), keyEquivalent: "l")
-        loginItem.target = self
-        menu.addItem(loginItem)
+        displaySubmenu.addItem(NSMenuItem.separator())
 
         let intervalMenu = NSMenu()
         let intervals: [(String, Double)] = [
@@ -188,11 +194,15 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         }
         let intervalParentItem = NSMenuItem(title: "数据刷新频率", action: nil, keyEquivalent: "")
         intervalParentItem.submenu = intervalMenu
-        menu.addItem(intervalParentItem)
+        displaySubmenu.addItem(intervalParentItem)
 
-        let openWebItem = NSMenuItem(title: "打开校园网自服务网页...", action: #selector(openWebAction), keyEquivalent: "o")
-        openWebItem.target = self
-        menu.addItem(openWebItem)
+        let displayParentItem = NSMenuItem(title: "🎨 显示与刷新选项", action: nil, keyEquivalent: "")
+        displayParentItem.submenu = displaySubmenu
+        menu.addItem(displayParentItem)
+
+        let portalSettingsItem = NSMenuItem(title: "⚙️ 偏好设置...", action: #selector(openPortalSettingsAction), keyEquivalent: ",")
+        portalSettingsItem.target = self
+        menu.addItem(portalSettingsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -214,12 +224,17 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         renderTitle()
     }
 
+    private func updateTopStatusLine() {
+        let statusPrefix = currentData.isLoggedIn ? "🟢 已在线" : "🟡 未认证"
+        networkStatusMenuItem?.title = "\(statusPrefix)  ·  🚀 ↓ \(currentDownloadSpeed)  ↑ \(currentUploadSpeed)"
+    }
+
     public func speedMonitorDidUpdate(download: String, upload: String, compact: String) {
         currentDownloadSpeed = download
         currentUploadSpeed = upload
         currentSpeedCompact = compact
 
-        speedMenuItem?.title = "🚀 实时网速: ↓ \(download)   ↑ \(upload)"
+        updateTopStatusLine()
 
         let style = SettingsManager.shared.menubarStyle
         if style == 2 || style == 3 || (style == 0 && carouselToggle) {
@@ -230,17 +245,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     public func updateData(_ data: CampusNetworkData) {
         currentData = data
         renderTitle()
-
-        if currentData.isLoggedIn {
-            networkStatusMenuItem.title = "网络状态: 🟢 已在线认证"
-        } else {
-            networkStatusMenuItem.title = "网络状态: 🟡 未认证，点击一键登录"
-        }
+        updateTopStatusLine()
 
         if data.availableFlow != "-- M" {
+            networkSummaryMenuItem?.title = "📶 校园网: 可用 \(data.formattedAvailable) · 余额 \(data.balance)"
             availFlowMenuItem.title = "📶 可用流量: \(data.availableFlow) (\(data.formattedAvailable))"
         } else {
-            availFlowMenuItem.title = "📶 可用流量: 点击自服务授权查看"
+            networkSummaryMenuItem?.title = "📶 校园网: 已用 \(data.formattedUsed) · 余额 \(data.balance)"
+            availFlowMenuItem.title = "📶 可用流量: 点击自服务授权查看..."
         }
         
         usedFlowMenuItem.title = "📊 已用流量: \(data.usedFlow) (\(data.formattedUsed))"
@@ -345,7 +357,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         guard let style = sender.representedObject as? Int else { return }
         SettingsManager.shared.menubarStyle = style
         if let parent = sender.menu {
-            for item in parent.items {
+            for item in parent.items where item.action == #selector(changeDisplayStyle(_:)) {
                 item.state = (item == sender) ? .on : .off
             }
         }
