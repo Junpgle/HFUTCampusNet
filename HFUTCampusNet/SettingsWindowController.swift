@@ -339,8 +339,15 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         viewTableBtn.bezelStyle = .rounded
         viewTableBtn.controlSize = .small
         viewTableBtn.font = NSFont.systemFont(ofSize: 11.5)
-        viewTableBtn.frame = NSRect(x: 290, y: 74, width: 104, height: 24)
+        viewTableBtn.frame = NSRect(x: 290, y: 74, width: 102, height: 24)
         courseCard.addSubview(viewTableBtn)
+
+        let viewAcademicBtn = NSButton(title: "成绩与考试", target: self, action: #selector(viewAcademicClicked))
+        viewAcademicBtn.bezelStyle = .rounded
+        viewAcademicBtn.controlSize = .small
+        viewAcademicBtn.font = NSFont.systemFont(ofSize: 11.5)
+        viewAcademicBtn.frame = NSRect(x: 398, y: 74, width: 90, height: 24)
+        courseCard.addSubview(viewAcademicBtn)
 
         contentView.addSubview(courseCard)
 
@@ -529,10 +536,15 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func viewAcademicClicked() {
+        AcademicWindowController.shared.showWindow(mode: 0)
+    }
+
     @objc private func syncCourseClicked() {
         saveCredentials()
         courseStatusLabel.stringValue = "正在同步教务课表..."
         courseStatusLabel.textColor = .secondaryLabelColor
+        AcademicService.shared.syncAll(silent: true)
 
         CourseScheduleService.shared.syncSchedule { [weak self] result in
             DispatchQueue.main.async {
@@ -627,6 +639,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         window?.close()
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
+        CampusCardService.shared.fetchData { _ in }
+        AcademicService.shared.syncAll(silent: true)
     }
 
     private func handleAccountSwitchIfNeeded() {
@@ -645,6 +659,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             initialStdId = ""
         }
         CourseScheduleService.shared.clearSchedule()
+        CampusCardService.shared.clearCache()
+        AcademicService.shared.clearCache()
         updateCourseStatusDisplay()
     }
 

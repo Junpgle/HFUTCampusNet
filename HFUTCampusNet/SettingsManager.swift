@@ -43,6 +43,12 @@ public class SettingsManager {
         static let lastNotifiedStudyMorningDate = "campus_last_notified_study_morning_date"
         static let lastNotifiedStudyEveningDate = "campus_last_notified_study_evening_date"
         static let lastNotifiedStudyConflictId = "campus_last_notified_study_conflict_id"
+        static let campusCardLowWarningThreshold = "campus_card_low_threshold"
+        static let campusCardDailyBudget = "campus_card_daily_budget"
+        static let lastNotifiedLowCardBalanceDate = "campus_last_notified_low_card_date"
+        static let hideScoreInNotification = "campus_hide_score_in_notification"
+        static let notifiedGradeIdsData = "campus_notified_grade_ids_data"
+        static let unreadGradeIdsData = "campus_unread_grade_ids_data"
     }
 
     private init() {
@@ -54,6 +60,9 @@ public class SettingsManager {
         }
         if defaults.object(forKey: Keys.widgetOpacity) == nil {
             defaults.set(0.92, forKey: Keys.widgetOpacity)
+        }
+        if defaults.object(forKey: Keys.hideScoreInNotification) == nil {
+            defaults.set(true, forKey: Keys.hideScoreInNotification)
         }
         if defaults.object(forKey: Keys.menubarStyle) == nil {
             defaults.set(0, forKey: Keys.menubarStyle) // 默认 0: 智能轮播！
@@ -78,6 +87,12 @@ public class SettingsManager {
         }
         if defaults.object(forKey: Keys.electricityLowWarningThreshold) == nil {
             defaults.set(10.0, forKey: Keys.electricityLowWarningThreshold)
+        }
+        if defaults.object(forKey: Keys.campusCardLowWarningThreshold) == nil {
+            defaults.set(15.0, forKey: Keys.campusCardLowWarningThreshold)
+        }
+        if defaults.object(forKey: Keys.hideScoreInNotification) == nil {
+            defaults.set(false, forKey: Keys.hideScoreInNotification)
         }
         if defaults.object(forKey: Keys.autoCheckUpdate) == nil {
             defaults.set(true, forKey: Keys.autoCheckUpdate)
@@ -335,10 +350,68 @@ public class SettingsManager {
         get { defaults.string(forKey: Keys.lastNotifiedStudyConflictId) }
         set { defaults.set(newValue, forKey: Keys.lastNotifiedStudyConflictId) }
     }
+
+    public var campusCardLowWarningThreshold: Double {
+        get {
+            let val = defaults.double(forKey: Keys.campusCardLowWarningThreshold)
+            return val > 0 ? val : 15.0
+        }
+        set { defaults.set(newValue, forKey: Keys.campusCardLowWarningThreshold) }
+    }
+
+    public var campusCardDailyBudget: Double {
+        get {
+            let val = defaults.double(forKey: Keys.campusCardDailyBudget)
+            return val > 0 ? val : 30.0
+        }
+        set { defaults.set(newValue, forKey: Keys.campusCardDailyBudget) }
+    }
+
+    public var lastNotifiedLowCardBalanceDate: String? {
+        get { defaults.string(forKey: Keys.lastNotifiedLowCardBalanceDate) }
+        set { defaults.set(newValue, forKey: Keys.lastNotifiedLowCardBalanceDate) }
+    }
+
+    public var hideScoreInNotification: Bool {
+        get { defaults.bool(forKey: Keys.hideScoreInNotification) }
+        set { defaults.set(newValue, forKey: Keys.hideScoreInNotification) }
+    }
+
+    public var notifiedGradeIds: Set<String> {
+        get {
+            guard let data = defaults.data(forKey: Keys.notifiedGradeIdsData),
+                  let arr = try? JSONDecoder().decode([String].self, from: data) else {
+                return []
+            }
+            return Set(arr)
+        }
+        set {
+            if let data = try? JSONEncoder().encode(Array(newValue)) {
+                defaults.set(data, forKey: Keys.notifiedGradeIdsData)
+            }
+        }
+    }
+
+    public var unreadGradeIds: Set<String> {
+        get {
+            guard let data = defaults.data(forKey: Keys.unreadGradeIdsData),
+                  let arr = try? JSONDecoder().decode([String].self, from: data) else {
+                return []
+            }
+            return Set(arr)
+        }
+        set {
+            if let data = try? JSONEncoder().encode(Array(newValue)) {
+                defaults.set(data, forKey: Keys.unreadGradeIdsData)
+            }
+        }
+    }
 }
 
 extension Notification.Name {
     public static let dormElectricityDidUpdate = Notification.Name("cn.edu.hfut.dormElectricityDidUpdate")
     public static let historyStatsDidUpdate = Notification.Name("cn.edu.hfut.historyStatsDidUpdate")
     public static let emptyClassroomDidUpdate = Notification.Name("cn.edu.hfut.emptyClassroomDidUpdate")
+    public static let academicDataDidUpdate = Notification.Name("cn.edu.hfut.academicDataDidUpdate")
+    public static let campusCardDidUpdate = Notification.Name("cn.edu.hfut.campusCardDidUpdate")
 }

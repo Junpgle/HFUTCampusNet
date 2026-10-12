@@ -24,12 +24,12 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.7.0）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.8.0）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.7.0"
+        return "1.8.0"
     }
 
     /// 检查 GitHub Releases 最新版本

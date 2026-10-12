@@ -18,6 +18,8 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var courseParentMenuItem: NSMenuItem!
     private var emptyClassroomMenuItem: NSMenuItem!
     private var dormElectricityMenuItem: NSMenuItem!
+    private var campusCardMenuItem: NSMenuItem!
+    private var academicMenuItem: NSMenuItem!
     private var checkUpdateMenuItem: NSMenuItem!
     private var quotaMenuCardView: CampusQuotaCardView?
 
@@ -52,6 +54,18 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             self,
             selector: #selector(onDormElectricityUpdated),
             name: .dormElectricityDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onCampusCardUpdated),
+            name: .campusCardDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onAcademicDataUpdated),
+            name: .academicDataDidUpdate,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -194,12 +208,26 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu.addItem(dormElectricityMenuItem)
         updateDormElectricityMenu()
 
+        campusCardMenuItem = NSMenuItem(title: "校园一卡通：加载中...", action: nil, keyEquivalent: "")
+        campusCardMenuItem.image = symbolImage("creditcard")
+        let cardSubmenu = NSMenu()
+        campusCardMenuItem.submenu = cardSubmenu
+        menu.addItem(campusCardMenuItem)
+        updateCampusCardMenu()
+
         courseParentMenuItem = NSMenuItem(title: "今日课程：加载中...", action: nil, keyEquivalent: "")
         courseParentMenuItem.image = symbolImage("calendar")
         let courseSubmenu = NSMenu()
         courseParentMenuItem.submenu = courseSubmenu
         menu.addItem(courseParentMenuItem)
         updateCourseSubmenu()
+
+        academicMenuItem = NSMenuItem(title: "考试与成绩：加载中...", action: nil, keyEquivalent: "")
+        academicMenuItem.image = symbolImage("graduationcap")
+        let academicSubmenu = NSMenu()
+        academicMenuItem.submenu = academicSubmenu
+        menu.addItem(academicMenuItem)
+        updateAcademicSubmenu()
 
         emptyClassroomMenuItem = NSMenuItem(title: "自习教室：未设定", action: nil, keyEquivalent: "")
         emptyClassroomMenuItem.image = symbolImage("building.2")
@@ -482,8 +510,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     public func menuWillOpen(_ menu: NSMenu) {
         updateWidgetMenuState()
         updateCourseSubmenu()
+        updateAcademicSubmenu()
         updateEmptyClassroomSubmenu()
         updateDormElectricityMenu()
+        updateCampusCardMenu()
         quotaMenuCardView?.refresh(mode: 0)
         CampusNetworkClient.shared.fetchOnlineDevices()
     }
@@ -510,16 +540,306 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             let warnSuffix = elec.isLowBalance ? " · 余额偏低" : ""
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
             let daysStr = (daysLeft != nil) ? " (约余 \(daysLeft!) 天)" : ""
-            item.title = "宿舍电费：\(elec.displayBalance)\(daysStr) · \(elec.formattedRoom)\(warnSuffix)"
+            item.title = "宿舍电费：\(elec.displayBalance)\(daysStr)\(warnSuffix)"
         } else if let lastRecord = CampusHistoryManager.shared.latestElectricityRecord {
             let balStr = String(format: "%.2f 元", lastRecord.balanceRMB)
             let warnSuffix = lastRecord.balanceRMB < SettingsManager.shared.electricityLowWarningThreshold ? " · 余额偏低" : ""
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
             let daysStr = (daysLeft != nil) ? " (约余 \(daysLeft!) 天)" : ""
-            let roomStr = "\(SettingsManager.shared.dormBuilding)号楼 \(SettingsManager.shared.dormRoom)室"
-            item.title = "宿舍电费：\(balStr)\(daysStr) · \(roomStr)\(warnSuffix)"
+            item.title = "宿舍电费：\(balStr)\(daysStr)\(warnSuffix)"
         } else {
             item.title = "宿舍电费：正在获取数据..."
+        }
+    }
+
+    // MARK: - 校园一卡通菜单
+
+    @objc private func onCampusCardUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateCampusCardMenu()
+        }
+    }
+
+    private func updateCampusCardMenu() {
+        guard let parentItem = campusCardMenuItem, let submenu = parentItem.submenu else { return }
+        submenu.removeAllItems()
+
+        if let card = CampusCardService.shared.latestData {
+            let now = Date()
+            let warnSuffix = card.isLowBalance ? " · 余额偏低" : ""
+            let todayCount = card.todayExpenseCount(at: now)
+            let todaySpent = card.todaySpentRMB(at: now)
+            let todayPart = todayCount > 0 ? " · 今日消费 ¥\(String(format: "%.2f", todaySpent))" : " · 今日无消费"
+            parentItem.title = "校园一卡通：\(card.displayBalance)\(todayPart)\(warnSuffix)"
+
+            let balHeader = NSMenuItem(
+                title: "卡内可用余额：\(card.displayBalance)  ·  状态：\(card.cardStatusText)",
+                action: #selector(openCampusCardStatsAction),
+                keyEquivalent: ""
+            )
+            balHeader.image = statusDotImage(color: card.isLowBalance ? .systemRed : .systemGreen)
+            balHeader.target = self
+            submenu.addItem(balHeader)
+
+            if card.unsettleAmountRMB > 0.001 {
+                let unsettleItem = NSMenuItem(
+                    title: "    待圈存/过渡余额：\(String(format: "%.2f 元", card.unsettleAmountRMB)) (刷卡后自动入账)",
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                unsettleItem.isEnabled = false
+                submenu.addItem(unsettleItem)
+            }
+
+            let dailyList = card.dailyExpenseSummary(days: 7, at: now)
+            let avg7Day = dailyList.isEmpty ? 0.0 : dailyList.reduce(0.0) { $0 + $1.spentRMB } / Double(dailyList.count)
+            let summaryItem = NSMenuItem(
+                title: "    今日消费：¥\(String(format: "%.2f", todaySpent)) (\(todayCount) 笔)   ·   近7日日均：¥\(String(format: "%.2f", avg7Day))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            summaryItem.isEnabled = false
+            submenu.addItem(summaryItem)
+
+            submenu.addItem(NSMenuItem.separator())
+
+            let recentHeader = NSMenuItem(title: "最近消费/充值流水 (前 6 笔)", action: nil, keyEquivalent: "")
+            recentHeader.isEnabled = false
+            submenu.addItem(recentHeader)
+
+            let recentTx = Array(card.transactions.prefix(6))
+            if recentTx.isEmpty {
+                let emptyItem = NSMenuItem(title: "暂无近期交易记录", action: nil, keyEquivalent: "")
+                emptyItem.isEnabled = false
+                submenu.addItem(emptyItem)
+            } else {
+                for tx in recentTx {
+                    let sign = tx.isExpense ? "-" : "+"
+                    let amountStr = String(format: "%@¥%.2f", sign, tx.amountRMB)
+                    let balPart = tx.balanceAfterRMB.map { String(format: "  (余 ¥%.2f)", $0) } ?? ""
+                    let timeDisplay = String(tx.dateTimeString.dropFirst(5).prefix(11))
+                    let item = NSMenuItem(
+                        title: "\(timeDisplay)   \(amountStr)   \(tx.cleanMerchantName)\(balPart)",
+                        action: #selector(openCampusCardStatsAction),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    submenu.addItem(item)
+                }
+            }
+        } else {
+            parentItem.title = "校园一卡通：未同步 (点击查看)"
+            let promptItem = NSMenuItem(
+                title: "点击同步校园一卡通余额与消费账单...",
+                action: #selector(refreshCampusCardMenuAction),
+                keyEquivalent: ""
+            )
+            promptItem.target = self
+            submenu.addItem(promptItem)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let openBillItem = NSMenuItem(title: "查看完整消费账单与趋势图...", action: #selector(openCampusCardStatsAction), keyEquivalent: "b")
+        openBillItem.target = self
+        submenu.addItem(openBillItem)
+
+        let refreshCardItem = NSMenuItem(title: "立即刷新校园卡余额", action: #selector(refreshCampusCardMenuAction), keyEquivalent: "")
+        refreshCardItem.target = self
+        submenu.addItem(refreshCardItem)
+    }
+
+    @objc private func openCampusCardStatsAction() {
+        CampusCardService.shared.fetchData { _ in }
+        HistoryStatsWindowController.shared.showWindow(mode: 2)
+    }
+
+    @objc private func refreshCampusCardMenuAction() {
+        CampusCardService.shared.fetchData { result in
+            DispatchQueue.main.async {
+                if case .failure(let err) = result {
+                    UnifiedLoginWebViewController.shared.showLoginWindow()
+                    print("[CampusCard] 手动刷新失败: \(err.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    // MARK: - 考试倒计时与成绩/GPA 菜单
+
+    @objc private func onAcademicDataUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateAcademicSubmenu()
+        }
+    }
+
+    private func updateAcademicSubmenu() {
+        guard let parentItem = academicMenuItem, let submenu = parentItem.submenu else { return }
+        submenu.removeAllItems()
+
+        let now = Date()
+        let snapshot = AcademicService.shared.latestData
+        let upcomingExams = snapshot?.upcomingExams(at: now) ?? []
+        let totalCount = snapshot?.allGrades.count ?? 0
+        let unreadCount = AcademicService.shared.unreadGradeCount
+
+        if unreadCount > 0, let nextExam = upcomingExams.first {
+            parentItem.title = "考试与成绩：成绩有更新 · 距《\(nextExam.courseName)》\(nextExam.countdownBadgeText(at: now))"
+        } else if unreadCount > 0 {
+            parentItem.title = "考试与成绩：成绩有更新 (点击查看)"
+        } else if let nextExam = upcomingExams.first {
+            parentItem.title = "考试与成绩：距《\(nextExam.courseName)》\(nextExam.countdownBadgeText(at: now))"
+        } else if totalCount > 0 {
+            parentItem.title = "考试与成绩：暂无新出分"
+        } else {
+            parentItem.title = "考试与成绩：点击同步查询"
+        }
+
+        // 1. 校历与学期进度里程碑
+        let milestone = SemesterMilestoneInfo.calculate(at: now)
+        let milestoneItem = NSMenuItem(
+            title: "校历进度：第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (\(milestone.progressPercentage)%)  ·  距期末周约 \(milestone.daysUntilExamWeek) 天  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
+            action: #selector(openExamScheduleWindowAction),
+            keyEquivalent: ""
+        )
+        milestoneItem.image = statusDotImage(color: .systemIndigo)
+        milestoneItem.target = self
+        submenu.addItem(milestoneItem)
+
+        submenu.addItem(NSMenuItem.separator())
+
+        // 2. 近期考试安排
+        let examHeader = NSMenuItem(
+            title: upcomingExams.isEmpty ? "近期考试安排：当前暂无待考科目" : "近期考试倒计时 (\(upcomingExams.count) 场待考)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        examHeader.isEnabled = false
+        submenu.addItem(examHeader)
+
+        for exam in upcomingExams.prefix(4) {
+            let item = NSMenuItem(
+                title: "[\(exam.countdownBadgeText(at: now))] \(exam.courseName)  ·  \(exam.dateTimeString)  ·  \(exam.displayLocation)",
+                action: #selector(openExamScheduleWindowAction),
+                keyEquivalent: ""
+            )
+            let days = exam.daysRemaining(at: now)
+            item.image = statusDotImage(color: days <= 3 ? .systemRed : (days <= 7 ? .systemOrange : .systemBlue))
+            item.target = self
+            submenu.addItem(item)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        // 3. 成绩更新监控状态（不直接暴露具体 GPA 和学科分数）
+        if unreadCount > 0 {
+            let updateItem = NSMenuItem(
+                title: "检测到成绩有更新（新增 \(unreadCount) 门出分，点击查看详情）",
+                action: #selector(openGradeWindowAction),
+                keyEquivalent: ""
+            )
+            updateItem.image = statusDotImage(color: .systemOrange)
+            updateItem.target = self
+            submenu.addItem(updateItem)
+        } else if totalCount > 0 {
+            let statHeader = NSMenuItem(
+                title: "成绩监控：后台静默监控中 · 暂无新出分",
+                action: #selector(openGradeWindowAction),
+                keyEquivalent: ""
+            )
+            statHeader.image = statusDotImage(color: .systemGreen)
+            statHeader.target = self
+            submenu.addItem(statHeader)
+        } else {
+            let emptyGradeItem = NSMenuItem(
+                title: "尚未同步成绩单数据 (点击打开面板并同步)",
+                action: #selector(openGradeWindowAction),
+                keyEquivalent: ""
+            )
+            emptyGradeItem.target = self
+            submenu.addItem(emptyGradeItem)
+        }
+
+        // 4. 培养方案学分与教材/评教概览
+        if let prog = snapshot?.programCompletion {
+            let progSummaryItem = NSMenuItem(
+                title: String(format: "培养方案：已修 %.1f / %.0f 学分 (在修 +%.1f 分 · 预计完成 %.1f%%)", prog.passedCredits, prog.requiredCredits, prog.takingCredits, prog.projectedPercentageWithTaking),
+                action: #selector(openProgramCompletionWindowAction),
+                keyEquivalent: ""
+            )
+            progSummaryItem.image = statusDotImage(color: .systemBlue)
+            progSummaryItem.target = self
+            submenu.addItem(progSummaryItem)
+        }
+
+        let tbCount = snapshot?.textbooks.count ?? 0
+        let pendingSurveys = snapshot?.pendingSurveyCount ?? 0
+        if tbCount > 0 || pendingSurveys > 0 {
+            let surveyText = pendingSurveys > 0 ? "⚠️ 待评教 \(pendingSurveys) 项" : "评教已完成/未开放"
+            let tbItem = NSMenuItem(
+                title: "教材与评教：本学期 \(tbCount) 门课程教材清单 · \(surveyText)",
+                action: #selector(openTextbooksWindowAction),
+                keyEquivalent: ""
+            )
+            tbItem.image = statusDotImage(color: pendingSurveys > 0 ? .systemRed : .systemTeal)
+            tbItem.target = self
+            submenu.addItem(tbItem)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let openGradeItem = NSMenuItem(title: "打开成绩单与 GPA 测算面板...", action: #selector(openGradeWindowAction), keyEquivalent: "g")
+        openGradeItem.target = self
+        submenu.addItem(openGradeItem)
+
+        let openExamItem = NSMenuItem(title: "打开考试安排与校历进度面板...", action: #selector(openExamScheduleWindowAction), keyEquivalent: "")
+        openExamItem.target = self
+        submenu.addItem(openExamItem)
+
+        let openProgramItem = NSMenuItem(title: "打开培养方案与毕业学分审计...", action: #selector(openProgramCompletionWindowAction), keyEquivalent: "")
+        openProgramItem.target = self
+        submenu.addItem(openProgramItem)
+
+        let openTextbookItem = NSMenuItem(title: "打开本学期课程教材与评教清单...", action: #selector(openTextbooksWindowAction), keyEquivalent: "")
+        openTextbookItem.target = self
+        submenu.addItem(openTextbookItem)
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let refreshAcademicItem = NSMenuItem(title: "立即同步成绩 / 排考 / 培养方案 / 教材", action: #selector(refreshAcademicMenuAction), keyEquivalent: "")
+        refreshAcademicItem.target = self
+        submenu.addItem(refreshAcademicItem)
+    }
+
+    @objc private func openGradeWindowAction() {
+        AcademicWindowController.shared.showWindow(mode: 0)
+    }
+
+    @objc private func openExamScheduleWindowAction() {
+        AcademicWindowController.shared.showWindow(mode: 1)
+    }
+
+    @objc private func openProgramCompletionWindowAction() {
+        AcademicWindowController.shared.showWindow(mode: 2)
+    }
+
+    @objc private func openTextbooksWindowAction() {
+        AcademicWindowController.shared.showWindow(mode: 3)
+    }
+
+    @objc private func refreshAcademicMenuAction() {
+        AcademicService.shared.syncAll(silent: false) { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let snap):
+                    NotificationHelper.sendNotification(
+                        title: "教务学业数据同步完成",
+                        body: "已同步 \(snap.allGrades.count) 门成绩、培养方案学分审计与 \(snap.textbooks.count) 门课程教材。"
+                    )
+                case .failure:
+                    AcademicWindowController.shared.showWindow(mode: 0)
+                }
+            }
         }
     }
 
@@ -591,6 +911,8 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func refreshAction() {
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
+        CampusCardService.shared.fetchData { _ in }
+        AcademicService.shared.syncAll(silent: true)
         if SettingsManager.shared.courseTableEnabled {
             CourseScheduleService.shared.syncSchedule { _ in }
         }
@@ -638,15 +960,26 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         let schedule = CourseScheduleService.shared.currentSchedule
         let todayLessons = schedule?.todayLessons() ?? []
+        let milestone = SemesterMilestoneInfo.calculate(schedule: schedule)
+
+        let milestoneHeader = NSMenuItem(
+            title: "校历：第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (进度 \(milestone.progressPercentage)%)  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
+            action: #selector(openCourseTableAction),
+            keyEquivalent: ""
+        )
+        milestoneHeader.image = statusDotImage(color: .systemIndigo)
+        milestoneHeader.target = self
+        submenu.addItem(milestoneHeader)
+        submenu.addItem(NSMenuItem.separator())
 
         if let schedule = schedule, !schedule.lessons.isEmpty {
             if todayLessons.isEmpty {
-                courseParent.title = "今日课程：今日无课"
+                courseParent.title = "今日课程：今日无课 (第\(milestone.currentWeek)周)"
                 let noClassItem = NSMenuItem(title: "今日暂无排课", action: nil, keyEquivalent: "")
                 noClassItem.isEnabled = false
                 submenu.addItem(noClassItem)
             } else {
-                courseParent.title = "今日课程：\(todayLessons.count) 节课"
+                courseParent.title = "今日课程：\(todayLessons.count) 节课 (第\(milestone.currentWeek)周)"
                 for lesson in todayLessons {
                     let room = lesson.classroom.map { "· \($0)" } ?? ""
                     let teacher = lesson.teacher.map { "(\($0))" } ?? ""
@@ -671,6 +1004,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         let openTableItem = NSMenuItem(title: "查看完整周课表...", action: #selector(openCourseTableAction), keyEquivalent: "k")
         openTableItem.target = self
         submenu.addItem(openTableItem)
+
+        let openTextbookItem = NSMenuItem(title: "查看本学期课程教材与评教清单...", action: #selector(openTextbooksWindowAction), keyEquivalent: "")
+        openTextbookItem.target = self
+        submenu.addItem(openTextbookItem)
+
+        let openProgramItem = NSMenuItem(title: "查看培养方案与毕业学分审计...", action: #selector(openProgramCompletionWindowAction), keyEquivalent: "")
+        openProgramItem.target = self
+        submenu.addItem(openProgramItem)
 
         let refreshCourseItem = NSMenuItem(title: "立即刷新教务课表", action: #selector(refreshCourseAction), keyEquivalent: "")
         refreshCourseItem.target = self

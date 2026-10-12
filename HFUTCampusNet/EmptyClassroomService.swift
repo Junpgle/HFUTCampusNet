@@ -16,19 +16,26 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     /// 按校区 + 日期汇总的主力教学楼空教室缓存：key 为 "\(campus.rawValue)|\(dateString)"
     public private(set) var studyRoomsByDate: [String: [EmptyClassroomItem]] = [:]
 
-    public static let availableSemesters: [(id: Int, name: String)] = [
-        (354, "2026-2027学年 第1学期 (本学期)"),
-        (334, "2025-2026学年 第2学期"),
-        (314, "2025-2026学年 第1学期"),
-        (294, "2024-2025学年 第2学期"),
-        (274, "2024-2025学年 第1学期")
-    ]
+    public static var availableSemesters: [(id: Int, name: String)] {
+        let currentSemId = CourseCalendarHelper.inferSemesterId()
+        return (0..<5).map { idx in
+            let semId = currentSemId - idx * 20
+            let base = CourseCalendarHelper.formatSemesterName(for: semId)
+            let name = (idx == 0) ? "\(base) (本学期)" : base
+            return (semId, name)
+        }
+    }
+
+    public static var nextUnscheduledSemesterTitle: String {
+        let nextSemId = CourseCalendarHelper.inferSemesterId() + 20
+        return "\(CourseCalendarHelper.formatSemesterName(for: nextSemId)) (下学期 · 教务暂未排课)"
+    }
 
     public static func semesterTitle(for semesterId: Int) -> String {
         if let found = availableSemesters.first(where: { $0.id == semesterId }) {
             return found.name
         }
-        return "学期 ID: \(semesterId)"
+        return CourseCalendarHelper.formatSemesterName(for: semesterId)
     }
     public private(set) var lastSyncTime: Date?
     /// 各校区上次成功刷新时间：key 为 campus.rawValue
@@ -327,7 +334,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         return fallback ?? currentPreferredCampus
     }
 
-    public func setCurrentStudyRoom(_ room: EmptyClassroomItem, campus: StudyCampus) {
+    public func setCurrentStudyRoom(_ room: EmptyClassroomItem, campus: StudyCampus, roomDateString: String? = nil) {
         let todayStr = Self.todayDateString()
         let actualCampus = inferCampus(for: room, fallback: campus)
         let record = CurrentStudyRoomRecord(
@@ -340,21 +347,30 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         SettingsManager.shared.currentStudyRoom = record
         SettingsManager.shared.lastNotifiedStudyConflictId = nil
 
-        let cacheKey = "\(actualCampus.rawValue)|\(todayStr)"
-        // 仅当该校区今日主力教学楼缓存已非空时追加，防止未同步时写入单间教室导致误判整校区已同步
-        if var list = studyRoomsByDate[cacheKey], !list.isEmpty {
-            if !list.contains(where: { $0.id == room.id }) {
-                list.append(room)
-                studyRoomsByDate[cacheKey] = list
-                saveStudyRoomsCache()
+        let isFromToday = (roomDateString == nil || roomDateString == todayStr)
+        if isFromToday {
+            let cacheKey = "\(actualCampus.rawValue)|\(todayStr)"
+            // 仅当该校区今日主力教学楼缓存已非空且 room 来自今日数据时追加，防止把其他日期的排课混入今日缓存
+            if var list = studyRoomsByDate[cacheKey], !list.isEmpty {
+                if !list.contains(where: { $0.id == room.id }) {
+                    list.append(room)
+                    studyRoomsByDate[cacheKey] = list
+                    saveStudyRoomsCache()
+                }
             }
-        }
-        if let bid = room.buildingId {
-            let bKey = "\(actualCampus.rawValue)|\(todayStr)|\(bid)"
-            var bList = roomsCache[bKey] ?? []
-            if !bList.contains(where: { $0.id == room.id }) {
-                bList.append(room)
-                roomsCache[bKey] = bList
+            if let bid = room.buildingId {
+                let bKey = "\(actualCampus.rawValue)|\(todayStr)|\(bid)"
+                var bList = roomsCache[bKey] ?? []
+                if !bList.contains(where: { $0.id == room.id }) {
+                    bList.append(room)
+                    roomsCache[bKey] = bList
+                }
+            }
+        } else if currentStudyRoomItem(on: todayStr) == nil, let bid = room.buildingId {
+            // 若用户在查看其他日期时点击了「设为自习」，后台补充拉取该教学楼今日的真实排课数据
+            fetchRooms(dateString: todayStr, campus: actualCampus, buildingIds: [bid], forceRefresh: false) { [weak self] _ in
+                self?.notifyUIUpdate()
+                self?.evaluateAndNotifyIfNeeded(forceConflictCheck: true)
             }
         }
 
@@ -1272,7 +1288,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
     // MARK: - 合工大教务移动端 (UniApp) 自动认证与 RSA 加密
 
-    private func ensureValidToken(
+    public func ensureValidToken(
         forceRelogin: Bool,
         completion: @escaping (Result<String, Error>) -> Void
     ) {

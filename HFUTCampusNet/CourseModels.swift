@@ -207,13 +207,13 @@ public struct CourseScheduleData: Codable, Equatable {
         return set.sorted()
     }
 
-    /// 推测当前处于第几周
+    /// 推测指定日期处于该课表的第几周（若指定日期已超出该课表学期范围则返回 nil）
     public func currentWeek(at now: Date = Date()) -> Int? {
         let todayStr = CourseCalendarHelper.dateString(from: now)
         if let match = lessons.first(where: { $0.dateString == todayStr && $0.weekIndex != nil }) {
             return match.weekIndex
         }
-        // 根据已知周次的锚点日期精确计算当前日期属于第几周（支持锚点在当前日期之前或之后）
+        // 根据已知周次的锚点日期精确计算目标日期属于第几周（支持锚点在目标日期之前或之后）
         if let ref = lessons.first(where: { $0.weekIndex != nil && !$0.dateString.isEmpty }),
            let refWeek = ref.weekIndex,
            let refDate = CourseCalendarHelper.parseDate(ref.dateString, "00:00"),
@@ -227,11 +227,13 @@ public struct CourseScheduleData: Codable, Equatable {
                 if computedWeek >= 1 && computedWeek <= maxWeek {
                     return computedWeek
                 }
+                // 目标日期早于第 1 周或晚于最大周次（例如查看历史学期课表），不伪造周次
+                return nil
             }
         }
-        // 如果无法按锚点推算，寻找未来最近的一门课所在的周次
+        // 如果无法按锚点推算，仅在学期尚未结束时寻找未来最近的一门课所在的周次
         let future = lessons.filter { $0.dateString >= todayStr && $0.weekIndex != nil }.sorted { $0.dateString < $1.dateString }
-        return future.first?.weekIndex ?? allWeeks.first
+        return future.first?.weekIndex
     }
 }
 
@@ -282,12 +284,23 @@ public enum CourseCalendarHelper {
         }
     }
 
-    /// 自动根据当前年份和月份推算学期代码（树维系统规律）
+    /// 自动根据当前年份和月份推算学期代码（树维系统规律：每学期递增 20）
     public static func inferSemesterId(at date: Date = Date()) -> Int {
         let comps = beijingCalendar.dateComponents([.year, .month], from: date)
         let month = comps.month ?? 10
         let year = (comps.year ?? 2026) - (month <= 7 ? 1 : 0)
         let isSpring = (2...7).contains(month)
         return ((year - 2018) * 4 + 3) * 10 + 4 + (isSpring ? 20 : 0)
+    }
+
+    /// 根据树维学期 ID 反推标准学期名称（如 354 -> "2026-2027学年 第1学期"，334 -> "2025-2026学年 第2学期"）
+    public static func formatSemesterName(for semesterId: Int) -> String {
+        guard semesterId >= 34 && (semesterId - 34) % 20 == 0 else {
+            return "学期 ID: \(semesterId)"
+        }
+        let k = (semesterId - 34) / 20
+        let startYear = 2018 + (k / 2)
+        let term = (k % 2) + 1
+        return "\(startYear)-\(startYear + 1)学年 第\(term)学期"
     }
 }

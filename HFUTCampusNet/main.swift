@@ -19,9 +19,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
         // 无论如何都启动监测引擎！
         CampusNetworkClient.shared.startMonitoring()
         ElectricityService.shared.fetchData { _ in }
+        CampusCardService.shared.fetchData { _ in }
         if SettingsManager.shared.courseTableEnabled {
             CourseScheduleService.shared.syncSchedule { _ in }
         }
+        AcademicService.shared.startMonitoring()
         EmptyClassroomService.shared.startMonitoring()
 
         // 启动后延迟 3 秒在后台静默检查 GitHub Releases 更新
@@ -55,6 +57,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
 
     func applicationWillTerminate(_ notification: Notification) {
         CampusNetworkClient.shared.stopMonitoring()
+        AcademicService.shared.stopMonitoring()
         EmptyClassroomService.shared.stopMonitoring()
         NetworkSpeedMonitor.shared.stop()
     }

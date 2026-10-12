@@ -22,14 +22,18 @@ SOURCES=(
     "HFUTCampusNet/ElectricityModels.swift"
     "HFUTCampusNet/CourseModels.swift"
     "HFUTCampusNet/EmptyClassroomModels.swift"
+    "HFUTCampusNet/AcademicAndCardModels.swift"
     "HFUTCampusNet/CampusHistoryManager.swift"
     "HFUTCampusNet/ElectricityService.swift"
+    "HFUTCampusNet/CampusCardService.swift"
     "HFUTCampusNet/CourseScheduleService.swift"
     "HFUTCampusNet/EmptyClassroomService.swift"
+    "HFUTCampusNet/AcademicService.swift"
     "HFUTCampusNet/CourseLoginWebViewController.swift"
     "HFUTCampusNet/UnifiedLoginWebViewController.swift"
     "HFUTCampusNet/CourseScheduleWindowController.swift"
     "HFUTCampusNet/EmptyClassroomWindowController.swift"
+    "HFUTCampusNet/AcademicWindowController.swift"
     "HFUTCampusNet/HistoryStatsWindowController.swift"
     "HFUTCampusNet/SettingsManager.swift"
     "HFUTCampusNet/NotificationHelper.swift"
@@ -77,7 +81,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.7.0</string>
+    <string>1.8.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
@@ -102,7 +106,16 @@ echo "📦 正在打包发布压缩包 HFUTCampusNet-macOS.zip..."
 rm -f "$DIR/HFUTCampusNet-macOS.zip"
 ditto -c -k --keepParent "$BUNDLE_DIR" "$DIR/HFUTCampusNet-macOS.zip"
 
+if [ -d "/Applications/${APP_NAME}.app" ]; then
+    echo "🔄 正在同步更新 /Applications/${APP_NAME}.app..."
+    rm -rf "/Applications/${APP_NAME}.app"
+    cp -R "$BUNDLE_DIR" "/Applications/${APP_NAME}.app"
+    codesign --force --deep --sign - "/Applications/${APP_NAME}.app"
+fi
+
 echo "✅ 构建成功！生成通用架构应用："
 echo "   👉 $BUNDLE_DIR"
+echo "   👉 /Applications/${APP_NAME}.app"
 echo "   👉 $DIR/HFUTCampusNet-macOS.zip"
 file "$MACOS_DIR/$APP_NAME"
+

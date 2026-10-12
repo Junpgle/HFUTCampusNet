@@ -74,6 +74,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         dashboardTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.fetchDashboardData()
             ElectricityService.shared.fetchData { _ in }
+            CampusCardService.shared.fetchData { _ in }
         }
     }
 

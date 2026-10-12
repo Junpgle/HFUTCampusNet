@@ -321,8 +321,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     .removingPercentEncoding
                 if let t = token, !t.isEmpty {
                     SettingsManager.shared.huixinAuthToken = t
-                    updateStep(index: 2, text: "3. 宿舍电费查询", status: .inProgress)
+                    updateStep(index: 2, text: "3. 宿舍电费与校园卡", status: .inProgress)
                     ElectricityService.shared.fetchData { _ in }
+                    CampusCardService.shared.fetchData { _ in }
                 }
             }
         }
@@ -389,7 +390,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
         statusTitleLabel.textColor = NSColor.systemBlue
-        statusDetailLabel.stringValue = "正在通过单点登录依次拉取课表排课、宿舍电费与校园网流量..."
+        statusDetailLabel.stringValue = "正在通过单点登录依次拉取课表、成绩考试、校园卡、宿舍电费与校园网..."
         updateStep(index: 0, text: "1. 统一身份认证", status: .success)
 
         // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
@@ -431,8 +432,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 semesterId: SettingsManager.shared.courseSemesterId,
                 bizTypeId: SettingsManager.shared.courseBizTypeId
             ) { [weak self] result in
-                // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室与自习推荐
+                // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室、考试安排与成绩单
                 EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
+                AcademicService.shared.syncAll(silent: true)
                 DispatchQueue.main.async {
                     guard let self = self, self.syncSessionToken == sessionToken else { return }
                     switch result {
@@ -454,7 +456,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     // MARK: - 2. 同步慧新易校电费
 
     private func syncHuiXinElectricity(cookieHeader: String, sessionToken: UUID) {
-        updateStep(index: 2, text: "3. 宿舍电费查询", status: .inProgress)
+        updateStep(index: 2, text: "3. 电费与校园卡", status: .inProgress)
         updateStep(index: 3, text: "4. 校园网与历史用量", status: .inProgress)
 
         // 立即发起校园网网关/自服务拉取
@@ -474,8 +476,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             if let token = capturedToken {
                 SettingsManager.shared.huixinAuthToken = token
             }
-            // 在拿到最新 huixinAuthToken 后再调用慧新易校校园网流量兜底接口，避免 Token 尚未就绪的竞态
+            // 在拿到最新 huixinAuthToken 后再调用慧新易校校园网流量兜底接口与校园卡接口
             self.syncCampusNetwork(sessionToken: sessionToken)
+            CampusCardService.shared.fetchData { _ in }
 
             ElectricityService.shared.fetchData { [weak self] elecResult in
                 DispatchQueue.main.async {

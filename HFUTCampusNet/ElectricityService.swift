@@ -98,7 +98,7 @@ public class ElectricityService {
     }
 
     /// 静默调用慧新易校 OAuth 登录获取 Token（支持依次尝试校园网密码与信息门户密码，并正确编码特殊字符）
-    private func obtainHuiXinToken(completion: @escaping (Result<String, Error>) -> Void) {
+    public func obtainHuiXinToken(completion: @escaping (Result<String, Error>) -> Void) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let portalPwd = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         let casPwd = SettingsManager.shared.casPassword.trimmingCharacters(in: .whitespacesAndNewlines)

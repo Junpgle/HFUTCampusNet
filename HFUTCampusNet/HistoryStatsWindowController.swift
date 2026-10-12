@@ -19,9 +19,10 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
     private var cardValueLabels: [NSTextField] = []
     private var cardSubLabels: [NSTextField] = []
 
-    private var currentMode: Int = 0 // 0: 校园网流量, 1: 宿舍电费
+    private var currentMode: Int = 0 // 0: 校园网流量, 1: 宿舍电费, 2: 校园卡与账单
     private var currentFlowRecords: [DailyFlowRecord] = []
     private var currentElectricityRecords: [DailyElectricityRecord] = []
+    private var currentCardTransactions: [CampusCardTransaction] = []
 
     private init() {
         let window = NSWindow(
@@ -49,6 +50,12 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             name: .dormElectricityDidUpdate,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(reloadData),
+            name: .campusCardDidUpdate,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -67,9 +74,9 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         topBarView.dynamicBackgroundColor = .windowBackgroundColor
         contentView.addSubview(topBarView)
 
-        segmentedControl = NSSegmentedControl(labels: ["校园网流量统计", "宿舍用电与电费"], trackingMode: .selectOne, target: self, action: #selector(onSegmentChanged(_:)))
+        segmentedControl = NSSegmentedControl(labels: ["校园网流量统计", "宿舍用电与电费", "校园卡与消费账单"], trackingMode: .selectOne, target: self, action: #selector(onSegmentChanged(_:)))
         segmentedControl.selectedSegment = currentMode
-        segmentedControl.frame = NSRect(x: 20, y: 12, width: 260, height: 30)
+        segmentedControl.frame = NSRect(x: 20, y: 12, width: 380, height: 30)
         topBarView.addSubview(segmentedControl)
 
         refreshBtn = NSButton(title: "立即刷新", target: self, action: #selector(onRefreshClicked))
@@ -152,8 +159,8 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
 
         // 底部历史明细表格标题（必须添加 .minYMargin 并随窗口高度同步计算，防止缩放时浮到柱状图中央）
         tableTitleLabel = NSTextField(labelWithString: "历史详细记录")
-        tableTitleLabel.frame = NSRect(x: 20, y: chartY - 26, width: 200, height: 18)
-        tableTitleLabel.autoresizingMask = [.minYMargin]
+        tableTitleLabel.frame = NSRect(x: 20, y: chartY - 26, width: 840, height: 18)
+        tableTitleLabel.autoresizingMask = [.width, .minYMargin]
         tableTitleLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         tableTitleLabel.textColor = .secondaryLabelColor
         contentView.addSubview(tableTitleLabel)
@@ -208,7 +215,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         chartView?.frame = NSRect(x: sidePad, y: chartY, width: contentW, height: chartH)
 
         let titleY = chartY - 26
-        tableTitleLabel?.frame = NSRect(x: sidePad, y: titleY, width: 200, height: 18)
+        tableTitleLabel?.frame = NSRect(x: sidePad, y: titleY, width: contentW, height: 18)
 
         let tableBottom: CGFloat = 20
         let tableHeight = max(80, titleY - 8 - tableBottom)
@@ -230,6 +237,11 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 self?.reloadData()
             }
         }
+        if currentMode == 2 || CampusCardService.shared.latestData == nil {
+            CampusCardService.shared.fetchData { [weak self] _ in
+                self?.reloadData()
+            }
+        }
         if currentMode == 0 || currentFlowRecords.isEmpty {
             CampusNetworkClient.shared.fetchData()
             CampusNetworkClient.shared.fetchOnlineDevices()
@@ -247,6 +259,10 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             ElectricityService.shared.fetchData { [weak self] _ in
                 self?.reloadData()
             }
+        } else if currentMode == 2 && CampusCardService.shared.latestData == nil {
+            CampusCardService.shared.fetchData { [weak self] _ in
+                self?.reloadData()
+            }
         }
     }
 
@@ -256,6 +272,9 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         ElectricityService.shared.fetchData { [weak self] _ in
             self?.reloadData()
         }
+        CampusCardService.shared.fetchData { [weak self] _ in
+            self?.reloadData()
+        }
     }
 
     @objc private func onOpenUnifiedLogin() {
@@ -263,7 +282,72 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
     }
 
     @objc private func onOpenSettings() {
-        SettingsWindowController.shared.showSettings()
+        if currentMode == 2 {
+            promptCampusCardBudgetSettings()
+        } else {
+            SettingsWindowController.shared.showSettings()
+        }
+    }
+
+    private func promptCampusCardBudgetSettings() {
+        let alert = NSAlert()
+        alert.messageText = "校园一卡通消费预算与预警设置"
+        alert.informativeText = "可自定义单日餐饮/日常消费参考基准（默认 30 元）以及卡内余额不足提醒红线（默认 15 元）："
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "恢复默认 (30元 / 15元)")
+        alert.addButton(withTitle: "取消")
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 290, height: 64))
+
+        let budgetLabel = NSTextField(labelWithString: "单日消费预算基准：")
+        budgetLabel.frame = NSRect(x: 0, y: 36, width: 125, height: 20)
+        budgetLabel.alignment = .right
+        container.addSubview(budgetLabel)
+
+        let budgetField = NSTextField(frame: NSRect(x: 130, y: 36, width: 80, height: 22))
+        budgetField.stringValue = String(format: "%.0f", SettingsManager.shared.campusCardDailyBudget)
+        budgetField.placeholderString = "30"
+        container.addSubview(budgetField)
+
+        let budgetUnit = NSTextField(labelWithString: "元 / 天")
+        budgetUnit.frame = NSRect(x: 216, y: 36, width: 60, height: 20)
+        budgetUnit.textColor = .secondaryLabelColor
+        container.addSubview(budgetUnit)
+
+        let threshLabel = NSTextField(labelWithString: "低余额预警红线：")
+        threshLabel.frame = NSRect(x: 0, y: 6, width: 125, height: 20)
+        threshLabel.alignment = .right
+        container.addSubview(threshLabel)
+
+        let threshField = NSTextField(frame: NSRect(x: 130, y: 6, width: 80, height: 22))
+        threshField.stringValue = String(format: "%.0f", SettingsManager.shared.campusCardLowWarningThreshold)
+        threshField.placeholderString = "15"
+        container.addSubview(threshField)
+
+        let threshUnit = NSTextField(labelWithString: "元")
+        threshUnit.frame = NSRect(x: 216, y: 6, width: 60, height: 20)
+        threshUnit.textColor = .secondaryLabelColor
+        container.addSubview(threshUnit)
+
+        alert.accessoryView = container
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if let b = Double(budgetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), b > 0 {
+                SettingsManager.shared.campusCardDailyBudget = b
+            }
+            if let t = Double(threshField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), t > 0 {
+                SettingsManager.shared.campusCardLowWarningThreshold = t
+            }
+            reloadData()
+            NotificationCenter.default.post(name: .campusCardDidUpdate, object: CampusCardService.shared.latestData)
+        } else if response == .alertSecondButtonReturn {
+            SettingsManager.shared.campusCardDailyBudget = 30.0
+            SettingsManager.shared.campusCardLowWarningThreshold = 15.0
+            reloadData()
+            NotificationCenter.default.post(name: .campusCardDidUpdate, object: CampusCardService.shared.latestData)
+        }
     }
 
     @objc public func reloadData() {
@@ -271,6 +355,30 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             guard let self = self else { return }
             self.currentFlowRecords = CampusHistoryManager.shared.getPastDaysFlowRecords(days: 90).reversed()
             self.currentElectricityRecords = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 90).reversed()
+            self.currentCardTransactions = CampusCardService.shared.latestData?.transactions ?? []
+
+            if self.currentMode == 0 {
+                self.settingsBtn?.title = "宿舍配置..."
+                self.tableTitleLabel?.stringValue = "校园网每日流量明细"
+            } else if self.currentMode == 1 {
+                self.settingsBtn?.title = "宿舍配置..."
+                self.tableTitleLabel?.stringValue = "宿舍每日用电历史记录"
+            } else {
+                self.settingsBtn?.title = "一卡通预算..."
+                if let card = CampusCardService.shared.latestData {
+                    let breakdown = card.expenseStructureBreakdown()
+                    self.tableTitleLabel?.stringValue = String(
+                        format: "校园一卡通近期账单 (%d笔 · 早 ¥%.0f / 午 ¥%.0f / 晚 ¥%.0f / 其他 ¥%.0f)",
+                        self.currentCardTransactions.count,
+                        breakdown.breakfastRMB,
+                        breakdown.lunchRMB,
+                        breakdown.dinnerRMB,
+                        breakdown.otherRMB
+                    )
+                } else {
+                    self.tableTitleLabel?.stringValue = "校园一卡通近期交易流水 (最近 \(self.currentCardTransactions.count) 笔)"
+                }
+            }
 
             self.updateCards()
             self.quotaCardView.refresh(mode: self.currentMode)
@@ -304,7 +412,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 monthlyUsedStr = "校园网账户实时余额"
             }
             setCard(index: 3, title: "校园网账户余额", value: balText, sub: monthlyUsedStr, color: NSColor.systemGreen)
-        } else {
+        } else if currentMode == 1 {
             // 宿舍电费模式
             if !SettingsManager.shared.isDormConfigured {
                 setCard(index: 0, title: "当前剩余电费", value: "未配置", sub: "请先在「设置」中填写楼栋与房间号", color: NSColor.systemGray)
@@ -334,6 +442,61 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
             let daysStr = daysLeft != nil ? "约 \(daysLeft!) 天" : "测算中..."
             setCard(index: 3, title: "预计可用天数", value: daysStr, sub: "智能预测电费耗尽时间", color: NSColor.systemGreen)
+        } else {
+            // 校园卡（一卡通）与消费账单模式
+            guard let card = CampusCardService.shared.latestData else {
+                setCard(index: 0, title: "校园卡当前余额", value: "获取中...", sub: "正在向慧新易校查询一卡通", color: .systemGray)
+                setCard(index: 1, title: "今日 / 本月消费", value: "--", sub: "等待同步账单流水", color: .systemGray)
+                setCard(index: 2, title: "近 7 天日均消费", value: "--", sub: "等待同步账单流水", color: .systemGray)
+                setCard(index: 3, title: "消费结构占比", value: "--", sub: "等待同步", color: .systemGray)
+                return
+            }
+
+            let isLow = card.isLowBalance
+            let balColor: NSColor = isLow ? .systemRed : .systemGreen
+            let monthRecharged = card.currentMonthRechargedRMB()
+            let subInfo: String
+            if isLow {
+                subInfo = "⚠️ 低于预警阈值 (\(String(format: "%.0f", SettingsManager.shared.campusCardLowWarningThreshold))元)"
+            } else if monthRecharged > 0 {
+                subInfo = String(format: "本月已充值 %.0f 元 · 状态%@", monthRecharged, card.cardStatusText)
+            } else {
+                subInfo = "卡号 \(card.cardAccount) · 状态\(card.cardStatusText)"
+            }
+            setCard(index: 0, title: "校园卡当前余额", value: card.displayBalance, sub: subInfo, color: balColor)
+
+            let todaySpent = card.todaySpentRMB()
+            let todayCount = card.todayExpenseCount()
+            let monthSpent = card.currentMonthSpentRMB()
+            let monthCount = card.currentMonthExpenseCount()
+            setCard(
+                index: 1,
+                title: "今日消费 (\(todayCount)笔)",
+                value: String(format: "%.2f 元", todaySpent),
+                sub: String(format: "本月累计 %.2f 元 (%d笔)", monthSpent, monthCount),
+                color: .systemOrange
+            )
+
+            let dailyList = card.dailyExpenseSummary(days: 7)
+            let activeDays = max(1, dailyList.filter { $0.spentRMB > 0 }.count)
+            let weekSum = dailyList.reduce(0.0) { $0 + $1.spentRMB }
+            let dailyAvg = weekSum / Double(activeDays)
+            setCard(
+                index: 2,
+                title: "近 7 日活跃日均",
+                value: String(format: "%.2f 元/天", dailyAvg),
+                sub: String(format: "近 7 日共支出 %.2f 元", weekSum),
+                color: .systemIndigo
+            )
+
+            let breakdown = card.expenseStructureBreakdown()
+            setCard(
+                index: 3,
+                title: "消费场景与三餐占比",
+                value: breakdown.ratioSummaryText,
+                sub: breakdown.topMerchantsText,
+                color: .systemTeal
+            )
         }
     }
 
@@ -343,6 +506,10 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         cardValueLabels[index].stringValue = value
         cardValueLabels[index].textColor = color
         cardSubLabels[index].stringValue = sub
+        // 根据文字长度动态缩小字号，防止截断
+        let charCount = value.count
+        let fontSize: CGFloat = charCount <= 10 ? 20 : charCount <= 15 ? 17 : charCount <= 20 ? 14 : 12
+        cardValueLabels[index].font = NSFont.systemFont(ofSize: fontSize, weight: .bold)
     }
 
     private func updateChart() {
@@ -353,13 +520,20 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 return BarChartItem(label: shortDate, value: max(0.0, $0.dailyDeltaMB), displayValue: formatMB($0.dailyDeltaMB))
             }
             chartView.setData(items: items, barColor: NSColor.systemBlue, unit: "MB")
-        } else {
+        } else if currentMode == 1 {
             let records = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 7)
             let items: [BarChartItem] = records.map {
                 let shortDate = String($0.dateString.suffix(5))
                 return BarChartItem(label: shortDate, value: max(0.0, $0.dailyCostRMB), displayValue: String(format: "%.2f元", $0.dailyCostRMB))
             }
             chartView.setData(items: items, barColor: NSColor.systemOrange, unit: "元")
+        } else {
+            let dailySummary = CampusCardService.shared.latestData?.dailyExpenseSummary(days: 7) ?? []
+            let items: [BarChartItem] = dailySummary.map {
+                let shortDate = String($0.dateString.suffix(5))
+                return BarChartItem(label: shortDate, value: max(0.0, $0.spentRMB), displayValue: String(format: "%.2f元", $0.spentRMB))
+            }
+            chartView.setData(items: items, barColor: NSColor.systemTeal, unit: "元")
         }
     }
 
@@ -388,7 +562,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 col.width = w
                 tv.addTableColumn(col)
             }
-        } else {
+        } else if currentMode == 1 {
             let cols: [(String, String, CGFloat)] = [
                 ("date", "日期", 120),
                 ("cost", "当日消耗电费", 145),
@@ -396,6 +570,20 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 ("bal", "最新剩余电费", 145),
                 ("remKwh", "剩余度数", 130),
                 ("time", "更新时间", 130)
+            ]
+            for (cid, ctitle, w) in cols {
+                let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
+                col.title = ctitle
+                col.width = w
+                tv.addTableColumn(col)
+            }
+        } else {
+            let cols: [(String, String, CGFloat)] = [
+                ("time", "交易时间", 160),
+                ("merchant", "消费商户 / 档口名称", 265),
+                ("scene", "消费场景与餐段", 125),
+                ("amount", "交易金额", 120),
+                ("balance", "交易后卡余额", 130)
             ]
             for (cid, ctitle, w) in cols {
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
@@ -414,8 +602,10 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
     public func numberOfRows(in tableView: NSTableView) -> Int {
         if currentMode == 0 {
             return currentFlowRecords.count
-        } else {
+        } else if currentMode == 1 {
             return currentElectricityRecords.count
+        } else {
+            return currentCardTransactions.count
         }
     }
 
@@ -433,6 +623,8 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             tf.alignment = .left
             return tf
         }()
+        cell.textColor = .labelColor
+        cell.font = NSFont.systemFont(ofSize: 11.5)
 
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH:mm:ss"
@@ -452,7 +644,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             case "time": cell.stringValue = timeFormatter.string(from: record.lastUpdated)
             default: break
             }
-        } else {
+        } else if currentMode == 1 {
             guard row >= 0 && row < currentElectricityRecords.count else { return nil }
             let record = currentElectricityRecords[row]
 
@@ -463,6 +655,39 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             case "bal": cell.stringValue = String(format: "%.2f 元", record.balanceRMB)
             case "remKwh": cell.stringValue = record.remainingKWh != nil ? String(format: "%.1f 度", record.remainingKWh!) : "--"
             case "time": cell.stringValue = timeFormatter.string(from: record.lastUpdated)
+            default: break
+            }
+        } else {
+            guard row >= 0 && row < currentCardTransactions.count else { return nil }
+            let tx = currentCardTransactions[row]
+            switch cid {
+            case "time":
+                cell.stringValue = tx.dateTimeString
+                cell.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
+                cell.textColor = .secondaryLabelColor
+            case "merchant":
+                cell.stringValue = tx.cleanMerchantName
+                cell.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+            case "scene":
+                let tag = tx.sceneCategoryTag
+                cell.stringValue = tag
+                if tag == "圈存充值" {
+                    cell.textColor = .systemGreen
+                } else if tag.hasPrefix("午餐") || tag.hasPrefix("晚餐") {
+                    cell.textColor = .systemBlue
+                } else if tag.hasPrefix("早餐") {
+                    cell.textColor = .systemTeal
+                } else {
+                    cell.textColor = .secondaryLabelColor
+                }
+            case "amount":
+                let sign = tx.isExpense ? "-" : "+"
+                cell.stringValue = String(format: "%@%.2f 元", sign, tx.amountRMB)
+                cell.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
+                cell.textColor = tx.isExpense ? .labelColor : .systemGreen
+            case "balance":
+                cell.stringValue = tx.balanceAfterRMB.map { String(format: "%.2f 元", $0) } ?? "--"
+                cell.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
             default: break
             }
         }
@@ -610,9 +835,16 @@ public class CampusQuotaCardView: NSView {
 
         // 顶部说明标题
         if !isCompactMenuMode {
-            let headerStr = (mode == 0)
-                ? "套餐限额  ·  访问校内资源免费；校外资源日限 30GB、月限 400GB（每月前 200GB 免费，超出 0.5元/GB）；最多 3 个终端同时在线"
-                : "宿舍用电限额与续航预估  ·  基于近期日均用电量动态测算剩余电费可用比例"
+            let headerStr: String
+            if mode == 0 {
+                headerStr = "套餐限额  ·  访问校内资源免费；校外资源日限 30GB、月限 400GB（每月前 200GB 免费，超出 0.5元/GB）；最多 3 个终端同时在线"
+            } else if mode == 1 {
+                headerStr = "宿舍用电限额与续航预估  ·  基于近期日均用电量动态测算剩余电费可用比例"
+            } else {
+                let bStr = String(format: "%.0f", SettingsManager.shared.campusCardDailyBudget)
+                let tStr = String(format: "%.0f", SettingsManager.shared.campusCardLowWarningThreshold)
+                headerStr = "校园一卡通充裕度与消费预算  ·  单日参考基准 \(bStr) 元 · 低于预警阈值 (\(tStr)元) 自动提醒充值（点击右上角「一卡通预算...」可自定义）"
+            }
             let headerAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
                 .foregroundColor: NSColor.secondaryLabelColor
@@ -693,7 +925,7 @@ public class CampusQuotaCardView: NSView {
                 subRight: monthlySubRight,
                 remainRatio: monthlyRemainRatio
             )
-        } else {
+        } else if mode == 1 {
             // 宿舍电费模式下的进度展示
             let elec = ElectricityService.shared.latestData
             let fallbackElec = CampusHistoryManager.shared.latestElectricityRecord
@@ -722,6 +954,35 @@ public class CampusQuotaCardView: NSView {
                 subLeft: "近 7 天日均消费 \(String(format: "%.2f", CampusHistoryManager.shared.past7DaysElectricityDailyAverageCostRMB)) 元/天",
                 subRight: daysLeft > 0 ? "约余 \(daysLeft) 天" : "测算中",
                 remainRatio: dayRatio
+            )
+        } else {
+            // 校园一卡通模式下的进度展示
+            let card = CampusCardService.shared.latestData
+            let bal = card?.balanceRMB ?? 0.0
+            let balDisplay = card?.displayBalance ?? "--"
+            let ratio = max(0.0, min(1.0, bal / 200.0))
+            let pct = Int(round(ratio * 100))
+
+            drawQuotaRow(
+                y: bounds.height - 68,
+                padX: padX,
+                title: "校园卡余额充裕度 (按 200 元常备基准)",
+                subLeft: "当前卡内余额 \(balDisplay)  ·  预警红线 \(String(format: "%.0f", SettingsManager.shared.campusCardLowWarningThreshold)) 元",
+                subRight: "充裕度 \(pct)%",
+                remainRatio: ratio
+            )
+
+            let todaySpent = card?.todaySpentRMB() ?? 0.0
+            let budget = max(1.0, SettingsManager.shared.campusCardDailyBudget)
+            let budgetStr = String(format: "%.0f", budget)
+            let budgetRemainRatio = max(0.0, min(1.0, (budget - todaySpent) / budget))
+            drawQuotaRow(
+                y: 14,
+                padX: padX,
+                title: "今日消费参考 (按单日 \(budgetStr) 元餐饮/日常基准)",
+                subLeft: "今日已消费 \(String(format: "%.2f", todaySpent)) 元 (共 \(card?.todayExpenseCount() ?? 0) 笔交易)",
+                subRight: String(format: "今日已用 %.0f%%", min(100.0, (todaySpent / budget) * 100.0)),
+                remainRatio: budgetRemainRatio
             )
         }
     }

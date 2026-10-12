@@ -82,6 +82,18 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             name: .historyStatsDidUpdate,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onCampusCardUpdated),
+            name: .campusCardDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onAcademicDataUpdated),
+            name: .academicDataDidUpdate,
+            object: nil
+        )
         updateCourseDisplay()
     }
 
@@ -108,6 +120,19 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
     @objc private func onDormElectricityUpdated() {
         DispatchQueue.main.async { [weak self] in
+            self?.renderBottomLabel()
+        }
+    }
+
+    @objc private func onCampusCardUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.renderBottomLabel()
+        }
+    }
+
+    @objc private func onAcademicDataUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateCourseDisplay()
             self?.renderBottomLabel()
         }
     }
@@ -426,6 +451,13 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
                 detailLabel.stringValue = "今日余下全空 · 点击查看明日自习推荐"
             }
             detailLabel.textColor = .secondaryLabelColor
+        } else if let upcomingExam = AcademicService.shared.latestData?.upcomingExams(at: now).first,
+                  upcomingExam.daysRemaining(at: now) <= 21 {
+            let days = upcomingExam.daysRemaining(at: now)
+            titleLabel.stringValue = "考试倒计时：距《\(upcomingExam.courseName)》\(upcomingExam.countdownBadgeText(at: now))"
+            titleLabel.textColor = days <= 3 ? NSColor.systemRed : NSColor.systemOrange
+            detailLabel.stringValue = "时间: \(upcomingExam.dateTimeString) | 地点: \(upcomingExam.displayLocation)"
+            detailLabel.textColor = .secondaryLabelColor
         } else if !todayLessons.isEmpty {
             titleLabel.stringValue = "今日课程已全部结束"
             titleLabel.textColor = .labelColor
@@ -476,6 +508,12 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
                 return
             }
         }
+        if schedule?.currentLesson(at: now) == nil && schedule?.nextLesson(at: now) == nil,
+           let upcomingExam = AcademicService.shared.latestData?.upcomingExams(at: now).first,
+           upcomingExam.daysRemaining(at: now) <= 21 {
+            AcademicWindowController.shared.showWindow(mode: 1)
+            return
+        }
         CourseScheduleWindowController.shared.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -484,7 +522,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         carouselTimer?.invalidate()
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            self.carouselIndex = (self.carouselIndex + 1) % 4
+            self.carouselIndex = (self.carouselIndex + 1) % 6
             if self.carouselIndex == 0 {
                 self.updateCourseDisplay()
             }
@@ -587,6 +625,39 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
                 updateTimeLabel.stringValue = "宿舍电费：点击查看历史用量与配置"
                 updateTimeLabel.textColor = NSColor.systemOrange
             }
+        case 3:
+            // 校园一卡通余额与今日消费
+            if let card = CampusCardService.shared.latestData {
+                let now = Date()
+                let warn = card.isLowBalance ? "余额偏低 · " : ""
+                let todayCount = card.todayExpenseCount(at: now)
+                let todaySpent = card.todaySpentRMB(at: now)
+                let todayPart = todayCount > 0 ? " · 今日消费 ¥\(String(format: "%.2f", todaySpent))" : " · 今日无消费"
+                updateTimeLabel.stringValue = "\(warn)校园一卡通：\(card.displayBalance)\(todayPart)"
+                updateTimeLabel.textColor = card.isLowBalance ? NSColor.systemRed : NSColor.systemGreen
+            } else {
+                updateTimeLabel.stringValue = "校园一卡通：点击查看卡内余额与消费流水"
+                updateTimeLabel.textColor = NSColor.systemGreen
+            }
+        case 4:
+            // 考试倒计时或成绩更新监控状态（不直接显示具体 GPA）
+            let now = Date()
+            let snap = AcademicService.shared.latestData
+            let unreadCount = AcademicService.shared.unreadGradeCount
+            if unreadCount > 0 {
+                updateTimeLabel.stringValue = "考试与成绩：检测到 \(unreadCount) 门新出分，点击查看详情"
+                updateTimeLabel.textColor = NSColor.systemOrange
+            } else if let nextExam = snap?.upcomingExams(at: now).first {
+                updateTimeLabel.stringValue = "考试倒计时：距《\(nextExam.courseName)》\(nextExam.countdownBadgeText(at: now)) (\(nextExam.displayLocation))"
+                let days = nextExam.daysRemaining(at: now)
+                updateTimeLabel.textColor = days <= 3 ? NSColor.systemRed : NSColor.systemOrange
+            } else if let s = snap, !s.allGrades.isEmpty {
+                updateTimeLabel.stringValue = "考试与成绩：暂无新出分 · 点击查看成绩单与考试安排"
+                updateTimeLabel.textColor = NSColor.systemPurple
+            } else {
+                updateTimeLabel.stringValue = "考试与成绩：点击查看考场倒计时与 GPA 测算"
+                updateTimeLabel.textColor = NSColor.systemPurple
+            }
         default:
             // 自习空教室状态与推荐
             let nowMin = EmptyClassroomService.currentMinutesOfDay()
@@ -620,12 +691,19 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     }
 
     @objc private func bottomLabelClicked() {
-        if carouselIndex == 3 {
+        switch carouselIndex {
+        case 2:
+            HistoryStatsWindowController.shared.showWindow(mode: 1)
+        case 3:
+            HistoryStatsWindowController.shared.showWindow(mode: 2)
+        case 4:
+            let hasUpcoming = !(AcademicService.shared.latestData?.upcomingExams(at: Date()).isEmpty ?? true)
+            AcademicWindowController.shared.showWindow(mode: hasUpcoming ? 1 : 0)
+        case 5:
             EmptyClassroomWindowController.shared.showWindowAndSync()
-            return
+        default:
+            HistoryStatsWindowController.shared.showWindow(mode: 0)
         }
-        let mode = (carouselIndex == 2) ? 1 : 0
-        HistoryStatsWindowController.shared.showWindow(mode: mode)
     }
 
     private func splitNumAndUnit(_ text: String, fallbackUnit: String) -> (String, String) {
@@ -659,6 +737,8 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
     @objc private func refreshClicked() {
         CampusNetworkClient.shared.fetchData()
+        CampusCardService.shared.fetchData { _ in }
+        AcademicService.shared.syncAll(silent: true)
         if SettingsManager.shared.courseTableEnabled {
             CourseScheduleService.shared.syncSchedule { _ in }
         }

@@ -482,18 +482,25 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     private func syncDatePickerAndSegmentWithSelectedDate() {
         let todayStr = EmptyClassroomService.todayDateString()
         let tomorrowStr = EmptyClassroomService.tomorrowDateString()
-        if selectedDateString == todayStr {
+        let isToday = (selectedDateString == todayStr)
+        if isToday {
             dateSegment?.selectedSegment = 0
             customDateButton?.title = "指定日期"
             customDateButton?.contentTintColor = nil
+            statusFilterSegment?.setLabel("余下无课", forSegment: 2)
+            statusFilterSegment?.setLabel("当前空闲", forSegment: 3)
         } else if selectedDateString == tomorrowStr {
             dateSegment?.selectedSegment = 1
             customDateButton?.title = "指定日期"
             customDateButton?.contentTintColor = nil
+            statusFilterSegment?.setLabel("上午空闲", forSegment: 2)
+            statusFilterSegment?.setLabel("下午空闲", forSegment: 3)
         } else {
             dateSegment?.selectedSegment = -1
             customDateButton?.title = "指定(\(selectedDateString.suffix(5)))"
             customDateButton?.contentTintColor = .controlAccentColor
+            statusFilterSegment?.setLabel("上午空闲", forSegment: 2)
+            statusFilterSegment?.setLabel("下午空闲", forSegment: 3)
         }
     }
 
@@ -561,6 +568,15 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         tableView.addTableColumn(col)
         tableView.dataSource = self
         tableView.delegate = self
+
+        let rowMenu = NSMenu(title: "教室操作")
+        let viewScheduleItem = NSMenuItem(title: "查看该教室全学期课表...", action: #selector(contextMenuOpenSchedule(_:)), keyEquivalent: "")
+        viewScheduleItem.target = self
+        rowMenu.addItem(viewScheduleItem)
+        let setStudyItem = NSMenuItem(title: "设为自习室 / 切换预约状态", action: #selector(contextMenuToggleStudyRoom(_:)), keyEquivalent: "")
+        setStudyItem.target = self
+        rowMenu.addItem(setStudyItem)
+        tableView.menu = rowMenu
 
         listScrollView.documentView = tableView
         root.addSubview(listScrollView)
@@ -1083,22 +1099,30 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             return
         }
 
+        let reqCampus = selectedCampus
+        let reqDate = selectedDateString
+        let reqBuildingId = selectedBuildingId
         let alreadyCached = !forceRefresh && service.hasCachedRooms(
-            dateString: selectedDateString,
-            campus: selectedCampus,
+            dateString: reqDate,
+            campus: reqCampus,
             buildingIds: targetIds
         )
         if !alreadyCached {
             setLoadingState(true, message: "正在加载所选教学楼教室数据...")
         }
         service.fetchRooms(
-            dateString: selectedDateString,
-            campus: selectedCampus,
+            dateString: reqDate,
+            campus: reqCampus,
             buildingIds: targetIds,
             forceRefresh: forceRefresh
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                guard self.selectedCampus == reqCampus,
+                      self.selectedDateString == reqDate,
+                      self.selectedBuildingId == reqBuildingId else {
+                    return
+                }
                 self.setLoadingState(false)
                 switch result {
                 case .success(let rooms):
@@ -1469,9 +1493,11 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             case 1:
                 return room.isAllDayFree
             case 2:
-                return isToday ? room.isRestOfDayFree(atMinutes: nowMin) : room.isAllDayFree
+                // 今日：余下无课；非今日（明天/指定日期）：上午空闲 (08:00-12:00)
+                return isToday ? room.isRestOfDayFree(atMinutes: nowMin) : room.isFree(from: 8 * 60, to: 12 * 60)
             case 3:
-                return isToday ? (room.currentOccupation(atMinutes: nowMin) == nil) : true
+                // 今日：当前空闲；非今日（明天/指定日期）：下午空闲 (14:00-18:00)
+                return isToday ? (room.currentOccupation(atMinutes: nowMin) == nil) : room.isFree(from: 14 * 60, to: 18 * 60)
             default:
                 return true
             }
@@ -1517,7 +1543,6 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         }
 
         let allDayCount = filtered.filter { $0.isAllDayFree }.count
-        let restFreeCount = isToday ? filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count : allDayCount
         let syncInfo = EmptyClassroomService.shared.formattedFullLastSync(for: selectedCampus)
         updateLastSyncTimeDisplay()
         let isEntireBuildingEmptyOnCustomDate = !isToday
@@ -1526,8 +1551,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             && currentRooms.allSatisfy { $0.sortedOccupations.isEmpty }
         if isEntireBuildingEmptyOnCustomDate {
             bottomStatusLabel.stringValue = "⚠️ \(selectedDateString) 全楼均无排课记录（处于假期或尚未排课，注：教务当前查不到下学期的课）  ｜  \(syncInfo)"
-        } else {
+        } else if isToday {
+            let restFreeCount = filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count
             bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  余下无课 \(restFreeCount) 间   ｜   \(syncInfo)"
+        } else {
+            let morningFreeCount = filtered.filter { $0.isFree(from: 8 * 60, to: 12 * 60) }.count
+            let afternoonFreeCount = filtered.filter { $0.isFree(from: 14 * 60, to: 18 * 60) }.count
+            bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  上午空 \(morningFreeCount) 间 / 下午空 \(afternoonFreeCount) 间   ｜   \(syncInfo)"
         }
     }
 
@@ -1769,7 +1799,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let currentDayFallback = (selectedDateString == todayStr) ? currentRooms.first(where: { $0.id == roomId }) : nil
         if let room = todayRooms.first(where: { $0.id == roomId }) ?? currentDayFallback {
             let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
-            service.setCurrentStudyRoom(room, campus: roomCampus)
+            service.setCurrentStudyRoom(room, campus: roomCampus, roomDateString: todayStr)
             renderSummaryBar()
             reloadFilteredRooms()
             return
@@ -1779,7 +1809,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let prefRooms = service.cachedStudyRooms(campus: prefCampus, dateString: todayStr)
         if let room = prefRooms.first(where: { $0.id == roomId }) {
             let roomCampus = service.inferCampus(for: room, fallback: prefCampus)
-            service.setCurrentStudyRoom(room, campus: roomCampus)
+            service.setCurrentStudyRoom(room, campus: roomCampus, roomDateString: todayStr)
             renderSummaryBar()
             reloadFilteredRooms()
         }
@@ -1806,6 +1836,28 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             renderSummaryBar()
             reloadFilteredRooms()
         }
+    }
+
+    @objc private func contextMenuOpenSchedule(_ sender: NSMenuItem) {
+        let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        guard row >= 0 && row < filteredRooms.count else { return }
+        let room = filteredRooms[row]
+        let campusTitle = room.campusNameZh.isEmpty ? selectedCampus.displayName : room.campusNameZh
+        ClassroomScheduleWindowController.shared.showClassroomSchedule(
+            roomId: room.id,
+            roomName: room.nameZh,
+            campusName: campusTitle,
+            initialDateString: selectedDateString
+        )
+    }
+
+    @objc private func contextMenuToggleStudyRoom(_ sender: NSMenuItem) {
+        let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        guard row >= 0 && row < filteredRooms.count else { return }
+        let room = filteredRooms[row]
+        let dummyBtn = NSButton()
+        dummyBtn.tag = room.id
+        rowSetStudyRoomClicked(dummyBtn)
     }
 
     @objc private func rowOpenClassroomScheduleClicked(_ sender: NSButton) {
@@ -1843,7 +1895,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             }
             guard let room = currentRooms.first(where: { $0.id == roomId }) else { return }
             let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
-            service.setCurrentStudyRoom(room, campus: roomCampus)
+            service.setCurrentStudyRoom(room, campus: roomCampus, roomDateString: selectedDateString)
         }
         renderSummaryBar()
         reloadFilteredRooms()

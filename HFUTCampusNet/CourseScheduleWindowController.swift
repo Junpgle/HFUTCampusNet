@@ -157,7 +157,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         topBar.addSubview(titleLabel)
 
         semesterLabel = NSTextField(labelWithString: "当前学期")
-        semesterLabel.frame = NSRect(x: 20, y: 8, width: 280, height: 16)
+        semesterLabel.frame = NSRect(x: 20, y: 8, width: 295, height: 16)
         semesterLabel.font = NSFont.systemFont(ofSize: 11)
         semesterLabel.textColor = .secondaryLabelColor
         topBar.addSubview(semesterLabel)
@@ -187,6 +187,12 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         topBar.addSubview(todayWeekBtn)
 
         // 右侧操作按钮
+        let textbookBtn = NSButton(title: "教材与学分", target: self, action: #selector(openTextbooksAndCreditsAction))
+        textbookBtn.bezelStyle = .rounded
+        textbookBtn.frame = NSRect(x: topBar.frame.width - 325, y: 13, width: 100, height: 28)
+        textbookBtn.autoresizingMask = [.minXMargin]
+        topBar.addSubview(textbookBtn)
+
         let authBtn = NSButton(title: "网页登录同步", target: self, action: #selector(openLoginAuthAction))
         authBtn.bezelStyle = .rounded
         authBtn.frame = NSRect(x: topBar.frame.width - 220, y: 13, width: 110, height: 28)
@@ -247,15 +253,15 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         headerBar.subviews.forEach { $0.removeFromSuperview() }
 
         let schedule = CourseScheduleService.shared.currentSchedule
-        let stdId = (schedule?.studentId ?? SettingsManager.shared.courseStudentId).trimmingCharacters(in: .whitespacesAndNewlines)
-        let semTitle = schedule?.semesterName ?? "当前学期"
-        semesterLabel?.stringValue = stdId.isEmpty ? semTitle : "\(semTitle) (stdId: \(stdId))"
+        let milestone = SemesterMilestoneInfo.calculate(schedule: schedule)
+        let semTitle = schedule?.semesterName ?? milestone.semesterName
+        semesterLabel?.stringValue = "\(semTitle) · 进度 \(milestone.progressPercentage)% (距\(milestone.vacationName) \(milestone.remainingDays)天)"
 
         if let syncTime = schedule?.lastSyncTime {
             let f = DateFormatter()
             f.dateFormat = "yyyy-MM-dd HH:mm"
             let count = schedule?.lessons.count ?? 0
-            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共有 \(count) 节排课 | 连续时间轴视图 (08:00 - 22:00)"
+            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共 \(count) 节排课 | 校历: \(milestone.startDateString) ~ \(milestone.endDateString) (第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 · 距期末考试周约 \(milestone.daysUntilExamWeek) 天)"
         } else {
             statusInfoLabel?.stringValue = "尚未同步教务课表，请点击右上角「网页登录同步」"
         }
@@ -299,8 +305,12 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         container.frame = NSRect(x: 0, y: 0, width: containerW, height: totalH)
 
         let now = Date()
+        let todayStr = CourseCalendarHelper.dateString(from: now)
         let currentWeekday = CourseCalendarHelper.weekday(from: now)
-        let isCurrentWeek = (schedule?.currentWeek(at: now) == currentWeek)
+        let isCurrentWeek = (1...7).contains { d in
+            guard let wDate = weekDates[d] else { return false }
+            return CourseCalendarHelper.dateString(from: wDate) == todayStr
+        }
 
         // 1. 绘制固定顶部星期与日期表头
         let timeHeaderLabel = NSTextField(labelWithString: "时间")
@@ -621,6 +631,10 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         renderSchedule()
     }
 
+    @objc private func openTextbooksAndCreditsAction() {
+        AcademicWindowController.shared.showWindow(mode: 3)
+    }
+
     @objc private func openLoginAuthAction() {
         CourseLoginWebViewController.shared.showLoginWindow()
     }
@@ -675,6 +689,7 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
     private var viewMode: Int = 0
     private var scheduleData: CourseScheduleData?
     private var isLoading: Bool = false
+    private var activeRequestToken: UUID = UUID()
 
     private var titleLabel: NSTextField!
     private var subtitleLabel: NSTextField!
@@ -724,16 +739,18 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         self.currentRoomName = roomName
         self.currentCampusName = campusName
 
-        // 优先使用已同步个人课表的学期 ID 或按所选日期推算的学期 ID
-        if let userSemStr = CourseScheduleService.shared.currentSchedule?.semesterId,
-           let userSem = Int(userSemStr), userSem > 0 {
-            self.selectedSemesterId = userSem
-        } else if let initDateStr = initialDateString,
-                  let initDate = CourseCalendarHelper.parseDate(initDateStr, "12:00") {
-            self.selectedSemesterId = CourseCalendarHelper.inferSemesterId(at: initDate)
+        let maxAllowedSemId = CourseCalendarHelper.inferSemesterId()
+        if let initDateStr = initialDateString,
+           let initDate = CourseCalendarHelper.parseDate(initDateStr, "12:00") {
+            let inferred = CourseCalendarHelper.inferSemesterId(at: initDate)
+            self.selectedSemesterId = min(inferred, maxAllowedSemId)
+        } else if let userSemStr = CourseScheduleService.shared.currentSchedule?.semesterId,
+                  let userSem = Int(userSemStr), userSem > 0 {
+            self.selectedSemesterId = min(userSem, maxAllowedSemId)
         } else {
-            self.selectedSemesterId = CourseCalendarHelper.inferSemesterId()
+            self.selectedSemesterId = maxAllowedSemId
         }
+        rebuildSemesterPopUpMenu()
         syncSemesterPopUpSelection()
 
         window?.title = "\(roomName) - 教室学期课表"
@@ -745,10 +762,25 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         NSApp.activate(ignoringOtherApps: true)
 
         loadSchedule(
-            autoFallbackSemester: true,
+            autoFallbackSemester: false,
             forceRefresh: false,
             targetDateString: initialDateString
         )
+    }
+
+    private func rebuildSemesterPopUpMenu() {
+        guard let pop = semesterPopUp else { return }
+        pop.removeAllItems()
+        pop.autoenablesItems = false
+        for sem in EmptyClassroomService.availableSemesters {
+            pop.addItem(withTitle: sem.name)
+            pop.lastItem?.tag = sem.id
+        }
+        pop.menu?.addItem(NSMenuItem.separator())
+        let unscheduledItem = NSMenuItem(title: EmptyClassroomService.nextUnscheduledSemesterTitle, action: nil, keyEquivalent: "")
+        unscheduledItem.tag = -1
+        unscheduledItem.isEnabled = false
+        pop.menu?.addItem(unscheduledItem)
     }
 
     private func setupUI() {
@@ -776,16 +808,7 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         topBar.addSubview(subtitleLabel)
 
         semesterPopUp = NSPopUpButton(frame: NSRect(x: 240, y: 15, width: 192, height: 28), pullsDown: false)
-        semesterPopUp.autoenablesItems = false
-        for sem in EmptyClassroomService.availableSemesters {
-            semesterPopUp.addItem(withTitle: sem.name)
-            semesterPopUp.lastItem?.tag = sem.id
-        }
-        semesterPopUp.menu?.addItem(NSMenuItem.separator())
-        let unscheduledItem = NSMenuItem(title: "下一学期 (教务暂未排课，无法查询)", action: nil, keyEquivalent: "")
-        unscheduledItem.tag = -1
-        unscheduledItem.isEnabled = false
-        semesterPopUp.menu?.addItem(unscheduledItem)
+        rebuildSemesterPopUpMenu()
         semesterPopUp.target = self
         semesterPopUp.action = #selector(semesterChangedAction(_:))
         topBar.addSubview(semesterPopUp)
@@ -874,9 +897,11 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
                 return
             }
         }
-        pop.addItem(withTitle: EmptyClassroomService.semesterTitle(for: selectedSemesterId))
-        pop.lastItem?.tag = selectedSemesterId
-        pop.selectItem(at: pop.numberOfItems - 1)
+        let insertIdx = max(0, pop.numberOfItems - 2)
+        let customItem = NSMenuItem(title: EmptyClassroomService.semesterTitle(for: selectedSemesterId), action: nil, keyEquivalent: "")
+        customItem.tag = selectedSemesterId
+        pop.menu?.insertItem(customItem, at: insertIdx)
+        pop.selectItem(at: insertIdx)
     }
 
     private func loadSchedule(
@@ -885,22 +910,29 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         targetDateString: String? = nil
     ) {
         guard currentRoomId > 0 else { return }
+        let reqToken = UUID()
+        self.activeRequestToken = reqToken
+        let reqRoomId = currentRoomId
+        let reqSemesterId = selectedSemesterId
+
         isLoading = true
+        semesterPopUp?.isEnabled = false
         refreshBtn?.isEnabled = false
         refreshBtn?.title = "加载中..."
         statusInfoLabel?.stringValue = "正在从教务系统查询 \(currentRoomName) 的全学期排课数据..."
         renderClassroomSchedule()
 
         EmptyClassroomService.shared.fetchClassroomSemesterSchedule(
-            roomId: currentRoomId,
+            roomId: reqRoomId,
             roomName: currentRoomName,
-            semesterId: selectedSemesterId,
+            semesterId: reqSemesterId,
             autoFallbackSemester: autoFallbackSemester,
             forceRefresh: forceRefresh
         ) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, self.activeRequestToken == reqToken else { return }
                 self.isLoading = false
+                self.semesterPopUp?.isEnabled = true
                 self.refreshBtn?.isEnabled = true
                 self.refreshBtn?.title = "刷新课表"
 
@@ -1080,8 +1112,12 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         container.frame = NSRect(x: 0, y: 0, width: containerW, height: totalH)
 
         let now = Date()
+        let todayStr = CourseCalendarHelper.dateString(from: now)
         let currentWeekday = CourseCalendarHelper.weekday(from: now)
-        let isCurrentWeek = (!isOverviewMode && schedule?.currentWeek(at: now) == currentWeek)
+        let isCurrentWeek = !isOverviewMode && (1...7).contains { d in
+            guard let wDate = weekDates[d] else { return false }
+            return CourseCalendarHelper.dateString(from: wDate) == todayStr
+        }
 
         // 1. 顶部星期与日期表头
         let timeHeaderLabel = NSTextField(labelWithString: "时间")
@@ -1235,6 +1271,32 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
                     )
                     container.addSubview(cardView)
                 }
+            }
+        }
+
+        // 5. 若为本周且当前时间处于时间轴范围内，绘制当前时间指示红线
+        if isCurrentWeek {
+            let comps = CourseCalendarHelper.beijingCalendar.dateComponents([.hour, .minute], from: now)
+            let nowMin = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+            if nowMin >= axisStartMin && nowMin <= endHour * 60 {
+                let nowY = topPadding + CGFloat(nowMin - axisStartMin) / 60.0 * hourHeight
+                let todayColX = timeColumnW + CGFloat(currentWeekday - 1) * dayColumnW
+
+                let fullLine = NSView(frame: NSRect(x: timeColumnW, y: nowY, width: 7 * dayColumnW, height: 1))
+                fullLine.wantsLayer = true
+                fullLine.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.3).cgColor
+                container.addSubview(fullLine)
+
+                let todayLine = NSView(frame: NSRect(x: todayColX, y: nowY - 0.5, width: dayColumnW, height: 2))
+                todayLine.wantsLayer = true
+                todayLine.layer?.backgroundColor = NSColor.systemRed.cgColor
+                container.addSubview(todayLine)
+
+                let dot = NSView(frame: NSRect(x: todayColX - 4, y: nowY - 4, width: 8, height: 8))
+                dot.wantsLayer = true
+                dot.layer?.cornerRadius = 4
+                dot.layer?.backgroundColor = NSColor.systemRed.cgColor
+                container.addSubview(dot)
             }
         }
 
