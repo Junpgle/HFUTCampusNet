@@ -1,6 +1,5 @@
 import Foundation
 import AppKit
-import WebKit
 
 public struct GitHubReleaseInfo {
     public let tagName: String
@@ -25,12 +24,12 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.8.1）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.8.2）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.8.1"
+        return "1.8.2"
     }
 
     /// 检查 GitHub Releases 最新版本
@@ -255,9 +254,7 @@ public class UpdateChecker {
 
         let notes = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !notes.isEmpty {
-            let webView = ReleaseNotesWebView(frame: NSRect(x: 0, y: 0, width: 460, height: 300))
-            webView.loadHTMLString(Self.releaseNotesHTML(from: notes), baseURL: nil)
-            alert.accessoryView = webView
+            alert.accessoryView = Self.makeReleaseNotesView(markdown: notes)
         }
 
         if release.downloadUrl != nil {
@@ -297,21 +294,133 @@ public class UpdateChecker {
 
     // MARK: - Release Notes Markdown 渲染
 
-    /// 将 GitHub Release Notes 的 Markdown 子集（标题 / 加粗 / 行内代码 / 列表 / 分隔线 / 链接）渲染为自适应深浅色的 HTML
-    static func releaseNotesHTML(from markdown: String) -> String {
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let textColor = isDark ? "#EBEBF5" : "#1D1D1F"
-        let mutedColor = isDark ? "#98989D" : "#6E6E73"
-        let accentColor = isDark ? "#64B5FF" : "#007AFF"
-        let codeBg = isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.06)"
+    /// 构建原生 NSTextView + NSScrollView 的 Release Notes 预览视图（显式 TextKit 栈，滚动跟手，自动适配深浅色）
+    static func makeReleaseNotesView(markdown: String, width: CGFloat = 460, height: CGFloat = 300) -> NSView {
+        let scroll = ImmediateScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = false
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
 
-        var bodyHTML = ""
-        var inList = false
+        let inset: CGFloat = 12
+        let contentW = width - 4
 
-        func closeList() {
-            if inList {
-                bodyHTML += "</ul>"
-                inList = false
+        // 显式构建 TextKit 栈：container 固定尺寸，滚动阶段不触发任何文字重排
+        let textStorage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        textStorage.addLayoutManager(layoutManager)
+        let textContainer = NSTextContainer(size: NSSize(width: contentW - 2 * inset, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = false
+        textContainer.heightTracksTextView = false
+        textContainer.lineFragmentPadding = 0
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: contentW, height: height), textContainer: textContainer)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .labelColor
+        textView.textContainerInset = NSSize(width: inset, height: inset)
+        // 高度由下方按内容实测后手动设定，禁止文本视图自行调整，避免滚动时与 scroll view 反馈打架
+        textView.isVerticallyResizable = false
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = []
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        // 关闭拼写/语法/数据检测，避免滚动布局时触发额外文本检查造成卡顿
+        textView.enabledTextCheckingTypes = 0
+
+        textStorage.setAttributedString(releaseNotesAttributedText(from: markdown))
+
+        // 按内容自适应高度（上限 400pt，下限 160pt）
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer).height
+        let contentH = used + 2 * inset + 8
+        let fitted = min(400, max(160, contentH))
+        scroll.frame = NSRect(x: 0, y: 0, width: width, height: fitted)
+        // documentView 高度 = 内容实际高度，保证超出弹窗时可滚动
+        textView.frame = NSRect(x: 0, y: 0, width: contentW, height: max(contentH, fitted))
+
+        scroll.documentView = textView
+        return scroll
+    }
+
+    /// 解析 GitHub Release Notes 常用 Markdown 子集（标题 / 加粗 / 行内代码 / 列表 / 链接 / 分隔线），
+    /// 生成使用动态系统颜色（labelColor / linkColor）的富文本，自动适配深浅色外观
+    static func releaseNotesAttributedText(from markdown: String) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let bodyFont = NSFont.systemFont(ofSize: 12.5)
+        let headingFont = NSFont.systemFont(ofSize: 13.5, weight: .semibold)
+        let codeFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+
+        let bodyPara = NSMutableParagraphStyle()
+        bodyPara.lineSpacing = 2
+        bodyPara.paragraphSpacing = 4
+
+        let headingPara = NSMutableParagraphStyle()
+        headingPara.lineSpacing = 2
+        headingPara.paragraphSpacing = 6
+
+        let listPara = NSMutableParagraphStyle()
+        listPara.lineSpacing = 2
+        listPara.paragraphSpacing = 3
+        listPara.firstLineHeadIndent = 0
+        listPara.headIndent = 16
+
+        func appendInline(_ text: String, baseFont: NSFont, para: NSParagraphStyle) {
+            // 按 **加粗** / `行内代码` / [链接](url) 切分，其余为普通文本
+            let pattern = "(\\*\\*[^*]+\\*\\*|`[^`]+`|\\[[^\\]]+\\]\\(https?://[^\\s\\)]+\\))"
+            guard let regex = try? NSRegularExpression(pattern: pattern) else {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: para
+                ]
+                result.append(NSAttributedString(string: text, attributes: attrs))
+                return
+            }
+            let ns = text as NSString
+            let full = NSRange(location: 0, length: ns.length)
+            var lastEnd = 0
+            for match in regex.matches(in: text, range: full) {
+                if match.range.location > lastEnd {
+                    let plain = ns.substring(with: NSRange(location: lastEnd, length: match.range.location - lastEnd))
+                    result.append(NSAttributedString(string: plain, attributes: [
+                        .font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: para
+                    ]))
+                }
+                let token = ns.substring(with: match.range)
+                if token.hasPrefix("**") {
+                    let inner = String(token.dropFirst(2).dropLast(2))
+                    let bold = NSFontManager.shared.convert(baseFont, toHaveTrait: .boldFontMask)
+                    result.append(NSAttributedString(string: inner, attributes: [
+                        .font: bold, .foregroundColor: NSColor.labelColor, .paragraphStyle: para
+                    ]))
+                } else if token.hasPrefix("`") {
+                    let inner = String(token.dropFirst().dropLast())
+                    result.append(NSAttributedString(string: inner, attributes: [
+                        .font: codeFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: para
+                    ]))
+                } else if token.hasPrefix("["),
+                          let openRange = token.range(of: "]("),
+                          let closeRange = token.range(of: ")") {
+                    let linkText = String(token[token.index(token.startIndex, offsetBy: 1)..<openRange.lowerBound])
+                    let urlStr = String(token[openRange.upperBound..<closeRange.lowerBound])
+                    result.append(NSAttributedString(string: linkText, attributes: [
+                        .font: baseFont,
+                        .foregroundColor: NSColor.linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .link: URL(string: urlStr) as Any,
+                        .paragraphStyle: para
+                    ]))
+                }
+                lastEnd = match.range.location + match.range.length
+            }
+            if lastEnd < ns.length {
+                let plain = ns.substring(from: lastEnd)
+                result.append(NSAttributedString(string: plain, attributes: [
+                    .font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: para
+                ]))
             }
         }
 
@@ -319,120 +428,48 @@ public class UpdateChecker {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
 
             if line.isEmpty {
-                // GitHub 风格列表项之间常有空行，不在此闭合 <ul>，留到下一个非列表元素处统一闭合
+                result.append(NSAttributedString(string: "\n", attributes: [
+                    .font: bodyFont, .paragraphStyle: bodyPara
+                ]))
                 continue
             }
 
             if line.hasPrefix("---") || line.hasPrefix("***") || line.hasPrefix("___") {
-                closeList()
-                bodyHTML += "<hr>"
+                let sep = String(repeating: "─", count: 40)
+                result.append(NSAttributedString(string: sep + "\n", attributes: [
+                    .font: bodyFont,
+                    .foregroundColor: NSColor.separatorColor,
+                    .paragraphStyle: bodyPara
+                ]))
                 continue
             }
 
             if let hashRange = line.range(of: "^#{1,6}\\s+", options: .regularExpression) {
-                closeList()
-                let text = inlineHTML(from: String(line[hashRange.upperBound...]))
-                bodyHTML += "<div class=\"heading\">\(text)</div>"
+                let text = String(line[hashRange.upperBound...])
+                appendInline(text, baseFont: headingFont, para: headingPara)
+                result.append(NSAttributedString(string: "\n", attributes: [
+                    .font: headingFont, .paragraphStyle: headingPara
+                ]))
                 continue
             }
 
             if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
-                if !inList {
-                    bodyHTML += "<ul>"
-                    inList = true
-                }
-                let item = inlineHTML(from: String(line.dropFirst(2)))
-                bodyHTML += "<li>\(item)</li>"
+                result.append(NSAttributedString(string: "• ", attributes: [
+                    .font: bodyFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: listPara
+                ]))
+                appendInline(String(line.dropFirst(2)), baseFont: bodyFont, para: listPara)
+                result.append(NSAttributedString(string: "\n", attributes: [
+                    .font: bodyFont, .paragraphStyle: listPara
+                ]))
                 continue
             }
 
-            closeList()
-            bodyHTML += "<p>\(inlineHTML(from: line))</p>"
+            appendInline(line, baseFont: bodyFont, para: bodyPara)
+            result.append(NSAttributedString(string: "\n", attributes: [
+                .font: bodyFont, .paragraphStyle: bodyPara
+            ]))
         }
-        closeList()
-
-        return """
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            html, body {
-                margin: 0;
-                padding: 0;
-                background: transparent;
-            }
-            body {
-                font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
-                font-size: 12.5px;
-                line-height: 1.55;
-                color: \(textColor);
-                padding: 2px 6px 8px 2px;
-                word-break: break-word;
-            }
-            .heading {
-                font-weight: 600;
-                font-size: 13px;
-                margin: 12px 0 6px 0;
-                color: \(textColor);
-            }
-            p { margin: 4px 0; }
-            ul {
-                margin: 4px 0 8px 0;
-                padding-left: 18px;
-            }
-            li { margin: 2px 0; }
-            hr {
-                border: none;
-                border-top: 1px solid \(mutedColor);
-                opacity: 0.35;
-                margin: 10px 0;
-            }
-            strong { font-weight: 600; }
-            code {
-                font-family: "SF Mono", Menlo, monospace;
-                font-size: 11.5px;
-                background: \(codeBg);
-                border-radius: 3px;
-                padding: 1px 4px;
-            }
-            a { color: \(accentColor); text-decoration: none; }
-        </style>
-        </head>
-        <body>\(bodyHTML)</body>
-        </html>
-        """
-    }
-
-    private static func escapeHTML(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-    }
-
-    private static func inlineHTML(from text: String) -> String {
-        var s = escapeHTML(text)
-        // [text](url)
-        s = s.replacingOccurrences(
-            of: "\\[([^\\]]+)\\]\\((https?://[^\\s\\)]+)\\)",
-            with: "<a href=\"$2\">$1</a>",
-            options: .regularExpression
-        )
-        // **bold**
-        s = s.replacingOccurrences(
-            of: "\\*\\*(.+?)\\*\\*",
-            with: "<strong>$1</strong>",
-            options: .regularExpression
-        )
-        // `code`
-        s = s.replacingOccurrences(
-            of: "`([^`]+)`",
-            with: "<code>$1</code>",
-            options: .regularExpression
-        )
-        return s
+        return result
     }
 
     private func showUpToDateAlert(latestVersion: String) {
@@ -470,27 +507,14 @@ public class UpdateChecker {
     }
 }
 
-/// 更新弹窗内嵌的 Release Notes 预览 WebView：拦截链接点击并用浏览器打开，避免跳转后丢失弹窗
-private final class ReleaseNotesWebView: WKWebView, WKNavigationDelegate {
-    init(frame: NSRect) {
-        super.init(frame: frame, configuration: WKWebViewConfiguration())
-        navigationDelegate = self
-        setValue(false, forKey: "drawsBackground")
-        underPageBackgroundColor = .clear
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if navigationAction.navigationType == .linkActivated,
-           let url = navigationAction.request.url {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-            return
+/// 强制滚动零时长的 NSScrollView：NSAlert 内嵌滚动视图默认会把触摸板滚动当作动画插值，
+/// 导致「划完才跳到最终位置」；包裹一层 NSAnimationContext(duration: 0) 后可跟手实时滚动
+private final class ImmediateScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            super.scrollWheel(with: event)
         }
-        decisionHandler(.allow)
     }
 }
 
