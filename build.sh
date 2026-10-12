@@ -81,7 +81,7 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.8.0</string>
+    <string>1.8.1</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
@@ -106,11 +106,13 @@ echo "📦 正在打包发布压缩包 HFUTCampusNet-macOS.zip..."
 rm -f "$DIR/HFUTCampusNet-macOS.zip"
 ditto -c -k --keepParent "$BUNDLE_DIR" "$DIR/HFUTCampusNet-macOS.zip"
 
-if [ -d "/Applications/${APP_NAME}.app" ]; then
+if [ "${SKIP_APP_INSTALL:-0}" != "1" ] && [ -d "/Applications/${APP_NAME}.app" ]; then
     echo "🔄 正在同步更新 /Applications/${APP_NAME}.app..."
     rm -rf "/Applications/${APP_NAME}.app"
     cp -R "$BUNDLE_DIR" "/Applications/${APP_NAME}.app"
     codesign --force --deep --sign - "/Applications/${APP_NAME}.app"
+elif [ "${SKIP_APP_INSTALL:-0}" == "1" ]; then
+    echo "⏭️  已设置 SKIP_APP_INSTALL=1，跳过 /Applications 覆盖安装。"
 fi
 
 echo "✅ 构建成功！生成通用架构应用："

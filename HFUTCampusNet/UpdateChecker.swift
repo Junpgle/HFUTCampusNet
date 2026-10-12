@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import WebKit
 
 public struct GitHubReleaseInfo {
     public let tagName: String
@@ -24,12 +25,12 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.8.0）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.8.1）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.8.0"
+        return "1.8.1"
     }
 
     /// 检查 GitHub Releases 最新版本
@@ -248,15 +249,20 @@ public class UpdateChecker {
     private func showUpdateAvailableAlert(release: GitHubReleaseInfo, manual: Bool) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "发现新版本 \(release.tagName)"
-        let notes = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let notesText = notes.isEmpty ? "暂无详细更新说明。" : notes
-        alert.informativeText = "当前版本：v\(currentVersion)\n最新版本：\(release.name)\n\n更新内容：\n\(notesText)"
+        alert.messageText = "发现新版本 v\(release.version)"
+        alert.informativeText = "当前版本：v\(currentVersion)\n最新版本：v\(release.version)"
         alert.alertStyle = .informational
+
+        let notes = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty {
+            let webView = ReleaseNotesWebView(frame: NSRect(x: 0, y: 0, width: 460, height: 300))
+            webView.loadHTMLString(Self.releaseNotesHTML(from: notes), baseURL: nil)
+            alert.accessoryView = webView
+        }
 
         if release.downloadUrl != nil {
             alert.addButton(withTitle: "立即下载更新包")
-            alert.addButton(withTitle: "查看 Release 页面")
+            alert.addButton(withTitle: "查看完整更新日志")
         } else {
             alert.addButton(withTitle: "前往 GitHub 下载")
         }
@@ -287,6 +293,146 @@ public class UpdateChecker {
                 SettingsManager.shared.skippedUpdateVersion = release.version
             }
         }
+    }
+
+    // MARK: - Release Notes Markdown 渲染
+
+    /// 将 GitHub Release Notes 的 Markdown 子集（标题 / 加粗 / 行内代码 / 列表 / 分隔线 / 链接）渲染为自适应深浅色的 HTML
+    static func releaseNotesHTML(from markdown: String) -> String {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let textColor = isDark ? "#EBEBF5" : "#1D1D1F"
+        let mutedColor = isDark ? "#98989D" : "#6E6E73"
+        let accentColor = isDark ? "#64B5FF" : "#007AFF"
+        let codeBg = isDark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.06)"
+
+        var bodyHTML = ""
+        var inList = false
+
+        func closeList() {
+            if inList {
+                bodyHTML += "</ul>"
+                inList = false
+            }
+        }
+
+        for rawLine in markdown.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+
+            if line.isEmpty {
+                // GitHub 风格列表项之间常有空行，不在此闭合 <ul>，留到下一个非列表元素处统一闭合
+                continue
+            }
+
+            if line.hasPrefix("---") || line.hasPrefix("***") || line.hasPrefix("___") {
+                closeList()
+                bodyHTML += "<hr>"
+                continue
+            }
+
+            if let hashRange = line.range(of: "^#{1,6}\\s+", options: .regularExpression) {
+                closeList()
+                let text = inlineHTML(from: String(line[hashRange.upperBound...]))
+                bodyHTML += "<div class=\"heading\">\(text)</div>"
+                continue
+            }
+
+            if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+                if !inList {
+                    bodyHTML += "<ul>"
+                    inList = true
+                }
+                let item = inlineHTML(from: String(line.dropFirst(2)))
+                bodyHTML += "<li>\(item)</li>"
+                continue
+            }
+
+            closeList()
+            bodyHTML += "<p>\(inlineHTML(from: line))</p>"
+        }
+        closeList()
+
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            html, body {
+                margin: 0;
+                padding: 0;
+                background: transparent;
+            }
+            body {
+                font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+                font-size: 12.5px;
+                line-height: 1.55;
+                color: \(textColor);
+                padding: 2px 6px 8px 2px;
+                word-break: break-word;
+            }
+            .heading {
+                font-weight: 600;
+                font-size: 13px;
+                margin: 12px 0 6px 0;
+                color: \(textColor);
+            }
+            p { margin: 4px 0; }
+            ul {
+                margin: 4px 0 8px 0;
+                padding-left: 18px;
+            }
+            li { margin: 2px 0; }
+            hr {
+                border: none;
+                border-top: 1px solid \(mutedColor);
+                opacity: 0.35;
+                margin: 10px 0;
+            }
+            strong { font-weight: 600; }
+            code {
+                font-family: "SF Mono", Menlo, monospace;
+                font-size: 11.5px;
+                background: \(codeBg);
+                border-radius: 3px;
+                padding: 1px 4px;
+            }
+            a { color: \(accentColor); text-decoration: none; }
+        </style>
+        </head>
+        <body>\(bodyHTML)</body>
+        </html>
+        """
+    }
+
+    private static func escapeHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    private static func inlineHTML(from text: String) -> String {
+        var s = escapeHTML(text)
+        // [text](url)
+        s = s.replacingOccurrences(
+            of: "\\[([^\\]]+)\\]\\((https?://[^\\s\\)]+)\\)",
+            with: "<a href=\"$2\">$1</a>",
+            options: .regularExpression
+        )
+        // **bold**
+        s = s.replacingOccurrences(
+            of: "\\*\\*(.+?)\\*\\*",
+            with: "<strong>$1</strong>",
+            options: .regularExpression
+        )
+        // `code`
+        s = s.replacingOccurrences(
+            of: "`([^`]+)`",
+            with: "<code>$1</code>",
+            options: .regularExpression
+        )
+        return s
     }
 
     private func showUpToDateAlert(latestVersion: String) {
@@ -321,6 +467,30 @@ public class UpdateChecker {
                 NSWorkspace.shared.open(url)
             }
         }
+    }
+}
+
+/// 更新弹窗内嵌的 Release Notes 预览 WebView：拦截链接点击并用浏览器打开，避免跳转后丢失弹窗
+private final class ReleaseNotesWebView: WKWebView, WKNavigationDelegate {
+    init(frame: NSRect) {
+        super.init(frame: frame, configuration: WKWebViewConfiguration())
+        navigationDelegate = self
+        setValue(false, forKey: "drawsBackground")
+        underPageBackgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.navigationType == .linkActivated,
+           let url = navigationAction.request.url {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
     }
 }
 
