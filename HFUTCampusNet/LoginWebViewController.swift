@@ -9,6 +9,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     private var progressIndicator: NSProgressIndicator!
     private var statusLabel: NSTextField!
     private var isCapturingSession: Bool = false
+    private var sessionToken: UUID = UUID()
 
     private init() {
         let window = NSWindow(
@@ -83,6 +84,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         NSApp.activate(ignoringOtherApps: true)
 
         isCapturingSession = false
+        sessionToken = UUID()
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
@@ -121,12 +123,14 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
         progressIndicator.stopAnimation(nil)
         statusLabel.stringValue = "❌ 页面连接失败: \(error.localizedDescription) (请确认已连上校园网)"
         statusLabel.textColor = .systemRed
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
         progressIndicator.stopAnimation(nil)
         statusLabel.stringValue = "❌ 加载异常: \(error.localizedDescription)"
         statusLabel.textColor = .systemRed
@@ -244,7 +248,9 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                 self.statusLabel.textColor = .systemGreen
 
                 // 延时 1.5 秒自动关闭窗口
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                let token = self.sessionToken
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self = self, self.sessionToken == token else { return }
                     self.window?.close()
                 }
             }
@@ -252,6 +258,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     }
 
     @objc private func promptManualCookie() {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "手动填入自服务 JSESSIONID"
         alert.informativeText = "若你已在浏览器中打开了自服务网页，可按 F12 -> Application -> Cookies 复制 JSESSIONID 的值填入下方："

@@ -22,10 +22,14 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private var dashboardTimer: Timer?
 
     private var isHeartbeating: Bool = false
+    private var pendingForceDashboard: Bool = false
     private var isFetchingDashboard: Bool = false
     private var wasOffline: Bool = false
     private var isManuallyLoggedOut: Bool = false
+    private var manualLogoutTimestamp: Date? = nil
     private var hasFetchedHuiXinFallback: Bool = false
+    private var lastDashboardAttemptTime: Date? = nil
+    private var latestRedirectSessionId: String? = nil
 
     // 系统网络路径监视器 (Wi-Fi 断开/重连毫秒级感知)
     private var pathMonitor: NWPathMonitor?
@@ -90,12 +94,14 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     /// 记录用户主动点击了注销网关，暂停自动重连直到用户再次主动登录
     public func markManualLogout() {
         isManuallyLoggedOut = true
+        manualLogoutTimestamp = Date()
         markOfflineInstantly(reason: "已手动注销校园网")
     }
 
     /// 清除手动注销标记，恢复自动重连
     public func clearManualLogout() {
         isManuallyLoggedOut = false
+        manualLogoutTimestamp = nil
     }
 
     /// 手动强制刷新
@@ -152,12 +158,17 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     // MARK: - 快速轻量心跳（每 8 秒探测一次 172.18.3.3）
 
     private func performHeartbeatCheck(forceDashboard: Bool = false) {
+        if forceDashboard {
+            pendingForceDashboard = true
+        }
         guard !isHeartbeating else { return }
         isHeartbeating = true
 
         PortalAuthService.shared.checkStatus { [weak self] portalStatus in
             guard let self = self else { return }
             self.isHeartbeating = false
+            let shouldForceDashboard = forceDashboard || self.pendingForceDashboard
+            self.pendingForceDashboard = false
 
             switch portalStatus {
             case .offline(let reason):
@@ -182,7 +193,14 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 }
 
             case .online(_, _, let flowMB, let fee, _):
+                // 若用户刚在 6 秒内手动点击了注销，网关会话可能尚在异步拆除中，忽略此过渡态在线响应，防止清除 isManuallyLoggedOut 后触发自动重连
+                if self.isManuallyLoggedOut,
+                   let logoutTime = self.manualLogoutTimestamp,
+                   Date().timeIntervalSince(logoutTime) < 6.0 {
+                    return
+                }
                 self.isManuallyLoggedOut = false
+                self.manualLogoutTimestamp = nil
                 // 如果先前处于掉线状态，现在恢复了，触发系统横幅通知！
                 if self.wasOffline {
                     self.wasOffline = false
@@ -220,13 +238,15 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     currentSpeedMBs: currentSpd
                 )
 
-                if forceDashboard || data.availableFlow == "-- M" {
+                let shouldRetryMissingFlow = (data.availableFlow == "-- M") &&
+                    (self.lastDashboardAttemptTime == nil || Date().timeIntervalSince(self.lastDashboardAttemptTime!) >= 60.0)
+                if shouldForceDashboard || shouldRetryMissingFlow {
                     self.fetchDashboardData()
                 }
 
             case .notInCampusNet:
                 self.markOfflineInstantly(reason: "未连接校园网络 Wi-Fi")
-                if forceDashboard || !self.hasFetchedHuiXinFallback {
+                if shouldForceDashboard || !self.hasFetchedHuiXinFallback {
                     ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
                         DispatchQueue.main.async {
                             self?.applyHuiXinFallback(usedFlow: flow, balance: balance)
@@ -243,20 +263,26 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         var updated = self.latestData
         var gotValid = false
         if let f = usedFlow, !f.isEmpty, f != "-- M" {
-            updated.usedFlow = f
-            gotValid = true
+            let newMB = CampusNetworkData(usedFlow: f).usedMB ?? 0
+            let curMB = updated.usedMB ?? -1
+            if updated.usedFlow == "-- M" || (!updated.isLoggedIn && newMB >= curMB) {
+                updated.usedFlow = f
+                gotValid = true
+            }
         }
         if let b = balance, !b.isEmpty, b != "-- 元" {
-            updated.balance = b
-            gotValid = true
+            if !updated.isLoggedIn || updated.balance == "-- 元" {
+                updated.balance = b
+                gotValid = true
+            }
         }
         guard gotValid else { return }
         self.hasFetchedHuiXinFallback = true
         updated.lastUpdated = Date()
         self.latestData = updated
         self.delegate?.clientDidUpdate(data: updated)
-        if let f = usedFlow, !f.isEmpty {
-            CampusHistoryManager.shared.recordFlow(usedFlowStr: f, balanceStr: balance ?? updated.balance)
+        if updated.usedFlow != "-- M" && !updated.usedFlow.isEmpty {
+            CampusHistoryManager.shared.recordFlow(usedFlowStr: updated.usedFlow, balanceStr: updated.balance)
         }
     }
 
@@ -264,6 +290,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     private func fetchDashboardData() {
         guard !isFetchingDashboard else { return }
+        lastDashboardAttemptTime = Date()
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             silentLoginSelfServiceAndFetch()
             return
@@ -319,13 +346,17 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         result.availableFlow = parsed.availableFlow
         result.flowProtection = parsed.flowProtection
         if parsed.usedFlow != "-- M" {
-            result.usedFlow = parsed.usedFlow
+            // 若当前已有网关精确到 MB 的数值，且自服务面板返回的粗粒度 GB 折算值因两位小数截断略小于当前值（相差 15 MB 以内），保留精确 MB 值防止倒退
+            if let curMB = result.usedMB, let newMB = parsed.usedMB, curMB > newMB && (curMB - newMB) <= 15.0 {
+                // keep result.usedFlow
+            } else {
+                result.usedFlow = parsed.usedFlow
+            }
         }
         if parsed.balance != "-- 元" {
             result.balance = parsed.balance
         }
         result.lastUpdated = Date()
-        result.isLoggedIn = true
         self.latestData = result
         self.delegate?.clientDidUpdate(data: result)
 
@@ -534,14 +565,22 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 let bodyStr = "foo=&bar=&checkcode=\(checkcode)&account=\(encUser)&password=\(md5Password)&code="
                 step3Req.httpBody = bodyStr.data(using: .utf8)
 
-                self.session.dataTask(with: step3Req) { [weak self] verifyData, _, _ in
+                self.latestRedirectSessionId = nil
+                self.session.dataTask(with: step3Req) { [weak self] verifyData, verifyResp, _ in
                     guard let self = self else { return }
                     self.isFetchingDashboard = false
+
+                    var finalSid = self.latestRedirectSessionId ?? sid
+                    if let httpResp = verifyResp as? HTTPURLResponse,
+                       let setCookie = httpResp.value(forHTTPHeaderField: "Set-Cookie"),
+                       let match = setCookie.range(of: #"JSESSIONID=([0-9A-Za-z_]+)"#, options: .regularExpression) {
+                        finalSid = String(setCookie[match]).replacingOccurrences(of: "JSESSIONID=", with: "")
+                    }
 
                     if let verifyData = verifyData,
                        let dashHTML = String(data: verifyData, encoding: .utf8) ?? String(data: verifyData, encoding: .ascii),
                        dashHTML.contains("可用流量") || dashHTML.contains("已用流量") {
-                        SettingsManager.shared.sessionCookie = sid
+                        SettingsManager.shared.sessionCookie = finalSid
                         self.applyParsedDashboardHTML(dashHTML)
                     }
                 }.resume()
@@ -575,7 +614,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let valPattern = "([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
+                let valPattern = "(-?[0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
                 if let valRegex = try? NSRegularExpression(pattern: valPattern),
                    let valMatch = valRegex.firstMatch(in: dtClean, range: NSRange(dtClean.startIndex..., in: dtClean)) {
                     let num = (dtClean as NSString).substring(with: valMatch.range(at: 1))
@@ -605,7 +644,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
 
-                let prePattern = "([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?\\s*\(label)"
+                let prePattern = "(-?[0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?\\s*\(label)"
                 if let preRegex = try? NSRegularExpression(pattern: prePattern),
                    let match = preRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
                     let num = (cleanStr as NSString).substring(with: match.range(at: 1))
@@ -615,7 +654,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     break
                 }
 
-                let postPattern = "\(label)\\s*[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
+                let postPattern = "\(label)\\s*[:：]?\\s*(-?[0-9]+(?:\\.[0-9]+)?)\\s*([GMK]B?|M|G|元)?"
                 if let postRegex = try? NSRegularExpression(pattern: postPattern),
                    let match = postRegex.firstMatch(in: cleanStr, range: NSRange(cleanStr.startIndex..., in: cleanStr)) {
                     let num = (cleanStr as NSString).substring(with: match.range(at: 1))
@@ -634,7 +673,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 flowProtection: protection ?? latestData.flowProtection,
                 balance: balance ?? latestData.balance,
                 lastUpdated: Date(),
-                isLoggedIn: true
+                isLoggedIn: latestData.isLoggedIn
             )
         }
 
@@ -668,7 +707,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             redirectReq.httpShouldHandleCookies = false
             if let setCookie = response.value(forHTTPHeaderField: "Set-Cookie"),
                let match = setCookie.range(of: #"JSESSIONID=([0-9A-Za-z_]+)"#, options: .regularExpression) {
-                redirectReq.setValue(String(setCookie[match]), forHTTPHeaderField: "Cookie")
+                let cookieKV = String(setCookie[match])
+                self.latestRedirectSessionId = cookieKV.replacingOccurrences(of: "JSESSIONID=", with: "")
+                redirectReq.setValue(cookieKV, forHTTPHeaderField: "Cookie")
             } else if let origCookie = task.originalRequest?.value(forHTTPHeaderField: "Cookie") {
                 redirectReq.setValue(origCookie, forHTTPHeaderField: "Cookie")
             }

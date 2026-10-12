@@ -178,6 +178,7 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
     private let statusDot = ColorDotView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let timelineBar = ClassroomTimelineBarView()
+    private let scheduleButton = NSButton(title: "教室课表", target: nil, action: nil)
     private let actionButton = NSButton(title: "设为自习", target: nil, action: nil)
     private let bottomSeparator = ThemedSeparatorView()
     private var isHighlightedStudyRow: Bool = false
@@ -214,6 +215,12 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
 
         addSubview(timelineBar)
 
+        scheduleButton.bezelStyle = .rounded
+        scheduleButton.controlSize = .small
+        scheduleButton.font = NSFont.systemFont(ofSize: 11)
+        scheduleButton.toolTip = "查看该教室整个学期的排课表（支持按周查看与全学期汇总）"
+        addSubview(scheduleButton)
+
         actionButton.bezelStyle = .rounded
         actionButton.controlSize = .small
         actionButton.font = NSFont.systemFont(ofSize: 11)
@@ -241,10 +248,13 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
         statusDot.frame = NSRect(x: 10, y: 33, width: 6, height: 6)
         statusLabel.frame = NSRect(x: 20, y: 28, width: 202, height: 15)
 
-        let timelineX: CGFloat = 230
-        let actionW: CGFloat = 88
-        let timelineW = max(240, w - timelineX - actionW - 20)
+        let timelineX: CGFloat = 228
+        let scheduleW: CGFloat = 76
+        let actionW: CGFloat = 80
+        let rightAreaW = scheduleW + actionW + 14
+        let timelineW = max(210, w - timelineX - rightAreaW - 8)
         timelineBar.frame = NSRect(x: timelineX, y: 8, width: timelineW, height: 36)
+        scheduleButton.frame = NSRect(x: w - rightAreaW + 2, y: 14, width: scheduleW - 2, height: 24)
         actionButton.frame = NSRect(x: w - actionW - 6, y: 14, width: actionW - 4, height: 24)
         bottomSeparator.frame = NSRect(x: 8, y: h - 1, width: max(0, w - 16), height: 1)
     }
@@ -257,7 +267,8 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
         isCurrentStudy: Bool,
         isNextDayStudy: Bool,
         target: AnyObject,
-        action: Selector
+        action: Selector,
+        scheduleAction: Selector
     ) {
         let shouldHighlight = isTomorrow ? (isNextDayStudy || isCurrentStudy) : isCurrentStudy
         if isHighlightedStudyRow != shouldHighlight {
@@ -302,12 +313,16 @@ private final class EmptyClassroomRowCellView: NSTableCellView {
 
         timelineBar.update(occupations: room.sortedOccupations, isToday: isToday, nowMinutes: nowMin)
 
+        scheduleButton.tag = room.id
+        scheduleButton.target = target
+        scheduleButton.action = scheduleAction
+
         if isTomorrow {
-            actionButton.title = isNextDayStudy ? "已约明日" : "预约明日"
-            actionButton.isEnabled = !isNextDayStudy
+            actionButton.title = isNextDayStudy ? "取消预约" : "预约明日"
+            actionButton.isEnabled = true
         } else {
-            actionButton.title = isCurrentStudy ? "自习中" : "设为自习"
-            actionButton.isEnabled = !isCurrentStudy
+            actionButton.title = isCurrentStudy ? "取消自习" : "设为自习"
+            actionButton.isEnabled = true
         }
         actionButton.tag = room.id
         actionButton.target = target
@@ -376,6 +391,10 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     // 顶部与筛选栏控件
     private var campusPopUp: NSPopUpButton!
     private var dateSegment: NSSegmentedControl!
+    private var customDateButton: NSButton!
+    private var customDatePopover: NSPopover?
+    private var popoverTextDatePicker: NSDatePicker?
+    private var popoverCalendarDatePicker: NSDatePicker?
     private var buildingScrollView: HorizontalBuildingScrollView!
     private var buildingDocView: FlippedTimelineView!
     private var buildingSegment: NSSegmentedControl!
@@ -452,15 +471,35 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let tomorrowStr = EmptyClassroomService.tomorrowDateString()
         dateSegment?.setLabel("今天 (\(todayStr.suffix(5)))", forSegment: 0)
         dateSegment?.setLabel("明天 (\(tomorrowStr.suffix(5)))", forSegment: 1)
-        if dateSegment?.selectedSegment == 1 {
-            selectedDateString = tomorrowStr
-        } else {
+        if dateSegment?.selectedSegment == 0 {
             selectedDateString = todayStr
+        } else if dateSegment?.selectedSegment == 1 {
+            selectedDateString = tomorrowStr
+        }
+        syncDatePickerAndSegmentWithSelectedDate()
+    }
+
+    private func syncDatePickerAndSegmentWithSelectedDate() {
+        let todayStr = EmptyClassroomService.todayDateString()
+        let tomorrowStr = EmptyClassroomService.tomorrowDateString()
+        if selectedDateString == todayStr {
+            dateSegment?.selectedSegment = 0
+            customDateButton?.title = "指定日期"
+            customDateButton?.contentTintColor = nil
+        } else if selectedDateString == tomorrowStr {
+            dateSegment?.selectedSegment = 1
+            customDateButton?.title = "指定日期"
+            customDateButton?.contentTintColor = nil
+        } else {
+            dateSegment?.selectedSegment = -1
+            customDateButton?.title = "指定(\(selectedDateString.suffix(5)))"
+            customDateButton?.contentTintColor = .controlAccentColor
         }
     }
 
     public func showWindowAndSync(selectTomorrow: Bool = false) {
         selectedCampus = EmptyClassroomService.shared.currentPreferredCampus
+        selectedDateString = selectTomorrow ? EmptyClassroomService.tomorrowDateString() : EmptyClassroomService.todayDateString()
         dateSegment?.selectedSegment = selectTomorrow ? 1 : 0
         refreshDateSegmentLabelsAndSelection()
         selectCampusInPopUp(selectedCampus)
@@ -638,7 +677,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     private func setupFilterControls() {
         let totalW = filterBarView.bounds.width // 948
 
-        campusPopUp = NSPopUpButton(frame: NSRect(x: 0, y: 2, width: 104, height: 26), pullsDown: false)
+        campusPopUp = NSPopUpButton(frame: NSRect(x: 0, y: 2, width: 100, height: 26), pullsDown: false)
         for c in StudyCampus.allCases {
             campusPopUp.addItem(withTitle: c.displayName)
             campusPopUp.lastItem?.representedObject = c.rawValue
@@ -654,9 +693,16 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             target: self,
             action: #selector(dateSegmentChanged(_:))
         )
-        dateSegment.frame = NSRect(x: 110, y: 3, width: 184, height: 24)
+        dateSegment.frame = NSRect(x: 104, y: 3, width: 174, height: 24)
         dateSegment.selectedSegment = 0
         filterBarView.addSubview(dateSegment)
+
+        customDateButton = NSButton(title: "指定日期", target: self, action: #selector(openCustomDatePopoverClicked(_:)))
+        customDateButton.bezelStyle = .rounded
+        customDateButton.font = NSFont.systemFont(ofSize: 12)
+        customDateButton.toolTip = "点击输入或选择任意指定日期，再点「查询」查看当日空教室"
+        customDateButton.frame = NSRect(x: 282, y: 1, width: 88, height: 28)
+        filterBarView.addSubview(customDateButton)
 
         statusFilterSegment = NSSegmentedControl(
             labels: ["全部", "全天无课", "余下无课", "当前空闲"],
@@ -664,11 +710,11 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             target: self,
             action: #selector(statusFilterChanged(_:))
         )
-        statusFilterSegment.frame = NSRect(x: 300, y: 3, width: 248, height: 24)
+        statusFilterSegment.frame = NSRect(x: 376, y: 3, width: 244, height: 24)
         statusFilterSegment.selectedSegment = 0
         filterBarView.addSubview(statusFilterSegment)
 
-        searchField = NSSearchField(frame: NSRect(x: 564, y: 3, width: 150, height: 24))
+        searchField = NSSearchField(frame: NSRect(x: 628, y: 3, width: 142, height: 24))
         searchField.autoresizingMask = [.minXMargin]
         searchField.placeholderString = "搜索教室号 (如 101)"
         searchField.delegate = self
@@ -677,7 +723,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         filterBarView.addSubview(searchField)
 
         lastSyncLabel = NSTextField(labelWithString: "上次刷新：暂未同步")
-        lastSyncLabel.frame = NSRect(x: 720, y: 7, width: 148, height: 16)
+        lastSyncLabel.frame = NSRect(x: 774, y: 7, width: 96, height: 16)
         lastSyncLabel.autoresizingMask = [.minXMargin]
         lastSyncLabel.alignment = .right
         lastSyncLabel.font = NSFont.systemFont(ofSize: 11)
@@ -760,7 +806,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         lastSyncLabel?.stringValue = shortText
         lastSyncLabel?.toolTip = "\(selectedCampus.displayName) · \(fullText)"
         if #available(macOS 11.0, *) {
-            window?.subtitle = "\(selectedCampus.displayName) · \(fullText)"
+            window?.subtitle = "\(selectedCampus.displayName) · \(selectedDateString) · \(fullText)"
         }
     }
 
@@ -771,6 +817,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         campusPopUp?.isEnabled = !loading
         dateSegment?.isEnabled = !loading
+        customDateButton?.isEnabled = !loading
         statusFilterSegment?.isEnabled = !loading
         searchField?.isEnabled = !loading
         buildingSegment?.isEnabled = !loading
@@ -787,13 +834,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
             syncButton?.title = "刷新中..."
             loadingTextLabel?.stringValue = "\(loadingBaseMessage)..."
-            loadingSubtextLabel?.stringValue = "需向教务系统汇总多栋教学楼今明两天课表，约需 10 秒，请耐心等待"
+            loadingSubtextLabel?.stringValue = "需向教务系统汇总多栋教学楼课表数据，请耐心等待"
             loadingSpinner?.startAnimation(nil)
             summaryMaskView?.isHidden = false
             listLoadingMaskView?.isHidden = false
             summaryBarView?.alphaValue = 0.45
             listScrollView?.alphaValue = 0.38
-            bottomStatusLabel?.stringValue = "\(loadingBaseMessage)（通常耗时约 10 秒，请耐心等待）..."
+            bottomStatusLabel?.stringValue = "\(loadingBaseMessage)（请耐心等待）..."
 
             loadingElapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self = self, self.isWindowLoading, let start = self.loadingStartTime else { return }
@@ -803,7 +850,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                 if secs >= 9 {
                     self.loadingSubtextLabel?.stringValue = "正在解析各教学楼全天排课数据，即将完成，请稍候..."
                 }
-                self.bottomStatusLabel?.stringValue = "\(self.loadingBaseMessage)（已等待 \(secs) 秒 · 教务接口汇总约需 10 秒，请耐心等待）..."
+                self.bottomStatusLabel?.stringValue = "\(self.loadingBaseMessage)（已等待 \(secs) 秒 · 正在向教务接口请求数据，请耐心等待）..."
             }
         } else {
             loadingStartTime = nil
@@ -887,7 +934,8 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             isCurrentStudy: isCurrentStudy,
             isNextDayStudy: isNextDayStudy,
             target: self,
-            action: #selector(rowSetStudyRoomClicked(_:))
+            action: #selector(rowSetStudyRoomClicked(_:)),
+            scheduleAction: #selector(rowOpenClassroomScheduleClicked(_:))
         )
         return cell
     }
@@ -907,7 +955,21 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     private func reloadCurrentCampusAndDate(forceRefresh: Bool, isManual: Bool = false) {
         let service = EmptyClassroomService.shared
-        let hasCachedToday = !service.cachedStudyRooms(campus: selectedCampus, dateString: selectedDateString).isEmpty
+        let todayStr = EmptyClassroomService.todayDateString()
+        let tomorrowStr = EmptyClassroomService.tomorrowDateString()
+        let isCustomDate = (selectedDateString != todayStr && selectedDateString != tomorrowStr)
+        let hasCachedToday = !service.cachedStudyRooms(campus: selectedCampus, dateString: todayStr).isEmpty
+        let extraIds = selectedBuildingId.map { [$0] } ?? []
+
+        // 若用户在查看自定义指定日期且今明两天自习摘要已有缓存，直接刷新该指定日期即可，速度更快
+        if isCustomDate && hasCachedToday && !service.allBuildings.isEmpty {
+            rebuildBuildingControls()
+            applyCurrentRoomsFromCacheOrFetch(
+                forceRefresh: forceRefresh,
+                showCompletionFeedback: isManual || forceRefresh
+            )
+            return
+        }
 
         if forceRefresh || !hasCachedToday {
             setLoadingState(true, message: "正在刷新 \(selectedCampus.displayName) (\(selectedDateString)) 排课数据...")
@@ -915,6 +977,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         service.syncTodayAndTomorrowStudyRooms(
             campus: selectedCampus,
+            additionalBuildingIds: extraIds,
             forceRefresh: forceRefresh
         ) { [weak self] syncResult in
             DispatchQueue.main.async {
@@ -934,9 +997,10 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                     )
 
                 case .success:
-                    // 若当前选中的是某栋非主力楼栋，则单独拉取该楼栋；否则直接读取刚刚同步好的主力楼栋缓存
+                    let currentlyCustom = (self.selectedDateString != EmptyClassroomService.todayDateString()
+                        && self.selectedDateString != EmptyClassroomService.tomorrowDateString())
                     self.applyCurrentRoomsFromCacheOrFetch(
-                        forceRefresh: forceRefresh,
+                        forceRefresh: currentlyCustom ? forceRefresh : false,
                         showCompletionFeedback: isManual || forceRefresh
                     )
                 }
@@ -951,6 +1015,25 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let service = EmptyClassroomService.shared
         let allBuildings = service.allBuildings.filter { $0.campusAssoc == selectedCampus.rawValue }
         let preferredIds = Set(allBuildings.filter { $0.isPreferredStudyBuilding }.map { $0.id })
+
+        if !forceRefresh,
+           let bid = selectedBuildingId,
+           let singleCached = service.cachedBuildingRooms(campus: selectedCampus, dateString: selectedDateString, buildingId: bid) {
+            self.currentRooms = singleCached
+            self.setLoadingState(false)
+            self.renderSummaryBar()
+            self.reloadFilteredRooms()
+            if showCompletionFeedback {
+                let fmt = DateFormatter()
+                fmt.dateFormat = "HH:mm:ss"
+                let timeStr = fmt.string(from: Date())
+                self.showRefreshFeedback(
+                    success: true,
+                    message: "刷新成功 · 已同步 \(selectedCampus.displayName) \(self.currentRooms.count) 间教室 (\(timeStr))"
+                )
+            }
+            return
+        }
 
         if selectedBuildingId == nil || (selectedBuildingId != nil && preferredIds.contains(selectedBuildingId!)) {
             let cached = service.cachedStudyRooms(campus: selectedCampus, dateString: selectedDateString)
@@ -1275,10 +1358,27 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         let tomorrowRec = service.buildTomorrowRecommendation(campus: selectedCampus, limit: 5)
         let c3Header = NSTextField(labelWithString: "明日全天无课 (\(tomorrowRec.tomorrowDateString.suffix(5)))")
-        c3Header.frame = NSRect(x: 0, y: 0, width: 180, height: 15)
+        c3Header.frame = NSRect(x: 0, y: 0, width: 136, height: 15)
         c3Header.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         c3Header.textColor = .secondaryLabelColor
         col3.addSubview(c3Header)
+
+        if let nextRecord = SettingsManager.shared.nextDayStudyRoom,
+           nextRecord.campusAssoc == selectedCampus.rawValue {
+            let clearNextBtn = NSButton(title: "取消", target: self, action: #selector(clearNextDayStudyRoomClicked))
+            clearNextBtn.bezelStyle = .inline
+            clearNextBtn.font = NSFont.systemFont(ofSize: 10.5)
+            clearNextBtn.frame = NSRect(x: col3.bounds.width - 42, y: -1, width: 42, height: 17)
+            col3.addSubview(clearNextBtn)
+
+            let reservedLbl = NSTextField(labelWithString: "已约 \(nextRecord.roomName)")
+            reservedLbl.frame = NSRect(x: 136, y: -1, width: max(40, col3.bounds.width - 182), height: 17)
+            reservedLbl.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+            reservedLbl.textColor = .controlAccentColor
+            reservedLbl.alignment = .right
+            reservedLbl.lineBreakMode = .byTruncatingTail
+            col3.addSubview(reservedLbl)
+        }
 
         let c3StatusStr: String
         if let curName = tomorrowRec.currentStudyRoomName {
@@ -1305,7 +1405,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             let isReserved = (cand.room.id == nextId)
             let pill = makeCompactPillButton(
                 title: cand.room.nameZh,
-                toolTip: "\(cand.room.nameZh)（\(cand.badgeText)，点击预约为明日自习室）",
+                toolTip: "\(cand.room.nameZh)（\(cand.badgeText)，点击预约或取消明日自习室）",
                 tag: cand.room.id,
                 isHighlighted: isReserved,
                 action: #selector(quickSelectTomorrowRoom(_:))
@@ -1420,7 +1520,15 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let restFreeCount = isToday ? filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count : allDayCount
         let syncInfo = EmptyClassroomService.shared.formattedFullLastSync(for: selectedCampus)
         updateLastSyncTimeDisplay()
-        bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  余下无课 \(restFreeCount) 间   ｜   \(syncInfo)"
+        let isEntireBuildingEmptyOnCustomDate = !isToday
+            && !EmptyClassroomService.shared.isSyncing
+            && !currentRooms.isEmpty
+            && currentRooms.allSatisfy { $0.sortedOccupations.isEmpty }
+        if isEntireBuildingEmptyOnCustomDate {
+            bottomStatusLabel.stringValue = "⚠️ \(selectedDateString) 全楼均无排课记录（处于假期或尚未排课，注：教务当前查不到下学期的课）  ｜  \(syncInfo)"
+        } else {
+            bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  余下无课 \(restFreeCount) 间   ｜   \(syncInfo)"
+        }
     }
 
     // MARK: - 交互事件处理
@@ -1447,11 +1555,125 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     }
 
     @objc private func dateSegmentChanged(_ sender: NSSegmentedControl) {
+        customDatePopover?.performClose(nil)
         if sender.selectedSegment == 1 {
             selectedDateString = EmptyClassroomService.tomorrowDateString()
         } else {
             selectedDateString = EmptyClassroomService.todayDateString()
         }
+        syncDatePickerAndSegmentWithSelectedDate()
+        updateLastSyncTimeDisplay()
+        applyCurrentRoomsFromCacheOrFetch(forceRefresh: false)
+    }
+
+    @objc private func openCustomDatePopoverClicked(_ sender: NSButton) {
+        if let pop = customDatePopover, pop.isShown {
+            pop.performClose(nil)
+            return
+        }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let vc = NSViewController()
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 268, height: 294))
+
+        let titleLbl = NSTextField(labelWithString: "输入或选择要查询的日期")
+        titleLbl.frame = NSRect(x: 16, y: 260, width: 236, height: 18)
+        titleLbl.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        titleLbl.textColor = .labelColor
+        contentView.addSubview(titleLbl)
+
+        let initDate = CourseCalendarHelper.parseDate(selectedDateString, "12:00") ?? Date()
+
+        let inputLbl = NSTextField(labelWithString: "日期：")
+        inputLbl.frame = NSRect(x: 16, y: 227, width: 42, height: 18)
+        inputLbl.font = NSFont.systemFont(ofSize: 12)
+        inputLbl.textColor = .secondaryLabelColor
+        contentView.addSubview(inputLbl)
+
+        let textPicker = NSDatePicker(frame: NSRect(x: 58, y: 224, width: 194, height: 24))
+        textPicker.datePickerStyle = .textFieldAndStepper
+        textPicker.datePickerElements = .yearMonthDay
+        textPicker.calendar = CourseCalendarHelper.beijingCalendar
+        textPicker.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
+        textPicker.locale = Locale(identifier: "zh_CN")
+        textPicker.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        textPicker.dateValue = initDate
+        textPicker.target = self
+        textPicker.action = #selector(popoverTextDateChanged(_:))
+        contentView.addSubview(textPicker)
+        self.popoverTextDatePicker = textPicker
+
+        let calPicker = NSDatePicker(frame: NSRect(x: 64, y: 74, width: 140, height: 144))
+        calPicker.datePickerStyle = .clockAndCalendar
+        calPicker.datePickerElements = .yearMonthDay
+        calPicker.calendar = CourseCalendarHelper.beijingCalendar
+        calPicker.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
+        calPicker.locale = Locale(identifier: "zh_CN")
+        calPicker.dateValue = initDate
+        calPicker.target = self
+        calPicker.action = #selector(popoverCalendarDateChanged(_:))
+        contentView.addSubview(calPicker)
+        self.popoverCalendarDatePicker = calPicker
+
+        let noteLbl = NSTextField(wrappingLabelWithString: "注：仅支持查询当前已排课学期内的日期，教务系统当前查不到下学期的课。")
+        noteLbl.frame = NSRect(x: 16, y: 40, width: 236, height: 30)
+        noteLbl.font = NSFont.systemFont(ofSize: 11)
+        noteLbl.textColor = .secondaryLabelColor
+        contentView.addSubview(noteLbl)
+
+        let cancelBtn = NSButton(title: "取消", target: self, action: #selector(cancelCustomDatePopover))
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.frame = NSRect(x: 96, y: 8, width: 72, height: 28)
+        contentView.addSubview(cancelBtn)
+
+        let queryBtn = NSButton(title: "查询", target: self, action: #selector(confirmCustomDateQuery))
+        queryBtn.bezelStyle = .rounded
+        queryBtn.keyEquivalent = "\r"
+        queryBtn.frame = NSRect(x: 176, y: 8, width: 76, height: 28)
+        contentView.addSubview(queryBtn)
+
+        vc.view = contentView
+        popover.contentViewController = vc
+        self.customDatePopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    @objc private func popoverTextDateChanged(_ sender: NSDatePicker) {
+        popoverCalendarDatePicker?.dateValue = sender.dateValue
+    }
+
+    @objc private func popoverCalendarDateChanged(_ sender: NSDatePicker) {
+        popoverTextDatePicker?.dateValue = sender.dateValue
+    }
+
+    @objc private func cancelCustomDatePopover() {
+        customDatePopover?.performClose(nil)
+    }
+
+    @objc private func confirmCustomDateQuery() {
+        popoverTextDatePicker?.validateEditing()
+        popoverTextDatePicker?.window?.makeFirstResponder(nil)
+        let targetDate = popoverTextDatePicker?.dateValue ?? popoverCalendarDatePicker?.dateValue ?? Date()
+        let pickedStr = CourseCalendarHelper.dateString(from: targetDate)
+
+        // 校验所选日期是否属于尚未排课的下一学期
+        let currentMaxSemesterId = CourseCalendarHelper.inferSemesterId(at: Date())
+        let targetSemesterId = CourseCalendarHelper.inferSemesterId(at: targetDate)
+        if targetSemesterId > currentMaxSemesterId {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "教务系统当前查不到下学期的课"
+            alert.informativeText = "您选择的日期（\(pickedStr)）属于下一学期，教务系统尚未公布下学期排课数据，请选择本学期内的日期进行查询。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+            return
+        }
+
+        customDatePopover?.performClose(nil)
+        selectedDateString = pickedStr
+        syncDatePickerAndSegmentWithSelectedDate()
+        updateLastSyncTimeDisplay()
         applyCurrentRoomsFromCacheOrFetch(forceRefresh: false)
     }
 
@@ -1524,17 +1746,29 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         reloadFilteredRooms()
     }
 
+    @objc private func clearNextDayStudyRoomClicked() {
+        EmptyClassroomService.shared.clearNextDayStudyRoom()
+        renderSummaryBar()
+        reloadFilteredRooms()
+    }
+
     @objc private func quickSelectTodayRoom(_ sender: NSButton) {
         let roomId = sender.tag
         let service = EmptyClassroomService.shared
+        if SettingsManager.shared.currentStudyRoom?.roomId == roomId {
+            service.clearCurrentStudyRoom()
+            renderSummaryBar()
+            reloadFilteredRooms()
+            return
+        }
         let todayStr = EmptyClassroomService.todayDateString()
         let todayRooms = service.cachedStudyRooms(
             campus: selectedCampus,
             dateString: todayStr
         )
-        if let room = todayRooms.first(where: { $0.id == roomId }) ?? currentRooms.first(where: { $0.id == roomId }) {
-            let bCampus = room.buildingId.flatMap { bid in service.allBuildings.first(where: { $0.id == bid })?.campusAssoc }
-            let roomCampus = bCampus.flatMap { StudyCampus(rawValue: $0) } ?? selectedCampus
+        let currentDayFallback = (selectedDateString == todayStr) ? currentRooms.first(where: { $0.id == roomId }) : nil
+        if let room = todayRooms.first(where: { $0.id == roomId }) ?? currentDayFallback {
+            let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
             service.setCurrentStudyRoom(room, campus: roomCampus)
             renderSummaryBar()
             reloadFilteredRooms()
@@ -1544,8 +1778,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             ?? service.currentPreferredCampus
         let prefRooms = service.cachedStudyRooms(campus: prefCampus, dateString: todayStr)
         if let room = prefRooms.first(where: { $0.id == roomId }) {
-            let bCampus = room.buildingId.flatMap { bid in service.allBuildings.first(where: { $0.id == bid })?.campusAssoc }
-            let roomCampus = bCampus.flatMap { StudyCampus(rawValue: $0) } ?? prefCampus
+            let roomCampus = service.inferCampus(for: room, fallback: prefCampus)
             service.setCurrentStudyRoom(room, campus: roomCampus)
             renderSummaryBar()
             reloadFilteredRooms()
@@ -1554,24 +1787,63 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     @objc private func quickSelectTomorrowRoom(_ sender: NSButton) {
         let roomId = sender.tag
-        let tomorrowRooms = EmptyClassroomService.shared.cachedStudyRooms(
+        let service = EmptyClassroomService.shared
+        if SettingsManager.shared.nextDayStudyRoom?.roomId == roomId {
+            service.clearNextDayStudyRoom()
+            renderSummaryBar()
+            reloadFilteredRooms()
+            return
+        }
+        let tomorrowStr = EmptyClassroomService.tomorrowDateString()
+        let tomorrowRooms = service.cachedStudyRooms(
             campus: selectedCampus,
-            dateString: EmptyClassroomService.tomorrowDateString()
+            dateString: tomorrowStr
         )
-        if let room = tomorrowRooms.first(where: { $0.id == roomId }) ?? currentRooms.first(where: { $0.id == roomId }) {
-            EmptyClassroomService.shared.setNextDayStudyRoom(room, campus: selectedCampus)
+        let tomorrowFallback = (selectedDateString == tomorrowStr) ? currentRooms.first(where: { $0.id == roomId }) : nil
+        if let room = tomorrowRooms.first(where: { $0.id == roomId }) ?? tomorrowFallback {
+            let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
+            service.setNextDayStudyRoom(room, campus: roomCampus)
             renderSummaryBar()
             reloadFilteredRooms()
         }
     }
 
-    @objc private func rowSetStudyRoomClicked(_ sender: NSButton) {
+    @objc private func rowOpenClassroomScheduleClicked(_ sender: NSButton) {
         let roomId = sender.tag
         guard let room = currentRooms.first(where: { $0.id == roomId }) else { return }
-        if selectedDateString == EmptyClassroomService.tomorrowDateString() {
-            EmptyClassroomService.shared.setNextDayStudyRoom(room, campus: selectedCampus)
+        let campusTitle = room.campusNameZh.isEmpty ? selectedCampus.displayName : room.campusNameZh
+        ClassroomScheduleWindowController.shared.showClassroomSchedule(
+            roomId: room.id,
+            roomName: room.nameZh,
+            campusName: campusTitle,
+            initialDateString: selectedDateString
+        )
+    }
+
+    @objc private func rowSetStudyRoomClicked(_ sender: NSButton) {
+        let roomId = sender.tag
+        let service = EmptyClassroomService.shared
+        let isTomorrow = (selectedDateString == EmptyClassroomService.tomorrowDateString())
+        if isTomorrow {
+            if SettingsManager.shared.nextDayStudyRoom?.roomId == roomId {
+                service.clearNextDayStudyRoom()
+                renderSummaryBar()
+                reloadFilteredRooms()
+                return
+            }
+            guard let room = currentRooms.first(where: { $0.id == roomId }) else { return }
+            let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
+            service.setNextDayStudyRoom(room, campus: roomCampus)
         } else {
-            EmptyClassroomService.shared.setCurrentStudyRoom(room, campus: selectedCampus)
+            if SettingsManager.shared.currentStudyRoom?.roomId == roomId {
+                service.clearCurrentStudyRoom()
+                renderSummaryBar()
+                reloadFilteredRooms()
+                return
+            }
+            guard let room = currentRooms.first(where: { $0.id == roomId }) else { return }
+            let roomCampus = service.inferCampus(for: room, fallback: selectedCampus)
+            service.setCurrentStudyRoom(room, campus: roomCampus)
         }
         renderSummaryBar()
         reloadFilteredRooms()

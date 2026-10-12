@@ -24,12 +24,12 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.6.1）
+    /// 当前客户端版本号（从 Info.plist 读取，兜底为 1.7.0）
     public var currentVersion: String {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "1.6.1"
+        return "1.7.0"
     }
 
     /// 检查 GitHub Releases 最新版本
@@ -107,6 +107,7 @@ public class UpdateChecker {
         guard let url = URL(string: listUrlStr) else {
             DispatchQueue.main.async {
                 self.isChecking = false
+                self.pendingManualFeedback = false
             }
             return
         }
@@ -118,11 +119,13 @@ public class UpdateChecker {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
             DispatchQueue.main.async {
+                let showManual = manual || self.pendingManualFeedback
                 self.isChecking = false
+                self.pendingManualFeedback = false
 
                 if let error = error {
                     completion?(.failure(error))
-                    if manual {
+                    if showManual {
                         self.showErrorAlert(message: "无法连接到 GitHub 检查更新：\(error.localizedDescription)")
                     }
                     return
@@ -131,7 +134,7 @@ public class UpdateChecker {
                 let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
                 guard httpStatus == 200, let data = data,
                       let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                    if manual {
+                    if showManual {
                         self.showUpToDateAlert(latestVersion: self.currentVersion)
                     }
                     completion?(.success(nil))
@@ -139,10 +142,10 @@ public class UpdateChecker {
                 }
 
                 if let first = list.first, let releaseInfo = self.parseReleaseJSON(first) {
-                    self.handleReleaseResult(releaseInfo, manual: manual, completion: completion)
+                    self.handleReleaseResult(releaseInfo, manual: showManual, completion: completion)
                 } else {
                     // 仓库尚未发布任何 Release，视为当前已是最新
-                    if manual {
+                    if showManual {
                         self.showUpToDateAlert(latestVersion: self.currentVersion)
                     }
                     completion?(.success(nil))

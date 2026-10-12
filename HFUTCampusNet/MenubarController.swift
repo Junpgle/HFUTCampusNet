@@ -426,11 +426,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func kickDeviceAction(_ sender: NSMenuItem) {
         guard let sessionId = sender.representedObject as? String else { return }
         CampusNetworkClient.shared.kickOnlineDevice(sessionId: sessionId) { success, msg in
-            let alert = NSAlert()
-            alert.messageText = success ? "设备强制注销成功" : "设备注销失败"
-            alert.informativeText = msg
-            alert.alertStyle = success ? .informational : .warning
-            alert.runModal()
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.messageText = success ? "设备强制注销成功" : "设备注销失败"
+                alert.informativeText = msg
+                alert.alertStyle = success ? .informational : .warning
+                alert.runModal()
+            }
         }
     }
 
@@ -438,11 +441,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         guard let button = statusItem.button else { return }
 
         let style = SettingsManager.shared.menubarStyle
-        let isOffline = !currentData.isLoggedIn && (currentData.usedFlow == "-- M" || currentData.usedFlow.isEmpty)
+        let isOffline = !currentData.isLoggedIn
+        let hasFlowData = (currentData.usedFlow != "-- M" && !currentData.usedFlow.isEmpty)
         let flowTitle: String
 
         if isOffline {
-            flowTitle = " 离线/未认证"
+            flowTitle = hasFlowData ? " 离线 | 已用 \(currentData.formattedUsed)" : " 离线/未认证"
         } else {
             flowTitle = " 已用 \(currentData.formattedUsed) | \(currentData.balance)"
         }
@@ -507,6 +511,13 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
             let daysStr = (daysLeft != nil) ? " (约余 \(daysLeft!) 天)" : ""
             item.title = "宿舍电费：\(elec.displayBalance)\(daysStr) · \(elec.formattedRoom)\(warnSuffix)"
+        } else if let lastRecord = CampusHistoryManager.shared.latestElectricityRecord {
+            let balStr = String(format: "%.2f 元", lastRecord.balanceRMB)
+            let warnSuffix = lastRecord.balanceRMB < SettingsManager.shared.electricityLowWarningThreshold ? " · 余额偏低" : ""
+            let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
+            let daysStr = (daysLeft != nil) ? " (约余 \(daysLeft!) 天)" : ""
+            let roomStr = "\(SettingsManager.shared.dormBuilding)号楼 \(SettingsManager.shared.dormRoom)室"
+            item.title = "宿舍电费：\(balStr)\(daysStr) · \(roomStr)\(warnSuffix)"
         } else {
             item.title = "宿舍电费：正在获取数据..."
         }
@@ -547,6 +558,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         }
         PortalAuthService.shared.login { success, msg in
             DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
                 let alert = NSAlert()
                 alert.messageText = success ? "校园网登录成功" : "校园网登录失败"
                 alert.informativeText = msg
@@ -562,12 +574,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func logoutPortalAction() {
         PortalAuthService.shared.logout { success, msg in
             DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
                 let alert = NSAlert()
                 alert.messageText = "校园网设备注销"
                 alert.informativeText = msg
                 alert.alertStyle = .informational
                 alert.runModal()
-                CampusNetworkClient.shared.fetchData()
             }
         }
     }
@@ -579,6 +591,9 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     @objc private func refreshAction() {
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
+        if SettingsManager.shared.courseTableEnabled {
+            CourseScheduleService.shared.syncSchedule { _ in }
+        }
         EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
     }
 
@@ -685,9 +700,21 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                         body: "已同步 \(schedule.lessons.count) 节课程安排"
                     )
                 case .failure(let error):
-                    if let syncErr = error as? CourseScheduleService.CourseSyncError, case .needLogin = syncErr {
+                    let shouldOpenLogin: Bool = {
+                        guard let syncErr = error as? CourseScheduleService.CourseSyncError else { return false }
+                        switch syncErr {
+                        case .needLogin:
+                            return true
+                        case .emptySchedule:
+                            return CourseScheduleService.shared.currentSchedule == nil
+                        default:
+                            return false
+                        }
+                    }()
+                    if shouldOpenLogin {
                         CourseLoginWebViewController.shared.showLoginWindow()
                     } else {
+                        NSApp.activate(ignoringOtherApps: true)
                         let alert = NSAlert()
                         alert.messageText = "课表同步失败"
                         alert.informativeText = error.localizedDescription
@@ -829,10 +856,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         // 明日全天空闲（搬书推荐）
         let tomorrowRec = service.buildTomorrowRecommendation(limit: 4)
-        if !tomorrowRec.candidates.isEmpty || tomorrowRec.isCurrentRoomAllDayFreeTomorrow {
+        if !tomorrowRec.candidates.isEmpty || tomorrowRec.isCurrentRoomAllDayFreeTomorrow || SettingsManager.shared.nextDayStudyRoom != nil {
             submenu.addItem(NSMenuItem.separator())
             let tmrHeaderTitle: String
-            if tomorrowRec.isCurrentRoomAllDayFreeTomorrow, let curName = tomorrowRec.currentStudyRoomName {
+            if let nextRecord = SettingsManager.shared.nextDayStudyRoom {
+                tmrHeaderTitle = "明日自习：已预约 \(nextRecord.roomName)"
+            } else if tomorrowRec.isCurrentRoomAllDayFreeTomorrow, let curName = tomorrowRec.currentStudyRoomName {
                 tmrHeaderTitle = "明日自习：\(curName) 明天继续全天无课"
             } else {
                 tmrHeaderTitle = "明日全天空闲教室 (点击可预约明日自习)"
@@ -853,6 +882,16 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                 item.representedObject = cand.room
                 submenu.addItem(item)
             }
+
+            if let nextRecord = SettingsManager.shared.nextDayStudyRoom {
+                let clearNextItem = NSMenuItem(
+                    title: "取消明日自习预约 (\(nextRecord.roomName))",
+                    action: #selector(clearNextDayStudyRoomMenuAction),
+                    keyEquivalent: ""
+                )
+                clearNextItem.target = self
+                submenu.addItem(clearNextItem)
+            }
         }
 
         submenu.addItem(NSMenuItem.separator())
@@ -872,7 +911,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func quickSelectStudyRoomMenuAction(_ sender: NSMenuItem) {
         guard let room = sender.representedObject as? EmptyClassroomItem else { return }
-        let campus = EmptyClassroomService.shared.currentPreferredCampus
+        if SettingsManager.shared.currentStudyRoom?.roomId == room.id {
+            EmptyClassroomService.shared.clearCurrentStudyRoom()
+            return
+        }
+        let campus = EmptyClassroomService.shared.inferCampus(for: room)
         EmptyClassroomService.shared.setCurrentStudyRoom(room, campus: campus)
         NotificationHelper.sendNotification(
             title: "已设定当前自习教室",
@@ -882,7 +925,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func quickReserveTomorrowRoomMenuAction(_ sender: NSMenuItem) {
         guard let room = sender.representedObject as? EmptyClassroomItem else { return }
-        let campus = EmptyClassroomService.shared.currentPreferredCampus
+        if SettingsManager.shared.nextDayStudyRoom?.roomId == room.id {
+            EmptyClassroomService.shared.clearNextDayStudyRoom()
+            return
+        }
+        let campus = EmptyClassroomService.shared.inferCampus(for: room)
         EmptyClassroomService.shared.setNextDayStudyRoom(room, campus: campus)
         NotificationHelper.sendNotification(
             title: "已预约明日自习教室",
@@ -892,6 +939,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func clearStudyRoomMenuAction() {
         EmptyClassroomService.shared.clearCurrentStudyRoom()
+    }
+
+    @objc private func clearNextDayStudyRoomMenuAction() {
+        EmptyClassroomService.shared.clearNextDayStudyRoom()
     }
 
     @objc private func refreshEmptyClassroomsMenuAction() {

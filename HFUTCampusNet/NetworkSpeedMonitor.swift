@@ -110,8 +110,8 @@ public class NetworkSpeedMonitor {
                let data = current.pointee.ifa_data,
                Int32(addr.pointee.sa_family) == AF_LINK {
                 let name = String(cString: cName)
-                // 排除本地回环 lo0
-                if !name.hasPrefix("lo") {
+                // 仅统计物理外网接口（en* 为 Wi-Fi/以太网，pdp_ip* 为蜂窝热点），排除 lo0、VPN/代理虚拟网卡 (utun*/ipsec*/ppp*) 及隔空投送 (awdl0/llw0) 避免流量翻倍
+                if name.hasPrefix("en") || name.hasPrefix("pdp_ip") {
                     let networkData = data.assumingMemoryBound(to: if_data.self)
                     let prev = result[name] ?? (0, 0)
                     result[name] = (

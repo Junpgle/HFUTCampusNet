@@ -9,6 +9,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     private var progressIndicator: NSProgressIndicator!
     private var statusLabel: NSTextField!
     private var isSyncing: Bool = false
+    private var sessionToken: UUID = UUID()
 
     private init() {
         let window = NSWindow(
@@ -98,6 +99,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         statusLabel.stringValue = "请登录教务系统（如已登录将自动同步课表）..."
         statusLabel.textColor = .secondaryLabelColor
         isSyncing = false
+        sessionToken = UUID()
         webView.load(request)
     }
 
@@ -122,6 +124,21 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         progressIndicator.startAnimation(nil)
         statusLabel.stringValue = "正在加载页面..."
+        statusLabel.textColor = .secondaryLabelColor
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        progressIndicator.stopAnimation(nil)
+        statusLabel.stringValue = "❌ 页面连接失败: \(error.localizedDescription) (请确认网络畅通)"
+        statusLabel.textColor = .systemRed
+    }
+
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        progressIndicator.stopAnimation(nil)
+        statusLabel.stringValue = "❌ 页面加载异常: \(error.localizedDescription)"
+        statusLabel.textColor = .systemRed
     }
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -292,7 +309,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             const getDataJson = await getDataResp.json();
             const lessonIds = getDataJson.lessonIds || [];
             if (lessonIds.length === 0) {
-                return JSON.stringify({ stdId, semId, bizId, datum: JSON.stringify({ result: { lessonList: [], scheduleList: [] } }) });
+                throw new Error('Empty lessonIds');
             }
             const datumResp = await fetch('/eams5-student/ws/schedule-table/datum', {
                 method: 'POST',
@@ -314,7 +331,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                    let stdId = wrapper["stdId"],
                    let semId = wrapper["semId"],
                    let bizId = wrapper["bizId"],
-                   let schedule = try? CourseScheduleService.shared.applyDatumJSONString(datumStr, studentId: stdId, semesterId: semId, bizTypeId: bizId) {
+                   let schedule = try? CourseScheduleService.shared.applyDatumJSONString(datumStr, studentId: stdId, semesterId: semId, bizTypeId: bizId),
+                   !schedule.lessons.isEmpty {
                     DispatchQueue.main.async {
                         self.handleSyncSuccess(schedule)
                     }
@@ -358,7 +376,9 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             title: "🎉 HFUT课表同步成功",
             body: "已成功同步 \(schedule.lessons.count) 门课次数据，可在菜单栏与桌面组件随时查看！"
         )
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+        let token = self.sessionToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self = self, self.sessionToken == token else { return }
             self.window?.close()
             CourseScheduleWindowController.shared.showWindow(nil)
         }

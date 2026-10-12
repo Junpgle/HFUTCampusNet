@@ -75,27 +75,51 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
             if html.contains("Dr.COMWebLoginID_1.htm") || html.contains("DispTFM") {
                 let uid = self.extractVariable(name: "uid", from: html) ?? "校园网用户"
                 let v4ip = self.extractVariable(name: "v4ip", from: html) ?? ""
-                let flowStr = self.extractVariable(name: "flow", from: html) ?? "0"
-                let feeStr = self.extractVariable(name: "fee", from: html) ?? "0"
                 let timeStr = self.extractVariable(name: "time", from: html) ?? "0"
+                let timeRaw = max(0, Int(timeStr.trimmingCharacters(in: .whitespaces)) ?? 0)
 
-                let flowRaw = Double(flowStr.trimmingCharacters(in: .whitespaces)) ?? 0.0
-                let feeRaw = Double(feeStr.trimmingCharacters(in: .whitespaces)) ?? 0.0
-                let timeRaw = Int(timeStr.trimmingCharacters(in: .whitespaces)) ?? 0
+                let flowMB: Double
+                if let flowStr = self.extractVariable(name: "flow", from: html),
+                   let flowRaw = Double(flowStr.trimmingCharacters(in: .whitespaces)),
+                   flowRaw >= 0 {
+                    flowMB = flowRaw / 1024.0
+                } else {
+                    flowMB = -1.0
+                }
 
-                let flowMB = flowRaw / 1024.0
-                let feeYuan = feeRaw / 10000.0
+                let feeYuan: Double
+                if let feeStr = self.extractVariable(name: "fee", from: html),
+                   let feeRaw = Double(feeStr.trimmingCharacters(in: .whitespaces)),
+                   feeRaw >= 0 {
+                    feeYuan = feeRaw / 10000.0
+                } else {
+                    feeYuan = -1.0
+                }
 
                 completion(.online(username: uid, ip: v4ip, flowMB: flowMB, fee: feeYuan, timeMin: timeRaw))
             } else if html.contains("Dr.COMWebLoginID_0.htm") || html.contains("DDDDD") {
                 completion(.offline(reason: "校园网未认证"))
             } else {
                 if let uid = self.extractVariable(name: "uid", from: html), !uid.isEmpty {
-                    let flowRaw = Double(self.extractVariable(name: "flow", from: html) ?? "") ?? -1.0
-                    let feeRaw = Double(self.extractVariable(name: "fee", from: html) ?? "") ?? -1.0
-                    let flowMB = flowRaw >= 0 ? (flowRaw / 1024.0) : -1.0
-                    let feeYuan = feeRaw >= 0 ? (feeRaw / 10000.0) : -1.0
-                    completion(.online(username: uid, ip: "", flowMB: flowMB, fee: feeYuan, timeMin: 0))
+                    let v4ip = self.extractVariable(name: "v4ip", from: html) ?? ""
+                    let timeRaw = max(0, Int(self.extractVariable(name: "time", from: html) ?? "") ?? 0)
+                    let flowMB: Double
+                    if let flowStr = self.extractVariable(name: "flow", from: html),
+                       let flowRaw = Double(flowStr.trimmingCharacters(in: .whitespaces)),
+                       flowRaw >= 0 {
+                        flowMB = flowRaw / 1024.0
+                    } else {
+                        flowMB = -1.0
+                    }
+                    let feeYuan: Double
+                    if let feeStr = self.extractVariable(name: "fee", from: html),
+                       let feeRaw = Double(feeStr.trimmingCharacters(in: .whitespaces)),
+                       feeRaw >= 0 {
+                        feeYuan = feeRaw / 10000.0
+                    } else {
+                        feeYuan = -1.0
+                    }
+                    completion(.online(username: uid, ip: v4ip, flowMB: flowMB, fee: feeYuan, timeMin: timeRaw))
                 } else {
                     completion(.offline(reason: "未检测到登录态"))
                 }
@@ -119,10 +143,10 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
             return
         }
 
-        // 先自检：如果当前已经在在线状态，直接返回成功！
+        // 先自检：如果当前已经在在线状态且学号匹配，直接返回成功！
         self.checkStatus { status in
-            if case .online(let uid, _, _, _, _) = status {
-                // 如果已经在在线状态，且学号匹配，直接成功
+            if case .online(let uid, _, _, _, _) = status,
+               (uid == user || uid == "校园网用户") {
                 completion(true, "当前设备已认证在线（学号: \(uid)），网络通畅！")
                 return
             }
@@ -214,6 +238,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         CampusNetworkClient.shared.markManualLogout()
         var request = URLRequest(url: logoutURL)
         request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("http://172.18.3.3/", forHTTPHeaderField: "Referer")
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 

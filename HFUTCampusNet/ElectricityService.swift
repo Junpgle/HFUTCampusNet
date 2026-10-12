@@ -23,10 +23,11 @@ public class ElectricityService {
               let cached = try? JSONDecoder().decode(ElectricityData.self, from: data) else {
             return
         }
-        // 若配置与缓存宿舍不一致（校区、楼栋或房间号变化），丢弃旧缓存
+        // 若配置与缓存宿舍不一致（校区、楼栋、房间号或端口变化），丢弃旧缓存
         if cached.campus != SettingsManager.shared.dormCampus ||
            cached.building != SettingsManager.shared.dormBuilding ||
-           cached.room != SettingsManager.shared.dormRoom {
+           cached.room != SettingsManager.shared.dormRoom ||
+           cached.endNumber != SettingsManager.shared.dormEndNumber {
             return
         }
         self.latestData = cached
@@ -39,16 +40,21 @@ public class ElectricityService {
         }
     }
 
-    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号时，立即清理不匹配的旧宿舍缓存与旧宿舍历史记录
+    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号/端口时，清理不匹配的旧宿舍缓存与旧宿舍历史记录
     public func invalidateCacheIfDormChanged() {
+        if let cached = self.latestData,
+           SettingsManager.shared.isDormConfigured,
+           cached.campus == SettingsManager.shared.dormCampus,
+           cached.building == SettingsManager.shared.dormBuilding,
+           cached.room == SettingsManager.shared.dormRoom,
+           cached.endNumber == SettingsManager.shared.dormEndNumber {
+            return
+        }
+        let hadDataOrCache = (self.latestData != nil) || FileManager.default.fileExists(atPath: cacheURL.path)
+        self.latestData = nil
+        try? FileManager.default.removeItem(at: cacheURL)
         CampusHistoryManager.shared.clearElectricityHistory()
-        guard let cached = self.latestData else { return }
-        if !SettingsManager.shared.isDormConfigured ||
-           cached.campus != SettingsManager.shared.dormCampus ||
-           cached.building != SettingsManager.shared.dormBuilding ||
-           cached.room != SettingsManager.shared.dormRoom {
-            self.latestData = nil
-            try? FileManager.default.removeItem(at: cacheURL)
+        if hadDataOrCache {
             NotificationCenter.default.post(name: .dormElectricityDidUpdate, object: nil)
         }
     }
@@ -74,9 +80,15 @@ public class ElectricityService {
                 switch result {
                 case .success(let data):
                     completion?(.success(data))
-                case .failure:
-                    // Token 可能失效，尝试通过已保存学号密码静默重新登录
-                    self?.loginHuiXinAndRetry(completion: completion)
+                case .failure(let firstErr):
+                    // Token 可能失效，尝试通过已保存学号密码静默重新登录；若首次已明确为房间配置错误(-2)且重登失败，保留原始报错
+                    self?.loginHuiXinAndRetry { retryResult in
+                        if case .failure = retryResult, (firstErr as NSError).code == -2 {
+                            completion?(.failure(firstErr))
+                        } else {
+                            completion?(retryResult)
+                        }
+                    }
                 }
             }
         } else {
@@ -216,6 +228,14 @@ public class ElectricityService {
                 return
             }
 
+            let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
+            if httpStatus == 401 || httpStatus == 403 {
+                SettingsManager.shared.huixinAuthToken = nil
+                let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
+                DispatchQueue.main.async { completion?(.failure(err)) }
+                return
+            }
+
             guard let data = data,
                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式非 JSON"])
@@ -225,6 +245,7 @@ public class ElectricityService {
 
             // 检查是否有 401 权限问题
             if let code = jsonObject["code"] as? Int, code == 401 {
+                SettingsManager.shared.huixinAuthToken = nil
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
@@ -248,17 +269,17 @@ public class ElectricityService {
                 stringMap[k] = vStr
 
                 // 精准提取剩余金额：
-                // 常见返回：例如 "房间名称: 300731511 剩余金额:33.815300"
+                // 常见返回：例如 "房间名称: 300731511 剩余金额:33.815300" 或欠费 "-3.50"
                 // 关键点：必须截取 "剩余金额" 后方的子字符串进行正则数字匹配，严防把房间号 (300731511) 误识别为金额！
                 if vStr.contains("剩余金额") {
                     let afterKeyword = vStr.components(separatedBy: "剩余金额").last ?? ""
-                    if let match = afterKeyword.range(of: #"[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
+                    if let match = afterKeyword.range(of: #"-?[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
                         if let val = Double(afterKeyword[match]) {
                             parsedBalance = (val * 100).rounded() / 100.0
                         }
                     }
                 } else if k.contains("剩余金额") || k.contains("余额") {
-                    if let match = vStr.range(of: #"[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
+                    if let match = vStr.range(of: #"-?[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
                         if let val = Double(vStr[match]) {
                             parsedBalance = (val * 100).rounded() / 100.0
                         }
@@ -268,20 +289,30 @@ public class ElectricityService {
                 // 精准提取剩余电量：
                 if vStr.contains("剩余电量") {
                     let afterKeyword = vStr.components(separatedBy: "剩余电量").last ?? ""
-                    if let match = afterKeyword.range(of: #"[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
+                    if let match = afterKeyword.range(of: #"-?[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
                         parsedKWh = Double(afterKeyword[match])
                     }
                 } else if k.contains("剩余电量") || k.contains("度") {
-                    if let match = vStr.range(of: #"[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
+                    if let match = vStr.range(of: #"-?[0-9]+(?:\.[0-9]+)?"#, options: .regularExpression) {
                         parsedKWh = Double(vStr[match])
                     }
                 }
+            }
+
+            // 若既未提取到剩余金额也未提取到剩余电量，说明房间号有误或电表接口返回了业务提示，不覆盖有效缓存
+            if parsedBalance == nil && parsedKWh == nil {
+                let detailHint = stringMap.values.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                let msg = detailHint ?? (jsonObject["msg"] as? String) ?? "未能解析到有效电费数据，请核对楼栋、房间号及端口配置"
+                let err = NSError(domain: "cn.edu.hfut.electricity", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])
+                DispatchQueue.main.async { completion?(.failure(err)) }
+                return
             }
 
             var elecData = ElectricityData(
                 campus: campus,
                 building: building,
                 room: room,
+                endNumber: endNumber,
                 balanceRMB: parsedBalance,
                 remainingKWh: parsedKWh,
                 lastUpdated: Date(),
@@ -345,36 +376,58 @@ public class ElectricityService {
             let body = "feeitemid=281&type=IEC&level=0"
             request.httpBody = body.data(using: .utf8)
 
-            URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-                guard let data = data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    DispatchQueue.main.async { completion?(nil, nil) }
-                    return
-                }
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+                let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
+                let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let jsonCode = json?["code"] as? Int
 
-                if let code = json["code"] as? Int, code == 401, allowRetry {
-                    self?.obtainHuiXinToken { res in
-                        switch res {
-                        case .success(let newToken):
-                            query(token: newToken, allowRetry: false)
-                        case .failure:
-                            completion?(nil, nil)
+                if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 {
+                    SettingsManager.shared.huixinAuthToken = nil
+                    if allowRetry {
+                        self?.obtainHuiXinToken { res in
+                            switch res {
+                            case .success(let newToken):
+                                query(token: newToken, allowRetry: false)
+                            case .failure:
+                                completion?(nil, nil)
+                            }
                         }
+                    } else {
+                        DispatchQueue.main.async { completion?(nil, nil) }
                     }
                     return
                 }
 
-                guard let map = json["map"] as? [String: Any],
+                guard let json = json,
+                      let map = json["map"] as? [String: Any],
                       let showData = map["showData"] as? [String: Any] else {
                     DispatchQueue.main.async { completion?(nil, nil) }
                     return
                 }
 
-                let flowStr = showData["本期已使用流量"] as? String
-                let feeStr = showData["储值余额"] as? String
+                var rawFlow: String? = (showData["本期已使用流量"] ?? showData["已使用流量"] ?? showData["已用流量"]).map { "\($0)" }
+                var rawFee: String? = (showData["储值余额"] ?? showData["账户余额"] ?? showData["余额"]).map { "\($0)" }
+                if rawFlow == nil || rawFee == nil {
+                    for (k, v) in showData {
+                        if rawFlow == nil && (k.contains("已使用流量") || k.contains("已用流量")) {
+                            rawFlow = "\(v)"
+                        } else if rawFee == nil && k.contains("余额") {
+                            rawFee = "\(v)"
+                        }
+                    }
+                }
 
-                let cleanFlow = flowStr?.components(separatedBy: CharacterSet(charactersIn: "（(")).first?.trimmingCharacters(in: .whitespaces)
-                let cleanFee = feeStr?.components(separatedBy: CharacterSet(charactersIn: "（(")).first?.trimmingCharacters(in: .whitespaces)
+                var cleanFlow = rawFlow?.components(separatedBy: CharacterSet(charactersIn: "（(")).first?.trimmingCharacters(in: .whitespaces)
+                if let f = cleanFlow, !f.isEmpty, Double(f) != nil {
+                    cleanFlow = "\(f) M"
+                }
+                var cleanFee = rawFee?.components(separatedBy: CharacterSet(charactersIn: "（(")).first?.trimmingCharacters(in: .whitespaces)
+                if let b = cleanFee, !b.isEmpty {
+                    let numPart = b.replacingOccurrences(of: "元", with: "").trimmingCharacters(in: .whitespaces)
+                    if let val = Double(numPart) {
+                        cleanFee = String(format: "%.2f 元", val)
+                    }
+                }
 
                 DispatchQueue.main.async {
                     completion?(cleanFlow, cleanFee)

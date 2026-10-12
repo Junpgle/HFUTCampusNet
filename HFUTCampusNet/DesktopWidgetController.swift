@@ -451,10 +451,14 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             NSApp.activate(ignoringOtherApps: true)
             CourseScheduleService.shared.syncSchedule { result in
                 if case .failure(let error) = result,
-                   let syncErr = error as? CourseScheduleService.CourseSyncError,
-                   case .needLogin = syncErr {
-                    DispatchQueue.main.async {
-                        CourseLoginWebViewController.shared.showLoginWindow()
+                   let syncErr = error as? CourseScheduleService.CourseSyncError {
+                    switch syncErr {
+                    case .needLogin, .emptySchedule:
+                        DispatchQueue.main.async {
+                            CourseLoginWebViewController.shared.showLoginWindow()
+                        }
+                    default:
+                        break
                     }
                 }
             }
@@ -481,6 +485,9 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.carouselIndex = (self.carouselIndex + 1) % 4
+            if self.carouselIndex == 0 {
+                self.updateCourseDisplay()
+            }
             self.renderBottomLabel()
         }
     }
@@ -555,7 +562,22 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             updateTimeLabel.textColor = .tertiaryLabelColor
         case 2:
             // 宿舍电费与历史用量提示
-            if let elec = ElectricityService.shared.latestData {
+            let elecData: ElectricityData? = ElectricityService.shared.latestData ?? {
+                guard SettingsManager.shared.isDormConfigured,
+                      let lastRec = CampusHistoryManager.shared.latestElectricityRecord else {
+                    return nil
+                }
+                return ElectricityData(
+                    campus: SettingsManager.shared.dormCampus,
+                    building: SettingsManager.shared.dormBuilding,
+                    room: SettingsManager.shared.dormRoom,
+                    endNumber: SettingsManager.shared.dormEndNumber,
+                    balanceRMB: lastRec.balanceRMB,
+                    remainingKWh: lastRec.remainingKWh ?? ((lastRec.balanceRMB / 0.58 * 10).rounded() / 10.0),
+                    lastUpdated: lastRec.lastUpdated
+                )
+            }()
+            if let elec = elecData {
                 let warn = elec.isLowBalance ? "余额偏低 · " : ""
                 let daysLeft = CampusHistoryManager.shared.estimatedElectricityDaysRemaining
                 let daysText = (daysLeft != nil) ? " · 约余 \(daysLeft!) 天" : ""
@@ -615,7 +637,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             let rest = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
             return ("--", rest.isEmpty ? fallbackUnit : rest)
         }
-        let pattern = "^([0-9\\.]+)\\s*(.*)$"
+        let pattern = "^(-?[0-9\\.]+)\\s*(.*)$"
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) else {
             return (trimmed, "")
@@ -637,6 +659,9 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
     @objc private func refreshClicked() {
         CampusNetworkClient.shared.fetchData()
+        if SettingsManager.shared.courseTableEnabled {
+            CourseScheduleService.shared.syncSchedule { _ in }
+        }
         EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
     }
 

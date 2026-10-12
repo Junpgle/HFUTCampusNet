@@ -119,20 +119,88 @@ public class CampusHistoryManager {
         }
     }
 
-    /// 跨日连续性校准：将每日起始基准与上一日末尾余额/累计流量对齐，防止夜间或未开机时段消耗漏计
+    /// 跨日连续性校准：将每日起始基准与上一日末尾余额/累计流量对齐，并对多日未开机的断档期按日均平滑回填，防止单日消耗暴增或漏计
     @discardableResult
     private func reconcileContinuity() -> Bool {
         var modified = false
 
-        // 1. 校准电费记录连续性
+        // 1. 校准电费记录连续性（含多日断档平滑回填）
         if store.electricityRecords.count > 1 {
             store.electricityRecords.sort { $0.dateString < $1.dateString }
+            var expandedElec: [DailyElectricityRecord] = [store.electricityRecords[0]]
+            for i in 1..<store.electricityRecords.count {
+                let prev = expandedElec.last!
+                var curr = store.electricityRecords[i]
+                let gap = daysBetween(prev.dateString, curr.dateString)
+
+                if gap > 1 && gap <= 30 && curr.balanceRMB <= prev.balanceRMB {
+                    // 若 curr 的起始余额仍停留在多日前的 prev.balanceRMB，将期间总消耗均摊到断档的每一天
+                    let targetEndOfPrevDay: Double
+                    if abs(curr.startOfDayBalanceRMB - prev.balanceRMB) < 0.001 {
+                        let stepCost = (prev.balanceRMB - curr.balanceRMB) / Double(gap)
+                        targetEndOfPrevDay = prev.balanceRMB - stepCost * Double(gap - 1)
+                    } else if curr.startOfDayBalanceRMB <= prev.balanceRMB && curr.startOfDayBalanceRMB >= curr.balanceRMB {
+                        targetEndOfPrevDay = curr.startOfDayBalanceRMB
+                    } else {
+                        let stepCost = (prev.balanceRMB - curr.balanceRMB) / Double(gap)
+                        targetEndOfPrevDay = prev.balanceRMB - stepCost * Double(gap - 1)
+                    }
+
+                    let offlineCostPerDay = max(0.0, (prev.balanceRMB - targetEndOfPrevDay) / Double(gap - 1))
+                    let offlineKWhPerDay: Double? = {
+                        if let pk = prev.remainingKWh, let ck = curr.remainingKWh, ck <= pk {
+                            let targetPrevK = (curr.startOfDayKWh != nil && abs(curr.startOfDayKWh! - pk) > 0.001 && curr.startOfDayKWh! <= pk)
+                                ? curr.startOfDayKWh!
+                                : (pk - (pk - ck) / Double(gap) * Double(gap - 1))
+                            return max(0.0, (pk - targetPrevK) / Double(gap - 1))
+                        }
+                        return nil
+                    }()
+
+                    for step in 1..<gap {
+                        if let midDate = addDays(step, to: prev.dateString) {
+                            let sBal = prev.balanceRMB - offlineCostPerDay * Double(step - 1)
+                            let eBal = prev.balanceRMB - offlineCostPerDay * Double(step)
+                            let sKWh = (prev.remainingKWh != nil && offlineKWhPerDay != nil)
+                                ? (prev.remainingKWh! - offlineKWhPerDay! * Double(step - 1))
+                                : nil
+                            let eKWh = (prev.remainingKWh != nil && offlineKWhPerDay != nil)
+                                ? (prev.remainingKWh! - offlineKWhPerDay! * Double(step))
+                                : nil
+                            expandedElec.append(DailyElectricityRecord(
+                                dateString: midDate,
+                                balanceRMB: eBal,
+                                startOfDayBalanceRMB: sBal,
+                                remainingKWh: eKWh,
+                                startOfDayKWh: sKWh,
+                                dailyCostRMB: offlineCostPerDay,
+                                dailyUsedKWh: offlineKWhPerDay ?? 0.0,
+                                lastUpdated: curr.lastUpdated
+                            ))
+                        }
+                    }
+                    curr.startOfDayBalanceRMB = targetEndOfPrevDay
+                    curr.dailyCostRMB = max(0.0, curr.startOfDayBalanceRMB - curr.balanceRMB)
+                    if let pk = prev.remainingKWh, let kStep = offlineKWhPerDay {
+                        let targetPrevK = pk - kStep * Double(gap - 1)
+                        curr.startOfDayKWh = targetPrevK
+                        if let ck = curr.remainingKWh {
+                            curr.dailyUsedKWh = max(0.0, targetPrevK - ck)
+                        }
+                    }
+                    modified = true
+                }
+                expandedElec.append(curr)
+            }
+            store.electricityRecords = expandedElec
+
             for i in 1..<store.electricityRecords.count {
                 let prev = store.electricityRecords[i - 1]
                 var curr = store.electricityRecords[i]
+                let gap = daysBetween(prev.dateString, curr.dateString)
 
-                // 若当日未发生充值（当前余额 <= 前一日末尾余额），则当日 00:00 起始余额应衔接前一日末尾余额
-                if curr.balanceRMB <= prev.balanceRMB && abs(curr.startOfDayBalanceRMB - prev.balanceRMB) > 0.001 {
+                // 相邻日期且未发生充值（当前余额 <= 前一日末尾余额且起始基准低于前一日末尾余额），当日 00:00 起始余额衔接前一日末尾余额
+                if gap == 1 && curr.balanceRMB <= prev.balanceRMB && curr.startOfDayBalanceRMB < prev.balanceRMB - 0.001 {
                     curr.startOfDayBalanceRMB = prev.balanceRMB
                     modified = true
                 }
@@ -144,12 +212,13 @@ public class CampusHistoryManager {
                     modified = true
                 }
 
-                if let prevK = prev.remainingKWh, let currK = curr.remainingKWh, currK <= prevK {
-                    if curr.startOfDayKWh == nil || abs(curr.startOfDayKWh! - prevK) > 0.001 {
+                if gap == 1, let prevK = prev.remainingKWh, let currK = curr.remainingKWh, currK <= prevK {
+                    if curr.startOfDayKWh == nil || curr.startOfDayKWh! < prevK - 0.001 {
                         curr.startOfDayKWh = prevK
                         modified = true
                     }
-                    let expectedKWh = max(0.0, prevK - currK)
+                    let startK = curr.startOfDayKWh ?? prevK
+                    let expectedKWh = max(0.0, startK - currK)
                     if abs(curr.dailyUsedKWh - expectedKWh) > 0.001 {
                         curr.dailyUsedKWh = expectedKWh
                         modified = true
@@ -159,23 +228,54 @@ public class CampusHistoryManager {
             }
         }
 
-        // 2. 校准同月校园网流量记录连续性
+        // 2. 校准同月校园网流量记录连续性（含多日未开机断档均摊回填，避免多日手机流量全部算进今日已用）
         if store.flowRecords.count > 1 {
             store.flowRecords.sort { $0.dateString < $1.dateString }
+            var expandedFlow: [DailyFlowRecord] = [store.flowRecords[0]]
             for i in 1..<store.flowRecords.count {
-                let prev = store.flowRecords[i - 1]
+                let prev = expandedFlow.last!
                 var curr = store.flowRecords[i]
+                let gap = daysBetween(prev.dateString, curr.dateString)
 
-                // 同一个自然月内且累计流量单调递增时，当日起始已用流量不应高于前一日末尾累计流量
                 if prev.dateString.prefix(7) == curr.dateString.prefix(7),
-                   curr.totalUsedMB >= prev.totalUsedMB,
-                   curr.startOfDayUsedMB > prev.totalUsedMB + 0.01 {
-                    curr.startOfDayUsedMB = prev.totalUsedMB
-                    curr.dailyDeltaMB = max(curr.dailyDeltaMB, curr.totalUsedMB - curr.startOfDayUsedMB)
-                    store.flowRecords[i] = curr
-                    modified = true
+                   curr.totalUsedMB >= prev.totalUsedMB {
+                    if gap > 1 && gap <= 30 {
+                        let targetEndOfPrevDay: Double
+                        if curr.startOfDayUsedMB > prev.totalUsedMB + 0.01 && curr.startOfDayUsedMB <= curr.totalUsedMB {
+                            targetEndOfPrevDay = curr.startOfDayUsedMB
+                        } else {
+                            let stepMB = (curr.totalUsedMB - prev.totalUsedMB) / Double(gap)
+                            targetEndOfPrevDay = prev.totalUsedMB + stepMB * Double(gap - 1)
+                        }
+                        let offlineDailyMB = max(0.0, (targetEndOfPrevDay - prev.totalUsedMB) / Double(gap - 1))
+                        for step in 1..<gap {
+                            if let midDate = addDays(step, to: prev.dateString) {
+                                let sMB = prev.totalUsedMB + offlineDailyMB * Double(step - 1)
+                                let eMB = prev.totalUsedMB + offlineDailyMB * Double(step)
+                                expandedFlow.append(DailyFlowRecord(
+                                    dateString: midDate,
+                                    totalUsedMB: eMB,
+                                    startOfDayUsedMB: sMB,
+                                    dailyDeltaMB: offlineDailyMB,
+                                    availableMB: nil,
+                                    balanceRMB: prev.balanceRMB,
+                                    peakSpeedMBs: 0.0,
+                                    lastUpdated: curr.lastUpdated
+                                ))
+                            }
+                        }
+                        curr.startOfDayUsedMB = targetEndOfPrevDay
+                        curr.dailyDeltaMB = max(0.0, curr.totalUsedMB - curr.startOfDayUsedMB)
+                        modified = true
+                    } else if gap == 1 && abs(curr.startOfDayUsedMB - prev.totalUsedMB) > 0.01 {
+                        curr.startOfDayUsedMB = prev.totalUsedMB
+                        curr.dailyDeltaMB = max(0.0, curr.totalUsedMB - curr.startOfDayUsedMB)
+                        modified = true
+                    }
                 }
+                expandedFlow.append(curr)
             }
+            store.flowRecords = expandedFlow
         }
 
         return modified
@@ -193,6 +293,26 @@ public class CampusHistoryManager {
         return formatter.string(from: Date())
     }
 
+    private func daysBetween(_ startStr: String, _ endStr: String) -> Int {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let d1 = formatter.date(from: startStr),
+              let d2 = formatter.date(from: endStr) else {
+            return 0
+        }
+        return Calendar.current.dateComponents([.day], from: d1, to: d2).day ?? 0
+    }
+
+    private func addDays(_ days: Int, to dateStr: String) -> String? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let d = formatter.date(from: dateStr),
+              let next = Calendar.current.date(byAdding: .day, value: days, to: d) else {
+            return nil
+        }
+        return formatter.string(from: next)
+    }
+
     // MARK: - 记录校园网流量
 
     public func recordFlow(
@@ -208,9 +328,14 @@ public class CampusHistoryManager {
             let availMB = availableFlowStr != nil ? self.parseFlowToMB(availableFlowStr!) : nil
             let balRMB = balanceStr != nil ? self.parseRMB(balanceStr!) : nil
 
+            let prevSameMonthRecord = self.store.flowRecords
+                .filter { $0.dateString < today && $0.dateString.prefix(7) == today.prefix(7) }
+                .sorted { $0.dateString < $1.dateString }
+                .last
+            let prevMonthFloorMB = prevSameMonthRecord?.totalUsedMB ?? 0.0
+
             if let idx = self.store.flowRecords.firstIndex(where: { $0.dateString == today }) {
                 var record = self.store.flowRecords[idx]
-                record.totalUsedMB = totalMB
                 if let a = availMB { record.availableMB = a }
                 if let b = balRMB { record.balanceRMB = b }
 
@@ -219,15 +344,22 @@ public class CampusHistoryManager {
                     .filter { $0.loginTime.hasPrefix(today) }
                     .reduce(0.0) { $0 + $1.usedFlowMB }
 
-                if totalMB >= record.startOfDayUsedMB {
-                    record.dailyDeltaMB = max(totalMB - record.startOfDayUsedMB, todayOnlineMB)
-                    if record.dailyDeltaMB == todayOnlineMB && totalMB >= todayOnlineMB {
-                        record.startOfDayUsedMB = totalMB - todayOnlineMB
+                let isMonthlyReset = today.hasSuffix("-01") && totalMB < record.startOfDayUsedMB * 0.5
+                let effectiveTotalMB = isMonthlyReset ? totalMB : max(totalMB, record.totalUsedMB, prevMonthFloorMB)
+                record.totalUsedMB = effectiveTotalMB
+
+                if isMonthlyReset {
+                    // 仅在月初 1 日且总流量大幅归零时才判定为月度重置
+                    record.startOfDayUsedMB = 0
+                    record.dailyDeltaMB = effectiveTotalMB
+                } else if effectiveTotalMB >= record.startOfDayUsedMB {
+                    record.dailyDeltaMB = max(effectiveTotalMB - record.startOfDayUsedMB, todayOnlineMB)
+                    if record.dailyDeltaMB == todayOnlineMB && effectiveTotalMB >= todayOnlineMB {
+                        record.startOfDayUsedMB = max(prevMonthFloorMB, min(record.startOfDayUsedMB, effectiveTotalMB - todayOnlineMB))
                     }
                 } else {
-                    // 月初重置或计数器归零
-                    record.startOfDayUsedMB = 0
-                    record.dailyDeltaMB = totalMB
+                    record.startOfDayUsedMB = max(prevMonthFloorMB, min(effectiveTotalMB, effectiveTotalMB - record.dailyDeltaMB))
+                    record.dailyDeltaMB = max(effectiveTotalMB - record.startOfDayUsedMB, todayOnlineMB)
                 }
 
                 if let spd = currentSpeedMBs, spd > record.peakSpeedMBs {
@@ -236,23 +368,30 @@ public class CampusHistoryManager {
                 record.lastUpdated = Date()
                 self.store.flowRecords[idx] = record
             } else {
-                // 今日首次记录：优先衔接同月上一日末尾的累计流量
+                // 今日首次记录：仅当上一条记录为昨天 (gap == 1) 时直接将今日起点对齐到昨日末尾；
+                // 若存在多日断档 (gap > 1)，今日起点取 max(prev.totalUsedMB, effectiveTotalMB - todayOnlineMB)，断档期流量交由 reconcileContinuity 均摊到断档日
                 let todayOnlineMB = CampusNetworkClient.shared.latestData.onlineDevices
                     .filter { $0.loginTime.hasPrefix(today) }
                     .reduce(0.0) { $0 + $1.usedFlowMB }
-                var startMB = max(0.0, totalMB - todayOnlineMB)
+                let isMonthlyReset = today.hasSuffix("-01") && totalMB < prevMonthFloorMB * 0.5
+                let effectiveTotalMB = isMonthlyReset ? totalMB : max(totalMB, prevMonthFloorMB)
+                var startMB = isMonthlyReset ? max(0.0, effectiveTotalMB - todayOnlineMB) : max(prevMonthFloorMB, effectiveTotalMB - todayOnlineMB)
 
-                if let prev = self.store.flowRecords.sorted(by: { $0.dateString < $1.dateString }).last,
-                   prev.dateString.prefix(7) == today.prefix(7),
-                   totalMB >= prev.totalUsedMB {
-                    startMB = min(startMB, prev.totalUsedMB)
+                if !isMonthlyReset, let prev = prevSameMonthRecord,
+                   effectiveTotalMB >= prev.totalUsedMB {
+                    let gap = self.daysBetween(prev.dateString, today)
+                    if gap == 1 {
+                        startMB = prev.totalUsedMB
+                    } else if gap > 1 {
+                        startMB = max(prev.totalUsedMB, startMB)
+                    }
                 }
 
                 let newRecord = DailyFlowRecord(
                     dateString: today,
-                    totalUsedMB: totalMB,
+                    totalUsedMB: effectiveTotalMB,
                     startOfDayUsedMB: startMB,
-                    dailyDeltaMB: max(0.0, totalMB - startMB),
+                    dailyDeltaMB: max(0.0, effectiveTotalMB - startMB),
                     availableMB: availMB,
                     balanceRMB: balRMB,
                     peakSpeedMBs: currentSpeedMBs ?? 0.0,
@@ -307,7 +446,7 @@ public class CampusHistoryManager {
     public func recordElectricity(_ data: ElectricityData) {
         queue.async {
             guard let bal = data.balanceRMB else { return }
-            let dormKey = "\(data.campus)|\(data.building)|\(data.room)|\(SettingsManager.shared.dormEndNumber)"
+            let dormKey = "\(data.campus)|\(data.building)|\(data.room)|\(data.endNumber)"
             if let prevKey = self.store.electricityDormKey, prevKey != dormKey {
                 // 宿舍房间或端口已变更，清空旧宿舍电费历史，避免两个不同房间的余额相减产生虚假巨额消费
                 self.store.electricityRecords.removeAll()
@@ -319,27 +458,32 @@ public class CampusHistoryManager {
 
             if let idx = self.store.electricityRecords.firstIndex(where: { $0.dateString == today }) {
                 var record = self.store.electricityRecords[idx]
-                record.balanceRMB = bal
-                if let k = kwh { record.remainingKWh = k }
+                let prevSampledBal = record.balanceRMB
+                let prevSampledKWh = record.remainingKWh
 
-                // 计算今日消耗：若余额下降则记为当日支出；若余额显著增加说明充值了，重置基准
-                if bal <= record.startOfDayBalanceRMB {
-                    record.dailyCostRMB = record.startOfDayBalanceRMB - bal
+                // 计算今日消耗：若较上次采样发生充值（余额上升），保留充值前已累计消耗并平移今日起始基准
+                if bal > prevSampledBal + 0.05 {
+                    record.startOfDayBalanceRMB = bal + record.dailyCostRMB
+                } else if bal <= record.startOfDayBalanceRMB {
+                    record.dailyCostRMB = max(record.dailyCostRMB, record.startOfDayBalanceRMB - bal)
                 } else {
-                    // 今日充值了，更新起始基准为充值后金额
                     record.startOfDayBalanceRMB = bal
-                    record.dailyCostRMB = 0.0
                 }
+                record.balanceRMB = bal
 
-                if let currentK = kwh, let startK = record.startOfDayKWh {
-                    if currentK <= startK {
-                        record.dailyUsedKWh = startK - currentK
+                if let currentK = kwh {
+                    if let prevK = prevSampledKWh, currentK > prevK + 0.05 {
+                        record.startOfDayKWh = currentK + record.dailyUsedKWh
+                    } else if let startK = record.startOfDayKWh {
+                        if currentK <= startK {
+                            record.dailyUsedKWh = max(record.dailyUsedKWh, startK - currentK)
+                        } else {
+                            record.startOfDayKWh = currentK
+                        }
                     } else {
                         record.startOfDayKWh = currentK
-                        record.dailyUsedKWh = 0.0
                     }
-                } else if let currentK = kwh {
-                    record.startOfDayKWh = currentK
+                    record.remainingKWh = currentK
                 }
 
                 record.lastUpdated = Date()
@@ -487,6 +631,13 @@ public class CampusHistoryManager {
         }
     }
 
+    /// 历史记录中最近一次宿舍电费记录
+    public var latestElectricityRecord: DailyElectricityRecord? {
+        return queue.sync {
+            store.electricityRecords.sorted(by: { $0.dateString < $1.dateString }).last
+        }
+    }
+
     /// 今日消耗电费 (元)
     public var todayElectricityCostRMB: Double {
         let today = todayString()
@@ -527,9 +678,7 @@ public class CampusHistoryManager {
 
     /// 智能预测：剩余电费预计可用天数
     public var estimatedElectricityDaysRemaining: Int? {
-        let latestBalance: Double? = ElectricityService.shared.latestData?.balanceRMB ?? queue.sync {
-            store.electricityRecords.sorted { $0.dateString < $1.dateString }.last?.balanceRMB
-        }
+        let latestBalance: Double? = ElectricityService.shared.latestData?.balanceRMB ?? latestElectricityRecord?.balanceRMB
         guard let latest = latestBalance, latest > 0 else {
             return nil
         }
@@ -539,10 +688,14 @@ public class CampusHistoryManager {
         return max(1, days)
     }
 
-    /// 获取近 N 天流量历史记录 (按日期由旧到新排序)
+    /// 获取近 N 天流量历史记录 (按自然日过滤并由旧到新排序)
     public func getPastDaysFlowRecords(days: Int) -> [DailyFlowRecord] {
+        let today = todayString()
+        let cutoff = addDays(-(max(1, days) - 1), to: today) ?? ""
         let sorted = queue.sync {
-            store.flowRecords.sorted { $0.dateString < $1.dateString }
+            store.flowRecords
+                .filter { $0.dateString >= cutoff }
+                .sorted { $0.dateString < $1.dateString }
         }
         if sorted.count <= days {
             return sorted
@@ -550,10 +703,14 @@ public class CampusHistoryManager {
         return Array(sorted.suffix(days))
     }
 
-    /// 获取近 N 天电费历史记录 (按日期由旧到新排序)
+    /// 获取近 N 天电费历史记录 (按自然日过滤并由旧到新排序)
     public func getPastDaysElectricityRecords(days: Int) -> [DailyElectricityRecord] {
+        let today = todayString()
+        let cutoff = addDays(-(max(1, days) - 1), to: today) ?? ""
         let sorted = queue.sync {
-            store.electricityRecords.sorted { $0.dateString < $1.dateString }
+            store.electricityRecords
+                .filter { $0.dateString >= cutoff }
+                .sorted { $0.dateString < $1.dateString }
         }
         if sorted.count <= days {
             return sorted

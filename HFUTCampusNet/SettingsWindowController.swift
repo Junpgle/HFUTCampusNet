@@ -26,6 +26,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private var dormStatusLabel: NSTextField!
     private var initialUsername: String = ""
     private var initialStdId: String = ""
+    private var initialDormConfig: (campus: String, building: String, room: String, end: String) = ("", "", "", "")
 
     private init() {
         let window = NSWindow(
@@ -379,6 +380,12 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func showSettings() {
         initialUsername = SettingsManager.shared.portalUsername
         initialStdId = SettingsManager.shared.courseStudentId
+        initialDormConfig = (
+            SettingsManager.shared.dormCampus,
+            SettingsManager.shared.dormBuilding,
+            SettingsManager.shared.dormRoom,
+            SettingsManager.shared.dormEndNumber
+        )
         usernameField.stringValue = SettingsManager.shared.portalUsername
         passwordField.stringValue = SettingsManager.shared.portalPassword
         casPasswordField.stringValue = SettingsManager.shared.casPassword
@@ -387,7 +394,16 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
         courseTableCheckbox.state = SettingsManager.shared.courseTableEnabled ? .on : .off
 
-        dormCampusPopup.selectItem(withTitle: SettingsManager.shared.dormCampus)
+        let savedCampus = SettingsManager.shared.dormCampus
+        if dormCampusPopup.indexOfItem(withTitle: savedCampus) != -1 {
+            dormCampusPopup.selectItem(withTitle: savedCampus)
+        } else if savedCampus.contains("屯溪路") {
+            dormCampusPopup.selectItem(withTitle: "合肥屯溪路校区")
+        } else if savedCampus.contains("合肥") || savedCampus.contains("翡翠湖") {
+            dormCampusPopup.selectItem(withTitle: "合肥翡翠湖校区")
+        } else {
+            dormCampusPopup.selectItem(withTitle: "宣城校区")
+        }
         dormBuildingField.stringValue = SettingsManager.shared.dormBuilding
         dormRoomField.stringValue = SettingsManager.shared.dormRoom
         dormThresholdField.stringValue = String(format: "%.0f", SettingsManager.shared.electricityLowWarningThreshold)
@@ -407,9 +423,11 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
                 guard let self = self else { return }
                 switch status {
                 case .online(let uid, let ip, _, let fee, _):
+                    let ipPart = ip.isEmpty ? "" : " · \(ip)"
+                    let feePart = fee >= 0 ? " · 余额 \(String(format: "%.2f", fee)) 元" : ""
                     self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
                         dotColor: .systemGreen,
-                        text: "网关已在线 (\(uid) · \(ip) · 余额 \(String(format: "%.2f", fee)) 元)"
+                        text: "网关已在线 (\(uid)\(ipPart)\(feePart))"
                     )
                 case .offline(let reason):
                     self.statusLabel.attributedStringValue = self.makeStatusAttributedString(
@@ -497,6 +515,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     @objc private func openSelfLoginWindow() {
+        saveCredentials()
         LoginWebViewController.shared.showLoginWindow()
     }
 
@@ -526,7 +545,18 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
                         body: "已同步 \(schedule.lessons.count) 门排课数据"
                     )
                 case .failure(let error):
-                    if let syncErr = error as? CourseScheduleService.CourseSyncError, case .needLogin = syncErr {
+                    let shouldOpenLogin: Bool = {
+                        guard let syncErr = error as? CourseScheduleService.CourseSyncError else { return false }
+                        switch syncErr {
+                        case .needLogin:
+                            return true
+                        case .emptySchedule:
+                            return CourseScheduleService.shared.currentSchedule == nil
+                        default:
+                            return false
+                        }
+                    }()
+                    if shouldOpenLogin {
                         self.courseStatusLabel.attributedStringValue = self.makeStatusAttributedString(
                             dotColor: .systemOrange,
                             text: "需要教务授权，正在打开登录页...",
@@ -558,6 +588,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             return
         }
 
+        saveCredentials()
         statusLabel.stringValue = "正在检测与认证网关..."
         statusLabel.textColor = .secondaryLabelColor
 
@@ -587,14 +618,12 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
                     dotColor: success ? .systemOrange : .systemRed,
                     text: msg
                 )
-                CampusNetworkClient.shared.fetchData()
             }
         }
     }
 
     @objc private func saveClicked() {
         saveCredentials()
-        handleAccountSwitchIfNeeded()
         window?.close()
         CampusNetworkClient.shared.fetchData()
         ElectricityService.shared.fetchData { _ in }
@@ -613,10 +642,13 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if SettingsManager.shared.courseStudentId == initialStdId {
             SettingsManager.shared.courseStudentId = ""
             courseStudentIdField?.stringValue = ""
+            initialStdId = ""
         }
+        CourseScheduleService.shared.clearSchedule()
+        updateCourseStatusDisplay()
     }
 
-    private func saveCredentials() {
+    private func saveCredentials(checkDormInvalidation: Bool = true) {
         SettingsManager.shared.portalUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.portalPassword = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.casPassword = casPasswordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -627,6 +659,9 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             CampusNetworkClient.shared.clearManualLogout()
         }
         SettingsManager.shared.courseStudentId = courseStudentIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if checkDormInvalidation {
+            handleAccountSwitchIfNeeded()
+        }
         SettingsManager.shared.courseSemesterId = courseSemesterIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let prevCourseEnabled = SettingsManager.shared.courseTableEnabled
         let newCourseEnabled = (courseTableCheckbox.state == .on)
@@ -634,11 +669,6 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if prevCourseEnabled != newCourseEnabled {
             NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: nil)
         }
-
-        let prevCampus = SettingsManager.shared.dormCampus
-        let prevBuilding = SettingsManager.shared.dormBuilding
-        let prevRoom = SettingsManager.shared.dormRoom
-        let prevEnd = SettingsManager.shared.dormEndNumber
 
         if let selectedCampus = dormCampusPopup.titleOfSelectedItem {
             SettingsManager.shared.dormCampus = selectedCampus
@@ -648,27 +678,42 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if let selectedEnd = dormEndPopup.selectedItem?.representedObject as? String {
             SettingsManager.shared.dormEndNumber = selectedEnd
         }
+        let prevThreshold = SettingsManager.shared.electricityLowWarningThreshold
         if let thresh = Double(dormThresholdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), thresh > 0 {
             SettingsManager.shared.electricityLowWarningThreshold = thresh
         }
+        if prevThreshold != SettingsManager.shared.electricityLowWarningThreshold {
+            updateDormStatusDisplay()
+            NotificationCenter.default.post(name: .dormElectricityDidUpdate, object: ElectricityService.shared.latestData)
+        }
 
-        if prevCampus != SettingsManager.shared.dormCampus ||
-           prevBuilding != SettingsManager.shared.dormBuilding ||
-           prevRoom != SettingsManager.shared.dormRoom ||
-           prevEnd != SettingsManager.shared.dormEndNumber {
-            ElectricityService.shared.invalidateCacheIfDormChanged()
+        if checkDormInvalidation {
+            let curCampus = SettingsManager.shared.dormCampus
+            let curBuilding = SettingsManager.shared.dormBuilding
+            let curRoom = SettingsManager.shared.dormRoom
+            let curEnd = SettingsManager.shared.dormEndNumber
+            if initialDormConfig.campus != curCampus ||
+               initialDormConfig.building != curBuilding ||
+               initialDormConfig.room != curRoom ||
+               initialDormConfig.end != curEnd {
+                initialDormConfig = (curCampus, curBuilding, curRoom, curEnd)
+                ElectricityService.shared.invalidateCacheIfDormChanged()
+            }
         }
     }
 
     public func windowWillClose(_ notification: Notification) {
-        saveCredentials()
-        handleAccountSwitchIfNeeded()
+        saveCredentials(checkDormInvalidation: true)
         if SettingsManager.shared.isDormConfigured && ElectricityService.shared.latestData == nil {
             ElectricityService.shared.fetchData { _ in }
         }
     }
 
     public func controlTextDidChange(_ obj: Notification) {
-        saveCredentials()
+        saveCredentials(checkDormInvalidation: false)
+    }
+
+    public func controlTextDidEndEditing(_ obj: Notification) {
+        saveCredentials(checkDormInvalidation: true)
     }
 }

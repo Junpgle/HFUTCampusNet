@@ -165,12 +165,29 @@ public class SettingsManager {
     }
 
     public var courseSemesterId: String {
-        get { defaults.string(forKey: Keys.courseSemesterId) ?? String(CourseCalendarHelper.inferSemesterId()) }
-        set { defaults.set(newValue, forKey: Keys.courseSemesterId) }
+        get {
+            if let val = defaults.string(forKey: Keys.courseSemesterId)?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                return val
+            }
+            return String(CourseCalendarHelper.inferSemesterId())
+        }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: Keys.courseSemesterId)
+            } else {
+                defaults.set(trimmed, forKey: Keys.courseSemesterId)
+            }
+        }
     }
 
     public var courseBizTypeId: String {
-        get { defaults.string(forKey: Keys.courseBizTypeId) ?? "23" }
+        get {
+            if let val = defaults.string(forKey: Keys.courseBizTypeId)?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                return val
+            }
+            return "23"
+        }
         set { defaults.set(newValue, forKey: Keys.courseBizTypeId) }
     }
 

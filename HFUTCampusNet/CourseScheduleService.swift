@@ -168,8 +168,9 @@ public class CourseScheduleService {
                 self?.saveSchedule(schedule)
                 completion(.success(schedule))
             case .failure(let error):
-                // 如果会话过期，尝试通过已保存的 CAS TGC 或账号密码后台自动 SSO 登录教务系统
-                if let syncErr = error as? CourseSyncError, case .needLogin = syncErr {
+                // 如果会话过期或返回空课程列表（可能因会话失效或学期 ID 变更），尝试后台自动 SSO 登录并重新探测最新元数据后重试
+                if let syncErr = error as? CourseSyncError,
+                   case .needLogin = syncErr {
                     self?.tryBackgroundLogin { loginSuccess in
                         if loginSuccess {
                             let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
@@ -186,6 +187,26 @@ public class CourseScheduleService {
                             }
                         } else {
                             completion(.failure(CourseSyncError.needLogin))
+                        }
+                    }
+                } else if let syncErr = error as? CourseSyncError,
+                          case .emptySchedule = syncErr {
+                    self?.tryBackgroundLogin { loginSuccess in
+                        if loginSuccess {
+                            let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
+                            let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
+                            let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
+                            self?.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                                switch retryResult {
+                                case .success(let schedule):
+                                    self?.saveSchedule(schedule)
+                                    completion(.success(schedule))
+                                case .failure(let retryErr):
+                                    completion(.failure(retryErr))
+                                }
+                            }
+                        } else {
+                            completion(.failure(CourseSyncError.emptySchedule))
                         }
                     }
                 } else {
@@ -336,16 +357,7 @@ public class CourseScheduleService {
             }
 
             guard !lessonIds.isEmpty else {
-                // 如果没有课程，返回空课表结构
-                let emptyData = CourseScheduleData(
-                    studentId: studentId,
-                    semesterId: semesterId,
-                    semesterName: "当前学期",
-                    bizTypeId: bizTypeId,
-                    lastSyncTime: Date(),
-                    lessons: []
-                )
-                completion(.success(emptyData))
+                completion(.failure(CourseSyncError.emptySchedule))
                 return
             }
 
@@ -400,7 +412,17 @@ public class CourseScheduleService {
                 return
             }
 
-            guard let data = data else {
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(CourseSyncError.invalidResponse))
+                return
+            }
+
+            if let finalURL = http.url?.absoluteString, finalURL.contains("/login") || http.statusCode == 302 || http.statusCode == 401 || http.statusCode == 403 {
+                completion(.failure(CourseSyncError.needLogin))
+                return
+            }
+
+            guard http.statusCode == 200, let data = data else {
                 completion(.failure(CourseSyncError.invalidResponse))
                 return
             }
@@ -472,7 +494,7 @@ public class CourseScheduleService {
         guard let result = root.result,
               let lessons = result.lessonList,
               let schedules = result.scheduleList else {
-            return []
+            throw CourseSyncError.invalidResponse
         }
 
         let courseMap = Dictionary(uniqueKeysWithValues: lessons.map { ($0.id, $0) })
@@ -608,6 +630,7 @@ public class CourseScheduleService {
 
         let ssoSession = URLSession(configuration: config)
         guard let ssoURL = URL(string: "https://cas.hfut.edu.cn/cas/login?service=http%3A%2F%2Fjxglstu.hfut.edu.cn%2Feams5-student%2Fneusoft-sso%2Flogin") else {
+            ssoSession.finishTasksAndInvalidate()
             completion(false)
             return
         }
@@ -621,11 +644,15 @@ public class CourseScheduleService {
                   let finalURL = http.url?.absoluteString,
                   finalURL.contains("jxglstu.hfut.edu.cn"),
                   !finalURL.contains("cas.hfut.edu.cn/cas/login") else {
+                ssoSession.finishTasksAndInvalidate()
                 completion(false)
                 return
             }
 
-            self.discoverCourseTableMetadata(using: ssoSession, completion: completion)
+            self.discoverCourseTableMetadata(using: ssoSession) { ok in
+                ssoSession.finishTasksAndInvalidate()
+                completion(ok)
+            }
         }.resume()
     }
 
@@ -653,7 +680,10 @@ public class CourseScheduleService {
         config.httpShouldSetCookies = true
         let session = URLSession(configuration: config)
 
-        trySaltPasswordSequential(using: session, username: u, passwords: candidates, index: 0, completion: completion)
+        trySaltPasswordSequential(using: session, username: u, passwords: candidates, index: 0) { ok in
+            session.finishTasksAndInvalidate()
+            completion(ok)
+        }
     }
 
     private func trySaltPasswordSequential(

@@ -47,10 +47,10 @@ public enum StudyCampus: Int, CaseIterable, Codable {
     }
 
     public static func from(dormCampusString: String) -> StudyCampus {
-        if dormCampusString.contains("翡翠湖") {
-            return .feicuihu
-        } else if dormCampusString.contains("屯溪路") {
+        if dormCampusString.contains("屯溪路") {
             return .tunxilu
+        } else if dormCampusString.contains("翡翠湖") || dormCampusString.contains("合肥") {
+            return .feicuihu
         } else {
             return .xuancheng
         }
@@ -229,7 +229,7 @@ public struct ClassroomOccupation: Codable, Equatable, Identifiable {
 
     /// 在给定时间分钟数是否正在占用
     public func isOngoing(atMinutes nowMin: Int) -> Bool {
-        return nowMin >= startMinutes && nowMin <= endMinutes
+        return nowMin >= startMinutes && nowMin < endMinutes
     }
 }
 
@@ -381,7 +381,7 @@ public struct EmptyClassroomItem: Codable, Identifiable, Equatable {
 
     /// 是否全天完全无课/无占用 (08:00 - 22:00)
     public var isAllDayFree: Bool {
-        sortedOccupations.isEmpty
+        isFree(from: 8 * 60, to: 22 * 60)
     }
 
     /// 在指定分钟数是否正在被占用

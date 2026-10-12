@@ -97,7 +97,7 @@ public struct CourseLesson: Codable, Identifiable, Equatable {
     /// 是否正在上课中
     public func isOngoing(at date: Date = Date()) -> Bool {
         guard let s = startDate, let e = endDate else { return false }
-        return s <= date && date <= e
+        return s <= date && date < e
     }
 
     /// 是否尚未开始（即将开始）
@@ -223,7 +223,8 @@ public struct CourseScheduleData: Codable, Equatable {
                let daysDiff = cal.dateComponents([.day], from: refMonday, to: todayDate).day {
                 let weekOffset = Int(floor(Double(daysDiff) / 7.0))
                 let computedWeek = refWeek + weekOffset
-                if computedWeek >= 1 && computedWeek <= 24 {
+                let maxWeek = max(allWeeks.last ?? 20, 20)
+                if computedWeek >= 1 && computedWeek <= maxWeek {
                     return computedWeek
                 }
             }

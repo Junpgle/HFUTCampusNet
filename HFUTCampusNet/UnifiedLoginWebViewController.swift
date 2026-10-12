@@ -13,6 +13,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     private var isSyncingAll: Bool = false
     private var syncCompletedCount: Int = 0
+    private var syncSessionToken: UUID = UUID()
 
     private init() {
         let window = NSWindow(
@@ -145,6 +146,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         isSyncingAll = false
         syncCompletedCount = 0
+        syncSessionToken = UUID()
         updateStep(index: 0, text: "1. 统一身份认证", status: .waiting)
         updateStep(index: 1, text: "2. 教务课表同步", status: .waiting)
         updateStep(index: 2, text: "3. 宿舍电费查询", status: .waiting)
@@ -199,6 +201,22 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         progressIndicator.startAnimation(nil)
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        progressIndicator.stopAnimation(nil)
+        statusTitleLabel.stringValue = "❌ 统一身份认证页面连接失败"
+        statusTitleLabel.textColor = .systemRed
+        statusDetailLabel.stringValue = "\(error.localizedDescription)（请确认网络畅通后点击右上角「重新加载」）"
+    }
+
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        progressIndicator.stopAnimation(nil)
+        statusTitleLabel.stringValue = "❌ 页面加载异常"
+        statusTitleLabel.textColor = .systemRed
+        statusDetailLabel.stringValue = error.localizedDescription
     }
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -297,7 +315,10 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         if let url = navigationAction.request.url?.absoluteString {
             // 如果检测到 HuiXin OAuth 回调或者 EAMS 5.0 回调
             if url.contains("synjones-auth=") {
-                let token = url.components(separatedBy: "synjones-auth=").last?.components(separatedBy: "&").first
+                let token = url.components(separatedBy: "synjones-auth=").last?
+                    .components(separatedBy: "&").first?
+                    .components(separatedBy: "#").first?
+                    .removingPercentEncoding
                 if let t = token, !t.isEmpty {
                     SettingsManager.shared.huixinAuthToken = t
                     updateStep(index: 2, text: "3. 宿舍电费查询", status: .inProgress)
@@ -313,9 +334,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     private func checkCASAuthentication() {
         guard !isSyncingAll else { return }
 
-        // 获取全部 Cookie
+        // 获取全部 Cookie 并结合 DOM 判断是否真正脱离登录表单
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
-            guard let self = self else { return }
+            guard let self = self, !self.isSyncingAll else { return }
 
             var hasTGC = false
             for cookie in cookies {
@@ -325,13 +346,36 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 }
             }
 
-            // 检查当前 URL 是否已经跳出登录页面，严禁停留在 /cas/login 时因旧缓存 CASTGC 误触发同步并自动关窗
             let currentURL = self.webView.url?.absoluteString ?? ""
-            let isStillOnLoginPage = currentURL.isEmpty || currentURL.contains("/cas/login") || currentURL.contains("/login?")
-            let loggedInByUrl = (!isStillOnLoginPage && currentURL.contains("hfut.edu.cn")) || currentURL.contains("ticket=")
+            guard !currentURL.isEmpty else { return }
 
-            if !isStillOnLoginPage && (hasTGC || loggedInByUrl) {
-                self.startFullSSORefreshChain(cookies: cookies)
+            let domCheckJS = """
+            (function() {
+                var pwd = document.querySelector('input[type="password"], #pwd');
+                var hasPwd = !!(pwd && pwd.offsetParent !== null);
+                var bodyText = document.body ? document.body.innerText : '';
+                var hasSuccessText = bodyText.indexOf('登录成功') !== -1 || bodyText.indexOf('Log In Successful') !== -1 || bodyText.indexOf('退出') !== -1 || bodyText.indexOf('注销') !== -1;
+                return { hasPwd: hasPwd, hasSuccessText: hasSuccessText };
+            })();
+            """
+            self.webView.evaluateJavaScript(domCheckJS) { [weak self] res, _ in
+                guard let self = self, !self.isSyncingAll else { return }
+                let dict = res as? [String: Any]
+                let hasPwdInput = (dict?["hasPwd"] as? Bool) ?? (currentURL.contains("/cas/login") || currentURL.contains("/login?"))
+                let hasSuccessText = (dict?["hasSuccessText"] as? Bool) ?? false
+
+                // 若页面上仍显示密码输入框，说明仍在等待用户登录，绝不因残留 Cookie 误触发
+                guard !hasPwdInput else { return }
+
+                let redirectedToService = currentURL.contains("ticket=") ||
+                    currentURL.contains("one.hfut.edu.cn") ||
+                    currentURL.contains("i.hfut.edu.cn") ||
+                    currentURL.contains("jxglstu.hfut.edu.cn") ||
+                    currentURL.contains("loginsuccess")
+
+                if hasTGC || redirectedToService || (currentURL.contains("cas.hfut.edu.cn") && hasSuccessText) {
+                    self.startFullSSORefreshChain(cookies: cookies)
+                }
             }
         }
     }
@@ -340,6 +384,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     private func startFullSSORefreshChain(cookies: [HTTPCookie]) {
         guard !isSyncingAll else { return }
         isSyncingAll = true
+        let sessionToken = self.syncSessionToken
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
@@ -363,15 +408,15 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             .joined(separator: "; ")
 
         // 1. 同步教务系统课表 (EAMS 5.0)
-        self.syncCourseTable(cookies: cookies)
+        self.syncCourseTable(cookies: cookies, sessionToken: sessionToken)
 
         // 2. 同步慧新易校 (宿舍电费与一卡通) 并联动同步校园网流量
-        self.syncHuiXinElectricity(cookieHeader: cookieHeader)
+        self.syncHuiXinElectricity(cookieHeader: cookieHeader, sessionToken: sessionToken)
     }
 
     // MARK: - 1. 同步教务系统课表
 
-    private func syncCourseTable(cookies: [HTTPCookie]) {
+    private func syncCourseTable(cookies: [HTTPCookie], sessionToken: UUID) {
         updateStep(index: 1, text: "2. 教务课表同步", status: .inProgress)
 
         // 仅当 cookies 中已包含 jxglstu 专属 Cookie 时才更新，绝不用 cas.hfut.edu.cn 的同名 SESSION 覆盖
@@ -389,7 +434,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室与自习推荐
                 EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
                 DispatchQueue.main.async {
-                    guard let self = self else { return }
+                    guard let self = self, self.syncSessionToken == sessionToken else { return }
                     switch result {
                     case .success(let schedule):
                         self.updateStep(index: 1, text: "2. 课表 (\(schedule.lessons.count)节)", status: .success)
@@ -400,7 +445,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                             self.updateStep(index: 1, text: "2. 课表同步失败", status: .failure)
                         }
                     }
-                    self.checkAllSyncFinished()
+                    self.checkAllSyncFinished(sessionToken: sessionToken)
                 }
             }
         }
@@ -408,7 +453,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     // MARK: - 2. 同步慧新易校电费
 
-    private func syncHuiXinElectricity(cookieHeader: String) {
+    private func syncHuiXinElectricity(cookieHeader: String, sessionToken: UUID) {
         updateStep(index: 2, text: "3. 宿舍电费查询", status: .inProgress)
         updateStep(index: 3, text: "4. 校园网与历史用量", status: .inProgress)
 
@@ -417,7 +462,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         let oauthURLStr = "https://cas.hfut.edu.cn/cas/oauth2.0/authorize?client_id=Hfut2023Ydfwpt&redirect_uri=http%3A%2F%2F121.251.19.62%2Fberserker-auth%2Fcas%2Foauth2url%3Foauth2url%3Dhttp%3A%2F%2F121.251.19.62%2Fberserker-base%2Fredirect&response_type=code"
         guard let oauthURL = URL(string: oauthURLStr) else {
-            self.syncCampusNetwork()
+            self.syncCampusNetwork(sessionToken: sessionToken)
+            self.checkAllSyncFinished(sessionToken: sessionToken)
             return
         }
 
@@ -429,11 +475,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 SettingsManager.shared.huixinAuthToken = token
             }
             // 在拿到最新 huixinAuthToken 后再调用慧新易校校园网流量兜底接口，避免 Token 尚未就绪的竞态
-            self.syncCampusNetwork()
+            self.syncCampusNetwork(sessionToken: sessionToken)
 
             ElectricityService.shared.fetchData { [weak self] elecResult in
                 DispatchQueue.main.async {
-                    guard let self = self else { return }
+                    guard let self = self, self.syncSessionToken == sessionToken else { return }
                     switch elecResult {
                     case .success(let elec):
                         let balStr = elec.displayBalance
@@ -447,7 +493,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                             self.updateStep(index: 2, text: "3. 电费查询失败", status: .failure)
                         }
                     }
-                    self.checkAllSyncFinished()
+                    self.checkAllSyncFinished(sessionToken: sessionToken)
                 }
             }
         }
@@ -463,19 +509,20 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     // MARK: - 3. 同步校园网自服务与历史用量
 
-    private func syncCampusNetwork() {
+    private func syncCampusNetwork(sessionToken: UUID) {
         // 从慧新易校拉取本期校园网流量与余额（支持校外/热点访问）
         ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, self.syncSessionToken == sessionToken else { return }
                 CampusNetworkClient.shared.applyHuiXinFallback(usedFlow: flow, balance: balance)
                 self.updateStep(index: 3, text: "4. 校园网与历史已同步", status: .success)
-                self.checkAllSyncFinished()
+                self.checkAllSyncFinished(sessionToken: sessionToken)
             }
         }
     }
 
-    private func checkAllSyncFinished() {
+    private func checkAllSyncFinished(sessionToken: UUID) {
+        guard self.syncSessionToken == sessionToken else { return }
         syncCompletedCount += 1
         if syncCompletedCount >= 3 {
             progressIndicator.stopAnimation(nil)
@@ -491,10 +538,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
             // 3 秒后自动关闭并打开桌面组件
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self = self, self.syncSessionToken == sessionToken else { return }
                 if SettingsManager.shared.showDesktopWidget {
                     DesktopWidgetController.shared.showWindow(nil)
                 }
-                self?.window?.close()
+                self.window?.close()
             }
         }
     }
@@ -519,9 +567,12 @@ private class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        if let location = response.allHeaderFields["Location"] as? String {
+        if let location = response.value(forHTTPHeaderField: "Location") {
             if location.contains("synjones-auth=") {
-                let token = location.components(separatedBy: "synjones-auth=").last?.components(separatedBy: "&").first
+                let token = location.components(separatedBy: "synjones-auth=").last?
+                    .components(separatedBy: "&").first?
+                    .components(separatedBy: "#").first?
+                    .removingPercentEncoding
                 if let t = token, !t.isEmpty, !didCapture {
                     didCapture = true
                     onCaptured(t)

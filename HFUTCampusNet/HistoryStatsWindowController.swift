@@ -291,16 +291,15 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             let balText: String
             if netData.balance != "-- 元" && !netData.balance.isEmpty {
                 balText = netData.balance
-            } else if let lastBal = currentFlowRecords.first?.balanceRMB {
+            } else if let lastBal = currentFlowRecords.first?.balanceRMB ?? CampusHistoryManager.shared.latestFlowBalanceRMB {
                 balText = String(format: "%.2f 元", lastBal)
             } else {
                 balText = "-- 元"
             }
             let monthlyUsedStr: String
-            if let usedMB = netData.usedMB {
-                monthlyUsedStr = "本月累计已用 \(formatMB(usedMB))"
-            } else if let lastUsed = CampusHistoryManager.shared.currentMonthUsedFlowMB {
-                monthlyUsedStr = "本月累计已用 \(formatMB(lastUsed))"
+            let bestMonthlyMB = max(netData.usedMB ?? 0.0, CampusHistoryManager.shared.currentMonthUsedFlowMB ?? 0.0)
+            if bestMonthlyMB > 0 || netData.usedMB != nil {
+                monthlyUsedStr = "本月累计已用 \(formatMB(bestMonthlyMB))"
             } else {
                 monthlyUsedStr = "校园网账户实时余额"
             }
@@ -315,10 +314,10 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 return
             }
             let elec = ElectricityService.shared.latestData
-            let fallbackElec = currentElectricityRecords.first
+            let fallbackElec = currentElectricityRecords.first ?? CampusHistoryManager.shared.latestElectricityRecord
             let balRMB = elec?.balanceRMB ?? fallbackElec?.balanceRMB
             let kwhVal = elec?.remainingKWh ?? fallbackElec?.remainingKWh
-            let isLow = (balRMB != nil && balRMB! < 20.0)
+            let isLow = (balRMB != nil && balRMB! < SettingsManager.shared.electricityLowWarningThreshold)
             let balStr = elec?.displayBalance ?? (balRMB != nil ? String(format: "%.2f 元", balRMB!) : "获取中...")
             let balColor = isLow ? NSColor.systemRed : NSColor.systemOrange
             let powerStr = elec?.displayPower ?? (kwhVal != nil ? String(format: "剩余 %.1f 度", kwhVal!) : "正在查询电量...")
@@ -636,7 +635,7 @@ public class CampusQuotaCardView: NSView {
             // 2. 每月限额 (前 200 GB 免费，月总限额 400 GB)
             let netData = CampusNetworkClient.shared.latestData
             let fallbackUsedMB = CampusHistoryManager.shared.currentMonthUsedFlowMB ?? 0.0
-            let monthlyUsedMB = max(0.0, netData.usedMB ?? fallbackUsedMB)
+            let monthlyUsedMB = max(0.0, max(netData.usedMB ?? 0.0, fallbackUsedMB))
             let freeLimitMB = 200.0 * 1024.0
             let maxLimitMB = 400.0 * 1024.0
 
@@ -697,7 +696,7 @@ public class CampusQuotaCardView: NSView {
         } else {
             // 宿舍电费模式下的进度展示
             let elec = ElectricityService.shared.latestData
-            let fallbackElec = CampusHistoryManager.shared.getPastDaysElectricityRecords(days: 30).last
+            let fallbackElec = CampusHistoryManager.shared.latestElectricityRecord
             let bal = elec?.balanceRMB ?? fallbackElec?.balanceRMB ?? 0.0
             let kwh = elec?.remainingKWh ?? fallbackElec?.remainingKWh
             let balDisplay = elec?.displayBalance ?? (fallbackElec != nil ? String(format: "%.2f 元", fallbackElec!.balanceRMB) : "--")
