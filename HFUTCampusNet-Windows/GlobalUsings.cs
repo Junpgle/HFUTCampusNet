@@ -29,6 +29,9 @@ global using ToolTip = System.Windows.Controls.ToolTip;
 global using Timer = System.Threading.Timer;
 global using Application = System.Windows.Application;
 global using MessageBox = System.Windows.MessageBox;
+global using Cursors = System.Windows.Input.Cursors;
+global using TabControl = System.Windows.Controls.TabControl;
+global using TabItem = System.Windows.Controls.TabItem;
 
 // 历史记录与组件兼容类型别名
 global using DailyFlowRecord = HFUTCampusNet.FlowDailyRecord;
@@ -36,3 +39,5 @@ global using DailyElectricityRecord = HFUTCampusNet.ElectricityDailyRecord;
 global using CourseScheduleItem = HFUTCampusNet.CourseLesson;
 global using EmptyClassroomRoomItem = HFUTCampusNet.ClassroomOccupationItem;
 global using ClassroomSemesterScheduleData = HFUTCampusNet.CourseScheduleData;
+global using OnlineDevice = HFUTCampusNet.OnlineDeviceSession;
+global using StudyBuildingOption = HFUTCampusNet.CampusBuildingOption;

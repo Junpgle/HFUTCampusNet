@@ -60,6 +60,15 @@ public sealed class OnlineDeviceSession
     }
 }
 
+public enum NetworkStatus
+{
+    Idle,
+    Loading,
+    Success,
+    NeedLogin,
+    Failed
+}
+
 public sealed class CampusNetworkData
 {
     [JsonPropertyName("usedFlow")]
@@ -85,6 +94,9 @@ public sealed class CampusNetworkData
 
     [JsonPropertyName("onlineDevices")]
     public List<OnlineDeviceSession> OnlineDevices { get; set; } = new();
+
+    public bool IsSuccess => IsLoggedIn && string.IsNullOrEmpty(ErrorMessage);
+    public NetworkStatus Status => IsLoggedIn ? NetworkStatus.Success : (string.IsNullOrEmpty(ErrorMessage) ? NetworkStatus.Idle : NetworkStatus.NeedLogin);
 
     public double? AvailableMB => ParseMB(AvailableFlow);
 
@@ -166,6 +178,10 @@ public sealed class ElectricityData
     [JsonPropertyName("rawDetails")]
     public Dictionary<string, string> RawDetails { get; set; } = new();
 
+    public bool IsSuccess => BalanceRMB.HasValue || RemainingKWh.HasValue;
+    public string RoomName => FormattedRoom;
+    public string? ErrorMessage { get; set; }
+
     public string FormattedRoom
     {
         get
@@ -237,6 +253,23 @@ public sealed class CourseLesson
             return $"{FormattedStartTime} {CourseName} {roomStr} {teacherStr}".Trim();
         }
     }
+
+    public string SimplifiedRoomText => Classroom ?? string.Empty;
+    public string RoomText => Classroom ?? string.Empty;
+    public string TeachersText => Teacher ?? string.Empty;
+    public int StartUnit { get; set; } = 1;
+    public int EndUnit { get; set; } = 2;
+    public string StartTimeText => FormattedStartTime;
+    public string EndTimeText => FormattedEndTime;
+    public string WeekText { get; set; } = string.Empty;
+    public string LessonCode { get => CourseCode ?? string.Empty; set => CourseCode = value; }
+    public string CreditsText { get; set; } = string.Empty;
+}
+
+public sealed class SemesterOptionItem
+{
+    public string Id { get; set; } = string.Empty;
+    public string NameZh { get; set; } = string.Empty;
 }
 
 public sealed class CourseScheduleData
@@ -247,6 +280,16 @@ public sealed class CourseScheduleData
     public string BizTypeId { get; set; } = "23";
     public DateTime? LastSyncTime { get; set; }
     public List<CourseLesson> Lessons { get; set; } = new();
+
+    public List<SemesterOptionItem> Semesters { get; set; } = new();
+    public string CurrentSemesterId { get => SemesterId; set => SemesterId = value; }
+    public string CurrentSemesterName { get => SemesterName ?? string.Empty; set => SemesterName = value; }
+    public int MaxWeek => 20;
+    public int CalculatedCurrentWeek(DateTime? date = null) => CurrentWeek(date ?? DateTime.Now);
+    public List<CourseLesson> Items => Lessons;
+    public List<CourseLesson> Courses => Lessons;
+    public List<CourseLesson> Activities => Lessons;
+    public string RoomName { get; set; } = string.Empty;
 
     public List<CourseLesson> LessonsForDate(string dateStr)
     {
@@ -436,6 +479,7 @@ public sealed class ExamItem
     public string? Teacher { get; set; }
 
     public DateTime? StartDate => CourseCalendarHelper.ParseDate(DateString, StartTimeString);
+    public DateTime? ExamStartDate => StartDate;
     public DateTime? EndDate => CourseCalendarHelper.ParseDate(DateString, EndTimeString);
 
     public bool IsFinished(DateTime? now = null) => (EndDate ?? DateTime.MinValue) <= (now ?? DateTime.Now);
@@ -724,7 +768,8 @@ public sealed class SemesterMilestoneInfo
             [274] = ("2024-09-02", "2025-01-19", 20, "寒假"),
         };
 
-        var config = dates.TryGetValue(sid, out var tuple) ? tuple : ("2026-08-31", "2027-01-17", 20, "寒假");
+        (string Start, string End, int Weeks, string Vacation) defaultConfig = ("2026-08-31", "2027-01-17", 20, "寒假");
+        var config = dates.TryGetValue(sid, out var tuple) ? tuple : defaultConfig;
         var startDate = DateTime.ParseExact(config.Start, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var endDate = DateTime.ParseExact(config.End, "yyyy-MM-dd", CultureInfo.InvariantCulture);
 
@@ -751,6 +796,13 @@ public sealed class SemesterMilestoneInfo
             VacationName = config.Vacation
         };
     }
+}
+
+public sealed class AcademicGpaSummary
+{
+    public string Gpa { get; set; } = string.Empty;
+    public string WeightedAvg { get; set; } = string.Empty;
+    public string MajorRank { get; set; } = string.Empty;
 }
 
 public sealed class AcademicDataSnapshot
@@ -789,6 +841,15 @@ public sealed class AcademicDataSnapshot
         }
     }
 
+    public List<GradeItem> Grades => AllGrades;
+
+    public AcademicGpaSummary? GpaSummary => OverallWeightedGPA.HasValue ? new AcademicGpaSummary
+    {
+        Gpa = OverallWeightedGPA.Value.ToString("F2"),
+        WeightedAvg = OverallWeightedAverageScore.HasValue ? OverallWeightedAverageScore.Value.ToString("F1") : "--",
+        MajorRank = "--"
+    } : null;
+
     public List<SemesterGradeGroup> SemesterGroups
     {
         get
@@ -822,10 +883,12 @@ public sealed class CampusCardTransaction
 {
     public string Id { get; set; } = string.Empty;
     public string TimeString { get; set; } = string.Empty;
+    public string DateTimeString { get => TimeString; set => TimeString = value; }
     public string MerchantName { get; set; } = string.Empty;
     public string TxType { get; set; } = string.Empty;
+    public string TurnoverType { get => TxType; set => TxType = value; }
     public double AmountRMB { get; set; }
-    public double BalanceAfterRMB { get; set; }
+    public double? BalanceAfterRMB { get; set; }
     public bool IsExpense { get; set; } = true;
 
     public string CleanMerchantName
@@ -875,6 +938,33 @@ public sealed class CampusCardTransaction
     public string FormattedAmount => $"{(IsExpense ? "-" : "+")}¥{AmountRMB:F2}";
 }
 
+public sealed class ExpenseStructureBreakdownResult
+{
+    public double BreakfastRMB { get; set; }
+    public double LunchRMB { get; set; }
+    public double DinnerRMB { get; set; }
+    public double OtherRMB { get; set; }
+    public string TopMerchantsText { get; set; } = string.Empty;
+    public string RatioSummaryText { get; set; } = string.Empty;
+
+    public double Breakfast => BreakfastRMB;
+    public double Lunch => LunchRMB;
+    public double Dinner => DinnerRMB;
+    public double Other => OtherRMB;
+    public string TopMerchants => TopMerchantsText;
+    public string RatioSummary => RatioSummaryText;
+
+    public void Deconstruct(out double b, out double l, out double d, out double o, out string top, out string ratio)
+    {
+        b = BreakfastRMB;
+        l = LunchRMB;
+        d = DinnerRMB;
+        o = OtherRMB;
+        top = TopMerchantsText;
+        ratio = RatioSummaryText;
+    }
+}
+
 public sealed class CampusCardData
 {
     public string CardNumber { get; set; } = string.Empty;
@@ -885,6 +975,14 @@ public sealed class CampusCardData
     public bool IsFrozenOrLost { get; set; }
     public List<CampusCardTransaction> Transactions { get; set; } = new();
     public DateTime? LastUpdated { get; set; }
+
+    public bool IsSuccess => !string.IsNullOrEmpty(CardNumber) || BalanceRMB > 0;
+    public double BalanceYuan => BalanceRMB;
+    public string CardAccount { get => CardNumber; set => CardNumber = value; }
+    public string HolderName { get => Name; set => Name = value; }
+    public string DepartmentName { get; set; } = string.Empty;
+    public double UnsettleAmountRMB { get => UnclaimedRMB; set => UnclaimedRMB = value; }
+    public string CardStatusText { get => StatusText; set => StatusText = value; }
 
     public string DisplayBalance => $"{BalanceRMB:F2} 元";
     public bool IsLowBalance => BalanceRMB < SettingsManager.Shared.CampusCardLowWarningThreshold;
@@ -928,7 +1026,7 @@ public sealed class CampusCardData
         return Transactions.Where(t => t.MonthPrefixString == prefix && !t.IsExpense).Sum(t => t.AmountRMB);
     }
 
-    public (double Breakfast, double Lunch, double Dinner, double Other, string TopMerchants, string RatioSummary) ExpenseStructureBreakdown()
+    public ExpenseStructureBreakdownResult ExpenseStructureBreakdown()
     {
         var expenses = Transactions.Where(t => t.IsExpense).ToList();
         var total = Math.Max(0.01, expenses.Sum(t => t.AmountRMB));
@@ -963,7 +1061,15 @@ public sealed class CampusCardData
         var top2 = merchMap.OrderByDescending(kv => kv.Value).Take(2).Select(kv => kv.Key).ToList();
         var topText = top2.Count > 0 ? $"常去：{string.Join(" / ", top2)}" : "常去商户：--";
 
-        return (b, l, d, o, topText, ratioSummary);
+        return new ExpenseStructureBreakdownResult
+        {
+            BreakfastRMB = b,
+            LunchRMB = l,
+            DinnerRMB = d,
+            OtherRMB = o,
+            TopMerchantsText = topText,
+            RatioSummaryText = ratioSummary
+        };
     }
 
     public List<(string DateString, double SpentRMB)> DailyExpenseSummary(int days = 7, DateTime? now = null)
@@ -987,7 +1093,10 @@ public sealed class CampusCardData
 
 public sealed class CampusBuildingOption
 {
-    public int CampusId { get; set; }
+    public StudyCampus Campus { get; set; } = StudyCampus.Xuancheng;
+    public string Code { get; set; } = string.Empty;
+    public string Title { get => BuildingName; set => BuildingName = value; }
+    public int CampusId { get => (int)Campus; set => Campus = (StudyCampus)value; }
     public string BuildingName { get; set; } = string.Empty;
     public int BuildingId { get; set; }
 
@@ -998,26 +1107,115 @@ public sealed class RoomOccupationSlot
 {
     public int PeriodStart { get; set; }
     public int PeriodEnd { get; set; }
+    public int StartUnit { get => PeriodStart; set => PeriodStart = value; }
+    public int EndUnit { get => PeriodEnd; set => PeriodEnd = value; }
     public string CourseName { get; set; } = string.Empty;
     public string Teacher { get; set; } = string.Empty;
     public string TimeString { get; set; } = string.Empty;
+    public string CauseTitle { get; set; } = "课程占用";
+    public string StartTimeString { get; set; } = "08:00";
+    public string EndTimeString { get; set; } = "09:40";
+}
+
+public sealed class StudyRoomStatusInfo
+{
+    public string SubLabel { get; set; } = "全天自习空闲";
+    public bool ShouldRecommendSwitch { get; set; }
+    public RoomOccupationSlot? OccupiedPeriod { get; set; }
+}
+
+public sealed class ClassroomNearbyRecommendation
+{
+    public ClassroomOccupationItem Room { get; set; } = new();
+    public ClassroomProximity Proximity { get; set; } = new();
+}
+
+public sealed class ClassroomProximity
+{
+    public string BadgeText { get; set; } = "同楼层";
 }
 
 public sealed class ClassroomOccupationItem
 {
     public int RoomId { get; set; }
+    public int Id { get => RoomId; set => RoomId = value; }
     public string RoomName { get; set; } = string.Empty;
+    public string NameZh { get => RoomName; set => RoomName = value; }
     public int CampusId { get; set; }
     public string BuildingName { get; set; } = string.Empty;
+    public string Building { get => BuildingName; set => BuildingName = value; }
+    public int Floor { get; set; } = 1;
     public int Seats { get; set; }
+    public int SeatsForSection { get => Seats; set => Seats = value; }
     public string DateString { get; set; } = string.Empty;
     public List<RoomOccupationSlot> Occupations { get; set; } = new();
 
+    public string SimplifiedRoomName => RoomName;
     public bool IsAllDayFree => Occupations.Count == 0;
 
     public bool IsOccupiedAtPeriod(int period)
     {
         return Occupations.Any(o => period >= o.PeriodStart && period <= o.PeriodEnd);
+    }
+
+    public RoomOccupationSlot? CurrentOccupation(int currentMinute)
+    {
+        return Occupations.FirstOrDefault(o =>
+        {
+            var s = ParseMinute(o.StartTimeString, 8 * 60);
+            var e = ParseMinute(o.EndTimeString, 21 * 60);
+            return currentMinute >= s && currentMinute <= e;
+        });
+    }
+
+    public RoomOccupationSlot? NextOccupation(int currentMinute)
+    {
+        return Occupations.FirstOrDefault(o => ParseMinute(o.StartTimeString, 8 * 60) > currentMinute);
+    }
+
+    public int? MinutesUntilNextOccupation(int currentMinute)
+    {
+        var next = NextOccupation(currentMinute);
+        return next != null ? Math.Max(0, ParseMinute(next.StartTimeString, 8 * 60) - currentMinute) : null;
+    }
+
+    public StudyRoomStatusInfo StudyStatus(int currentMinute)
+    {
+        var cur = CurrentOccupation(currentMinute);
+        if (cur != null)
+        {
+            return new StudyRoomStatusInfo
+            {
+                SubLabel = $"当前{cur.CauseTitle}中至 {cur.EndTimeString}",
+                ShouldRecommendSwitch = true,
+                OccupiedPeriod = cur
+            };
+        }
+        var next = NextOccupation(currentMinute);
+        if (next != null)
+        {
+            int diff = Math.Max(0, ParseMinute(next.StartTimeString, 8 * 60) - currentMinute);
+            return new StudyRoomStatusInfo
+            {
+                SubLabel = $"空闲至 {next.StartTimeString} (约余 {diff} 分钟)",
+                ShouldRecommendSwitch = diff <= 35,
+                OccupiedPeriod = diff <= 35 ? next : null
+            };
+        }
+        return new StudyRoomStatusInfo
+        {
+            SubLabel = "全天自习空闲",
+            ShouldRecommendSwitch = false,
+            OccupiedPeriod = null
+        };
+    }
+
+    private static int ParseMinute(string timeStr, int fallback)
+    {
+        var parts = timeStr.Split(':');
+        if (parts.Length == 2 && int.TryParse(parts[0], out int h) && int.TryParse(parts[1], out int m))
+            return h * 60 + m;
+        return fallback;
     }
 }
 
@@ -1025,9 +1223,16 @@ public sealed class StudyRoomSelectionRecord
 {
     public int RoomId { get; set; }
     public string RoomName { get; set; } = string.Empty;
+    public string NameZh { get => RoomName; set => RoomName = value; }
     public int CampusId { get; set; }
     public string BuildingName { get; set; } = string.Empty;
+    public string BuildingCode { get; set; } = string.Empty;
     public string DateString { get; set; } = string.Empty;
+
+    public RoomOccupationSlot? CurrentOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.CurrentOccupation(minute);
+    public RoomOccupationSlot? NextOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.NextOccupation(minute);
+    public int? MinutesUntilNextOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.MinutesUntilNextOccupation(minute);
+    public StudyRoomStatusInfo StudyStatus(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.StudyStatus(minute) ?? new StudyRoomStatusInfo();
 }
 
 public sealed class EmptyClassroomSnapshot
@@ -1084,6 +1289,8 @@ public sealed class FlowDailyRecord
     public double DeltaMB => Math.Max(0.0, LatestUsedMB - StartUsedMB);
     public double TodayUsedMB => DeltaMB;
     public double DailyDeltaMB => DeltaMB;
+    public string FormattedDailyDelta => DeltaMB >= 1024 ? $"{DeltaMB / 1024.0:F2} GB" : $"{DeltaMB:F0} MB";
+    public double? BalanceRMB { get; set; }
     public DateTime LastUpdated { get; set; } = DateTime.Now;
 }
 
@@ -1092,10 +1299,23 @@ public sealed class ElectricityDailyRecord
     public string DateString { get; set; } = string.Empty;
     public double StartBalanceRMB { get; set; }
     public double LatestBalanceRMB { get; set; }
+    public double BalanceRMB => LatestBalanceRMB;
     public double? RemainingKWh { get; set; }
     public double CostRMB => Math.Max(0.0, StartBalanceRMB - LatestBalanceRMB);
     public double DailyCostRMB => CostRMB;
+    public string FormattedDailyCost => $"{CostRMB:F2} 元";
+    public string FormattedDailyKWh => RemainingKWh.HasValue ? $"{RemainingKWh.Value:F1} 度" : "--";
     public DateTime LastUpdated { get; set; } = DateTime.Now;
+}
+
+public sealed class GitHubReleaseInfo
+{
+    public string TagName { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Body { get; set; } = string.Empty;
+    public string HtmlUrl { get; set; } = string.Empty;
+    public string? DownloadUrl { get; set; }
 }
 
 #endregion

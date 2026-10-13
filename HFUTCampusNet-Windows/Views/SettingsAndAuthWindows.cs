@@ -100,6 +100,8 @@ public class SettingsWindow : Window
         Activate();
     }
 
+    public void ShowSettings() => ShowWindow();
+
     private UIElement BuildContent()
     {
         var mainGrid = new Grid();
@@ -843,6 +845,18 @@ public class UnifiedLoginWebWindow : Window
         InitWebView();
     }
 
+    public void ShowLoginWindow(string serviceName = "统一身份认证", string? targetUrl = null, Action<bool, string>? callback = null)
+    {
+        Title = $"{serviceName} - 合工大校园助手";
+        _statusText.Text = $"正在加载 {serviceName}...";
+        Show();
+        Activate();
+        if (!string.IsNullOrEmpty(targetUrl) && _webView.CoreWebView2 != null)
+        {
+            _webView.CoreWebView2.Navigate(targetUrl);
+        }
+    }
+
     private async void InitWebView()
     {
         try
@@ -1163,6 +1177,8 @@ public class CourseLoginWebWindow : Window
         await _webView.EnsureCoreWebView2Async();
         _webView.CoreWebView2.Navigate("https://jxglstu.hfut.edu.cn/eams/courseTableForStd.action");
     }
+
+    public void ShowLoginWindow() => ShowWindow();
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {

@@ -9,7 +9,6 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
-using Cursors = System.Windows.Input.Cursors;
 using MouseEventArgs = System.Windows.Input.MouseEventArgs;
 
 namespace HFUTCampusNet;
@@ -719,7 +718,7 @@ public sealed class HistoryStatsWindow : Window
     {
         CampusNetworkClient.Shared.FetchData();
         CampusNetworkClient.Shared.FetchOnlineDevices();
-        ElectricityService.Shared.FetchData(_ => ReloadData());
+        ElectricityService.Shared.FetchData((_, _) => ReloadData());
         CampusCardService.Shared.FetchData((_, _) => ReloadData());
     }
 

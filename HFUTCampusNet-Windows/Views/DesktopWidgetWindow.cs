@@ -492,6 +492,28 @@ public sealed class DesktopWidgetWindow : Window
             ShowWidget();
     }
 
+    public void SetWidgetVisible(bool visible)
+    {
+        if (visible)
+            ShowWidget();
+        else
+            HideWidget();
+    }
+
+    public void UpdatePinLevel(bool pinToDesktop)
+    {
+        ApplyWindowLayerMode();
+    }
+
+    public void UpdateOpacity(double opacity)
+    {
+        Opacity = opacity;
+    }
+
+    public void UpdateCarouselInterval(int seconds)
+    {
+    }
+
     // MARK: - 界面布局构建 (340 x 256)
 
     private void SetupUI()

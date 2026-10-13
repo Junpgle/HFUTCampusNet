@@ -100,8 +100,10 @@ public sealed class SettingsManager
     public string DormEndNumber { get; set; } = "11";
     public string DormRoomName { get; set; } = string.Empty;
     public double ElectricityLowWarningThreshold { get; set; } = 10.0;
+    public string LastNotifiedLowElectricityDate { get; set; } = string.Empty;
 
     public double CampusCardLowWarningThreshold { get; set; } = 15.0;
+    public string LastNotifiedLowCardBalanceDate { get; set; } = string.Empty;
     public double CampusCardDailyBudget { get; set; } = 30.0;
 
     public bool HideScoreInNotification { get; set; } = false;
@@ -265,6 +267,19 @@ public sealed class CampusHistoryManager
         }
     }
 
+    public double Past7DaysElectricityDailyAverageCostRMB => Past7DaysElectricityDailyAverageRMB;
+    public double CurrentMonthUsedFlowMB => CurrentMonthTotalMB;
+    public double? LatestFlowBalanceRMB
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return FlowRecords.LastOrDefault()?.BalanceRMB;
+            }
+        }
+    }
+
     public int? EstimatedElectricityDaysRemaining
     {
         get
@@ -365,6 +380,16 @@ public sealed class CampusHistoryManager
                 record.RemainingKWh = remainingKWh;
                 record.LastUpdated = DateTime.Now;
             }
+            Save();
+        }
+        AppEvents.RaiseHistoryStatsUpdated();
+    }
+
+    public void ClearElectricityHistory()
+    {
+        lock (_lock)
+        {
+            ElectricityRecords.Clear();
             Save();
         }
         AppEvents.RaiseHistoryStatsUpdated();
@@ -576,6 +601,32 @@ public sealed class PortalAuthService
         catch { }
     }
 
+    public void Login(string? username, string? password, Action<bool, string>? callback = null)
+    {
+        var u = !string.IsNullOrEmpty(username) ? username : SettingsManager.Shared.PortalUsername;
+        var p = !string.IsNullOrEmpty(password) ? password : SettingsManager.Shared.PortalPassword;
+        if (string.IsNullOrEmpty(u) || string.IsNullOrEmpty(p))
+        {
+            callback?.Invoke(false, "未配置校园网认证账号或密码");
+            return;
+        }
+
+        Task.Run(async () =>
+        {
+            var (ok, msg) = await LoginAsync(u, p);
+            AppEvents.InvokeOnUI(() => callback?.Invoke(ok, msg));
+        });
+    }
+
+    public void Logout(Action<bool, string>? callback = null)
+    {
+        Task.Run(async () =>
+        {
+            await LogoutAsync();
+            AppEvents.InvokeOnUI(() => callback?.Invoke(true, "已发送注销请求"));
+        });
+    }
+
     private static string? ExtractVar(string name, string text)
     {
         var m = Regex.Match(text, $@"""?{Regex.Escape(name)}""?\s*[:=]\s*""?([^"",;\r\n]+)""?");
@@ -691,6 +742,29 @@ public sealed class CampusNetworkClient
             }
         });
     }
+
+    public void StopMonitoring()
+    {
+        _syncTimer?.Dispose();
+        _syncTimer = null;
+    }
+
+    public void FetchOnlineDevices(Action<bool, string>? callback = null)
+    {
+        FetchData();
+    }
+
+    public void KickOnlineDevice(string sessionId, Action<bool, string> callback)
+    {
+        var session = LatestData.OnlineDevices.FirstOrDefault(d => d.SessionId == sessionId) ?? new OnlineDeviceSession { SessionId = sessionId };
+        KickDevice(session, callback);
+    }
+
+    public bool IsManualLogout { get; set; }
+    public void ClearManualLogout() => IsManualLogout = false;
+    public void MarkManualLogout() => IsManualLogout = true;
+    public void UpdateInterval(double sec) => StartMonitoring();
+    public void ApplyParsedDashboardHTML(string html) => FetchData();
 }
 
 #endregion
@@ -710,7 +784,9 @@ public sealed class UpdateChecker
         _client.DefaultRequestHeaders.Add("User-Agent", "HFUTCampusNet-Windows-App");
     }
 
-    public void CheckForUpdates(bool manual, Action<string?, string?> callback)
+    public GitHubReleaseInfo? AvailableUpdate { get; private set; }
+
+    public void CheckForUpdates(bool manual, Action<GitHubReleaseInfo?, string?> callback)
     {
         Task.Run(async () =>
         {
@@ -720,27 +796,39 @@ public sealed class UpdateChecker
                 var json = await _client.GetStringAsync(url);
                 using var doc = JsonDocument.Parse(json);
                 var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
-                var body = doc.RootElement.TryGetProperty("body", out var b) ? b.GetString() : "";
+                var body = doc.RootElement.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
+                var htmlUrl = doc.RootElement.TryGetProperty("html_url", out var h) ? h.GetString() ?? "" : "";
+                var name = doc.RootElement.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
 
                 if (IsNewerVersion(tag, CurrentVersion))
                 {
-                    callback(tag, body);
+                    var release = new GitHubReleaseInfo
+                    {
+                        TagName = tag,
+                        Version = tag,
+                        Name = name,
+                        Body = body,
+                        HtmlUrl = htmlUrl
+                    };
+                    AvailableUpdate = release;
+                    callback(release, null);
                 }
                 else
                 {
-                    callback(null, null);
+                    AvailableUpdate = null;
+                    callback(null, manual ? "当前已是最新版本" : null);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                callback(null, null);
+                callback(null, ex.Message);
             }
         });
     }
 
     private static bool IsNewerVersion(string latest, string current)
     {
-        if (Version.TryParse(latest, out var vLatest) && Version.TryParse(current, out var vCur))
+        if (System.Version.TryParse(latest, out var vLatest) && System.Version.TryParse(current, out var vCur))
         {
             return vLatest > vCur;
         }

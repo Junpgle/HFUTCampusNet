@@ -6,7 +6,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using Cursors = System.Windows.Input.Cursors;
 
 namespace HFUTCampusNet;
 
@@ -357,7 +356,7 @@ public class CourseScheduleWindow : Window
 
             if (schedule != null)
             {
-                string syncTimeStr = schedule.LastSyncTime.ToString("MM-dd HH:mm");
+                string syncTimeStr = schedule.LastSyncTime?.ToString("MM-dd HH:mm") ?? "--";
                 _statusLabel.Text = $"{schedule.CurrentSemesterName} · 共 {schedule.Items.Count} 门课 · 更新于 {syncTimeStr}";
             }
             else
@@ -1346,7 +1345,7 @@ public class ClassroomScheduleWindow : Window
         if (_buildingCombo.SelectedItem is not ComboBoxItem bItem || bItem.Tag is not StudyBuildingOption building)
             return;
 
-        string today = EmptyClassroomService.Shared.TodayDateString();
+        string today = EmptyClassroomService.TodayDateString();
         var cached = EmptyClassroomService.Shared.CachedBuildingRooms(building.Code, today);
         if (cached != null && cached.Count > 0)
         {

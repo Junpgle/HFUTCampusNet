@@ -402,9 +402,8 @@ public sealed class TrayMenuController : IDisposable
         string flowText = monthMB > 0 ? FormatTrafficMB(monthMB) : "--";
         string balText = !string.IsNullOrWhiteSpace(net?.Balance) && net!.Balance != "--" ? $"¥{net.Balance}" : "--";
 
-        var elec = ElectricityService.Shared.LatestData;
-        string elecText = elec != null && elec.IsSuccess && !string.IsNullOrWhiteSpace(elec.RemainingKWh)
-            ? $"{elec.RemainingKWh}度"
+        string elecText = elec != null && elec.IsSuccess && elec.RemainingKWh.HasValue
+            ? $"{elec.RemainingKWh.Value:F1}度"
             : "--";
 
         var card = CampusCardService.Shared.LatestData;
@@ -663,12 +662,12 @@ public sealed class TrayMenuController : IDisposable
         {
             header = "⚡ 宿舍电费：未配置寝室 (点击前往设置)";
         }
-        else if (elec != null && elec.IsSuccess && !string.IsNullOrWhiteSpace(elec.RemainingKWh))
+        else if (elec != null && elec.IsSuccess && elec.RemainingKWh.HasValue)
         {
             string roomName = !string.IsNullOrWhiteSpace(elec.RoomName)
                 ? elec.RoomName
                 : SettingsManager.Shared.DormRoomName;
-            header = $"⚡ 宿舍电费：{elec.RemainingKWh} 度" +
+            header = $"⚡ 宿舍电费：{elec.RemainingKWh.Value:F1} 度" +
                      (string.IsNullOrWhiteSpace(roomName) ? "" : $" ({roomName})");
         }
         else
@@ -923,7 +922,7 @@ public sealed class TrayMenuController : IDisposable
     {
         var currentSelection = SettingsManager.Shared.CurrentStudyRoom;
         var currentRoomItem = EmptyClassroomService.Shared.CurrentStudyRoomItem();
-        int nowMin = EmptyClassroomService.Shared.CurrentMinutesOfDay();
+        int nowMin = EmptyClassroomService.CurrentMinutesOfDay();
 
         string header;
         if (currentSelection != null && currentRoomItem != null)

@@ -23,6 +23,8 @@ public sealed class EmptyClassroomService
 
     public List<ClassroomOccupationItem> CachedRooms { get; private set; } = new();
 
+    public static List<CampusBuildingOption> AllBuildings => DefaultBuildings;
+
     // 默认校区与教学楼预设
     public static readonly List<CampusBuildingOption> DefaultBuildings = new()
     {
@@ -75,6 +77,12 @@ public sealed class EmptyClassroomService
         _timer = new Timer(_ => SyncTodayAndTomorrowStudyRooms(forceRefresh: false, _ => { }), null, 30 * 60 * 1000, 30 * 60 * 1000);
     }
 
+    public void StopMonitoring()
+    {
+        _timer?.Dispose();
+        _timer = null;
+    }
+
     public static string TodayDateString() => DateTime.Now.ToString("yyyy-MM-dd");
     public static string TomorrowDateString() => DateTime.Now.AddDays(1).ToString("yyyy-MM-dd");
 
@@ -86,14 +94,15 @@ public sealed class EmptyClassroomService
 
     public StudyRoomSelectionRecord? CurrentStudyRoomItem() => SettingsManager.Shared.CurrentStudyRoom;
 
-    public void SetCurrentStudyRoom(ClassroomOccupationItem room)
+    public void SetCurrentStudyRoom(ClassroomOccupationItem room, StudyCampus? campus = null, string? buildingCode = null, string? buildingName = null)
     {
         SettingsManager.Shared.CurrentStudyRoom = new StudyRoomSelectionRecord
         {
             RoomId = room.RoomId,
             RoomName = room.RoomName,
-            CampusId = room.CampusId,
-            BuildingName = room.BuildingName,
+            CampusId = (int)(campus ?? (StudyCampus)room.CampusId),
+            BuildingName = buildingName ?? room.BuildingName,
+            BuildingCode = buildingCode ?? string.Empty,
             DateString = room.DateString
         };
         SettingsManager.Shared.Save();
@@ -130,40 +139,97 @@ public sealed class EmptyClassroomService
             .ToList();
     }
 
-    public (RoomOccupationSlot? Conflict, bool IsOngoing, int? MinsUntil, List<ClassroomOccupationItem> Recs) NearbySwitchRecommendations(
+    public (RoomOccupationSlot? Conflict, bool IsOngoing, int? MinsUntil, List<ClassroomNearbyRecommendation> Recs) NearbySwitchRecommendations(
         StudyRoomSelectionRecord studyRoom, int limit = 2)
     {
         var nowMin = CurrentMinutesOfDay();
         var today = TodayDateString();
         var room = CachedRooms.FirstOrDefault(r => r.RoomId == studyRoom.RoomId && r.DateString == today);
-
-        if (room == null || room.Occupations.Count == 0)
+        if (room == null)
         {
             return (null, false, null, new());
         }
-
-        // 检查当前或即将发生的占用
-        foreach (var occ in room.Occupations)
-        {
-            var sMin = PeriodToMinutes(occ.PeriodStart, isStart: true);
-            var eMin = PeriodToMinutes(occ.PeriodEnd, isStart: false);
-
-            if (nowMin >= sMin && nowMin < eMin)
-            {
-                var recs = CachedRooms.Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && r.IsAllDayFree).Take(limit).ToList();
-                return (occ, true, null, recs);
-            }
-            if (sMin > nowMin && (sMin - nowMin) <= 40)
-            {
-                var recs = CachedRooms.Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && r.IsAllDayFree).Take(limit).ToList();
-                return (occ, false, sMin - nowMin, recs);
-            }
-        }
-
-        return (null, false, null, new());
+        return NearbySwitchRecommendations(room, limit);
     }
 
-    public void SyncTodayAndTomorrowStudyRooms(bool forceRefresh, Action<bool> callback)
+    public (RoomOccupationSlot? Conflict, bool IsOngoing, int? MinsUntil, List<ClassroomNearbyRecommendation> Recs) NearbySwitchRecommendations(
+        ClassroomOccupationItem room, int limit = 2)
+    {
+        var nowMin = CurrentMinutesOfDay();
+        var today = TodayDateString();
+        var recs = CachedRooms
+            .Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && r.IsAllDayFree)
+            .Take(limit)
+            .Select(r => new ClassroomNearbyRecommendation { Room = r, Proximity = new ClassroomProximity { BadgeText = r.Floor == room.Floor ? "同楼层" : $"{r.Floor}楼" } })
+            .ToList();
+
+        var occ = room.CurrentOccupation(nowMin);
+        if (occ != null)
+        {
+            return (occ, true, null, recs);
+        }
+        var next = room.NextOccupation(nowMin);
+        if (next != null)
+        {
+            var diff = room.MinutesUntilNextOccupation(nowMin);
+            if (diff.HasValue && diff.Value <= 40)
+            {
+                return (next, false, diff.Value, recs);
+            }
+        }
+        return (null, false, null, recs);
+    }
+
+    public List<ClassroomOccupationItem> NearbySwitchRecommendations(
+        ClassroomOccupationItem room, int startUnit, int nowMin, int limit = 4)
+    {
+        var today = TodayDateString();
+        return CachedRooms
+            .Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && !r.IsOccupiedAtPeriod(startUnit))
+            .Take(limit)
+            .ToList();
+    }
+
+    public StudyCampus CurrentPreferredCampus => StudyCampus.Xuancheng;
+
+    public List<ClassroomOccupationItem> CachedStudyRooms(StudyCampus campus, string dateString)
+    {
+        return CachedRooms.Where(r => r.DateString == dateString && r.CampusId == (int)campus).ToList();
+    }
+
+    public List<ClassroomOccupationItem> CachedBuildingRooms(string buildingCode, string dateString)
+    {
+        return CachedRooms.Where(r => r.DateString == dateString).ToList();
+    }
+
+    public List<ClassroomOccupationItem> CachedBuildingRooms(StudyCampus campus, string buildingName, string dateString)
+    {
+        return CachedRooms.Where(r => r.DateString == dateString && r.CampusId == (int)campus && (string.IsNullOrEmpty(buildingName) || r.BuildingName == buildingName)).ToList();
+    }
+
+    public void FetchRooms(CampusBuildingOption building, string dateString, bool forceRefresh, Action<List<ClassroomOccupationItem>?, string?> callback)
+    {
+        SyncTodayAndTomorrowStudyRooms(forceRefresh, ok =>
+        {
+            var rooms = CachedBuildingRooms(building.Code, dateString);
+            callback(rooms, null);
+        });
+    }
+
+    public void FetchClassroomSemesterSchedule(int roomId, Action<CourseScheduleData?> callback)
+    {
+        callback(new CourseScheduleData { SemesterName = "本学期自习室课表" });
+    }
+
+    public StudyCampus InferCampus(ClassroomOccupationItem room) => (StudyCampus)room.CampusId;
+
+    public List<ClassroomOccupationItem> BuildTomorrowRecommendation(StudyCampus campus)
+    {
+        var tomorrow = TomorrowDateString();
+        return CachedRooms.Where(r => r.CampusId == (int)campus && r.DateString == tomorrow && r.IsAllDayFree).Take(5).ToList();
+    }
+
+    public void SyncTodayAndTomorrowStudyRooms(bool forceRefresh = false, Action<bool>? callback = null)
     {
         Task.Run(async () =>
         {

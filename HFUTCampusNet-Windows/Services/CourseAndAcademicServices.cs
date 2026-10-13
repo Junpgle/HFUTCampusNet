@@ -53,7 +53,7 @@ public sealed class CourseScheduleService
         SyncSchedule(_ => { });
     }
 
-    public void SyncSchedule(Action<bool> callback)
+    public void SyncSchedule(Action<bool>? callback = null)
     {
         Task.Run(async () =>
         {
@@ -68,7 +68,7 @@ public sealed class CourseScheduleService
                         CurrentSchedule = data;
                         SaveCache();
                         AppEvents.RaiseCourseScheduleUpdated();
-                        callback(true);
+                        callback?.Invoke(true);
                         return;
                     }
                 }
@@ -87,19 +87,40 @@ public sealed class CourseScheduleService
                             CurrentSchedule = data;
                             SaveCache();
                             AppEvents.RaiseCourseScheduleUpdated();
-                            callback(true);
+                            callback?.Invoke(true);
                             return;
                         }
                     }
                 }
 
-                callback(false);
+                callback?.Invoke(false);
             }
             catch
             {
-                callback(false);
+                callback?.Invoke(false);
             }
         });
+    }
+
+    public void SyncSchedule(Action<CourseScheduleData?, string?> callback)
+    {
+        SyncSchedule(ok =>
+        {
+            if (ok) callback(CurrentSchedule, null);
+            else callback(null, "课表同步失败，请重新登录");
+        });
+    }
+
+    public void ClearSchedule()
+    {
+        CurrentSchedule = null;
+        SaveCache();
+        AppEvents.RaiseCourseScheduleUpdated();
+    }
+
+    public void FetchAndApplyFromHTML(string html, Action<bool> callback)
+    {
+        SyncSchedule(callback);
     }
 
     private async Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc)
@@ -278,6 +299,19 @@ public sealed class AcademicService
         _timer?.Dispose();
         SyncAll(silent: true);
         _timer = new Timer(_ => SyncAll(silent: true), null, 15 * 60 * 1000, 15 * 60 * 1000); // 15分钟轮询
+    }
+
+    public void StopMonitoring()
+    {
+        _timer?.Dispose();
+        _timer = null;
+    }
+
+    public void ClearCache()
+    {
+        LatestData = null;
+        SaveCache();
+        AppEvents.RaiseAcademicDataUpdated();
     }
 
     public void MarkAllGradesAsRead()
