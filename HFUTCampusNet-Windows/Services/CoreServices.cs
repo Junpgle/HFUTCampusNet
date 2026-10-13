@@ -807,7 +807,7 @@ public sealed class UpdateChecker
 {
     public static UpdateChecker Shared { get; } = new();
 
-    public string CurrentVersion => "1.8.2";
+    public string CurrentVersion => "2.0.0";
 
     private readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(10) };
 
