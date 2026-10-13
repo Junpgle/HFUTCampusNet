@@ -7,7 +7,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Cursors = System.Windows.Input.Cursors;
-using MessageBox = System.Windows.MessageBox;
 
 namespace HFUTCampusNet;
 
