@@ -685,7 +685,7 @@ public sealed class HistoryStatsWindow : Window
 
         if (_currentMode == 1 || ElectricityService.Shared.LatestData == null)
         {
-            ElectricityService.Shared.FetchData(_ => ReloadData());
+            ElectricityService.Shared.FetchData((_, _) => ReloadData());
         }
         if (_currentMode == 2 || CampusCardService.Shared.LatestData == null)
         {

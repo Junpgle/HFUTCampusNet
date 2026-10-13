@@ -125,7 +125,7 @@ public sealed class CourseScheduleService
         AppEvents.RaiseCourseScheduleUpdated();
     }
 
-    public void FetchAndApplyFromHTML(string html, Action<bool> callback)
+    public void FetchAndApplyFromHTML(string html, Action<bool>? callback = null)
     {
         SyncSchedule(callback);
     }

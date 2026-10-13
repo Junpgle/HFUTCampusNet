@@ -510,7 +510,7 @@ public sealed class DesktopWidgetWindow : Window
         Opacity = opacity;
     }
 
-    public void UpdateCarouselInterval(int seconds)
+    public void UpdateCarouselInterval(double seconds)
     {
     }
 

@@ -264,6 +264,9 @@ public sealed class CourseLesson
     public string WeekText { get; set; } = string.Empty;
     public string LessonCode { get => CourseCode ?? string.Empty; set => CourseCode = value; }
     public string CreditsText { get; set; } = string.Empty;
+    public string TeacherName => TeachersText;
+    public string AdminClassText => string.Empty;
+    public int SpanUnits => Math.Max(1, EndUnit - StartUnit + 1);
 }
 
 public sealed class SemesterOptionItem
@@ -1147,9 +1150,10 @@ public sealed class ClassroomOccupationItem
     public int CampusId { get; set; }
     public string BuildingName { get; set; } = string.Empty;
     public string Building { get => BuildingName; set => BuildingName = value; }
+    public string BuildingCode { get; set; } = string.Empty;
     public int Floor { get; set; } = 1;
     public int Seats { get; set; }
-    public int SeatsForSection { get => Seats; set => Seats = value; }
+    public int? SeatsForSection { get => Seats > 0 ? Seats : null; set => Seats = value ?? 0; }
     public string DateString { get; set; } = string.Empty;
     public List<RoomOccupationSlot> Occupations { get; set; } = new();
 
@@ -1244,6 +1248,15 @@ public sealed class EmptyClassroomSnapshot
     public string DateString { get; set; } = string.Empty;
     public DateTime LastSyncTime { get; set; } = DateTime.Now;
     public List<ClassroomOccupationItem> Rooms { get; set; } = new();
+}
+
+public sealed class TomorrowStudyRecommendation
+{
+    public string Reason { get; set; } = "全天自习空闲教室";
+    public List<ClassroomOccupationItem> RecommendedRooms { get; set; } = new();
+    public string TargetBuildingCode { get; set; } = string.Empty;
+    public string TargetBuildingName { get; set; } = string.Empty;
+    public string DateString { get; set; } = string.Empty;
 }
 
 public sealed class PeriodTimeSlot

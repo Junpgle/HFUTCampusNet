@@ -193,6 +193,15 @@ public sealed class EmptyClassroomService
             .ToList();
     }
 
+    public List<ClassroomOccupationItem> NearbySwitchRecommendations(
+        StudyRoomSelectionRecord studyRoom, int startUnit, int nowMin, int limit = 4)
+    {
+        var today = TodayDateString();
+        var room = CachedRooms.FirstOrDefault(r => r.RoomId == studyRoom.RoomId && r.DateString == today);
+        if (room == null) return new();
+        return NearbySwitchRecommendations(room, startUnit, nowMin, limit);
+    }
+
     public StudyCampus CurrentPreferredCampus => StudyCampus.Xuancheng;
 
     public List<ClassroomOccupationItem> CachedStudyRooms(StudyCampus campus, string dateString)
@@ -235,6 +244,32 @@ public sealed class EmptyClassroomService
     {
         var tomorrow = TomorrowDateString();
         return CachedRooms.Where(r => r.CampusId == (int)campus && r.DateString == tomorrow && r.IsAllDayFree).Take(5).ToList();
+    }
+
+    public TomorrowStudyRecommendation? BuildTomorrowRecommendation(int limit = 3)
+    {
+        var tomorrow = TomorrowDateString();
+        var rooms = CachedRooms.Where(r => r.DateString == tomorrow && r.IsAllDayFree).Take(limit).ToList();
+        if (rooms.Count == 0) return null;
+        return new TomorrowStudyRecommendation
+        {
+            Reason = "精选明日全天空闲自习室",
+            RecommendedRooms = rooms,
+            TargetBuildingCode = rooms.FirstOrDefault()?.BuildingCode ?? string.Empty,
+            TargetBuildingName = rooms.FirstOrDefault()?.BuildingName ?? string.Empty,
+            DateString = tomorrow
+        };
+    }
+
+    public List<ClassroomOccupationItem> RecommendedTodayAllDayFreeRooms(int limit = 4)
+    {
+        var today = TodayDateString();
+        return CachedRooms.Where(r => r.DateString == today && r.IsAllDayFree).Take(limit).ToList();
+    }
+
+    public void SetNextDayStudyRoom(ClassroomOccupationItem room, StudyCampus? campus = null, string? buildingCode = null, string? buildingName = null, string? dateString = null)
+    {
+        SetCurrentStudyRoom(room, campus, buildingCode, buildingName);
     }
 
     public void SyncTodayAndTomorrowStudyRooms(bool forceRefresh = false, Action<bool>? callback = null)

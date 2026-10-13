@@ -991,14 +991,14 @@ public sealed class TrayMenuController : IDisposable
             rootItem.Items.Add(CreateInfoMenuItem("🌟 今日余下时段全空教室推荐："));
             foreach (var r in allDayRooms)
             {
-                string bName = r.Building?.NameZh ?? "教学楼";
+                string bName = !string.IsNullOrEmpty(r.BuildingName) ? r.BuildingName : "教学楼";
                 var rItem = CreateStyledMenuItem($"  {bName} · {r.NameZh} ({r.SeatsForSection ?? 0}座)", null);
                 rItem.Click += (_, _) =>
                 {
                     EmptyClassroomService.Shared.SetCurrentStudyRoom(
                         r,
                         EmptyClassroomService.Shared.InferCampus(r),
-                        r.Building?.Code ?? "",
+                        r.BuildingCode,
                         bName);
                 };
                 rootItem.Items.Add(rItem);
