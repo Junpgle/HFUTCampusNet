@@ -53,6 +53,13 @@ public sealed class CourseScheduleService
         SyncSchedule(_ => { });
     }
 
+    public void SwitchSemester(string semesterId, Action<CourseScheduleData?, string?>? callback)
+    {
+        SettingsManager.Shared.CourseSemesterId = semesterId;
+        SettingsManager.Shared.Save();
+        SyncSchedule(callback);
+    }
+
     public void SyncSchedule(Action<bool>? callback = null)
     {
         Task.Run(async () =>

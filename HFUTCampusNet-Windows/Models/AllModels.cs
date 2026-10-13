@@ -285,10 +285,12 @@ public sealed class CourseScheduleData
     public string CurrentSemesterId { get => SemesterId; set => SemesterId = value; }
     public string CurrentSemesterName { get => SemesterName ?? string.Empty; set => SemesterName = value; }
     public int MaxWeek => 20;
-    public int CalculatedCurrentWeek(DateTime? date = null) => CurrentWeek(date ?? DateTime.Now);
+    public int CalculatedCurrentWeek(DateTime? date = null) => CurrentWeek(date ?? DateTime.Now) ?? 1;
     public List<CourseLesson> Items => Lessons;
-    public List<CourseLesson> Courses => Lessons;
-    public List<CourseLesson> Activities => Lessons;
+    public List<CourseLesson> Courses(int forWeek) => LessonsForWeek(forWeek);
+    public List<CourseLesson> Activities(int forWeek) => LessonsForWeek(forWeek);
+    public List<CourseLesson> CoursesOn(int week, int weekday) => LessonsForWeek(week).Where(l => l.Weekday == weekday).ToList();
+    public string SemesterStartDateString { get; set; } = string.Empty;
     public string RoomName { get; set; } = string.Empty;
 
     public List<CourseLesson> LessonsForDate(string dateStr)
@@ -1115,6 +1117,7 @@ public sealed class RoomOccupationSlot
     public string CauseTitle { get; set; } = "课程占用";
     public string StartTimeString { get; set; } = "08:00";
     public string EndTimeString { get; set; } = "09:40";
+    public string ShortCourseName => string.IsNullOrEmpty(CourseName) ? CauseTitle : CourseName;
 }
 
 public sealed class StudyRoomStatusInfo
@@ -1278,6 +1281,19 @@ public enum StudyCampus
     Xuancheng = 6,
     Feicuihu = 3,
     Tunxilu = 2
+}
+
+public static class StudyCampusExtensions
+{
+    public static readonly StudyCampus[] AllCases = new[] { StudyCampus.Xuancheng, StudyCampus.Feicuihu, StudyCampus.Tunxilu };
+
+    public static string Title(this StudyCampus campus) => campus switch
+    {
+        StudyCampus.Feicuihu => "翡翠湖校区",
+        StudyCampus.Tunxilu => "屯溪路校区",
+        StudyCampus.Xuancheng => "宣城校区",
+        _ => "宣城校区"
+    };
 }
 
 public sealed class FlowDailyRecord

@@ -269,6 +269,26 @@ public sealed class CampusHistoryManager
 
     public double Past7DaysElectricityDailyAverageCostRMB => Past7DaysElectricityDailyAverageRMB;
     public double CurrentMonthUsedFlowMB => CurrentMonthTotalMB;
+    public string DailyResetCountdownString
+    {
+        get
+        {
+            var now = DateTime.Now;
+            var endOfDay = now.Date.AddDays(1);
+            var diff = endOfDay - now;
+            return $"距重置 {(int)diff.TotalHours}时{diff.Minutes}分";
+        }
+    }
+    public string MonthlyResetCountdownString
+    {
+        get
+        {
+            var now = DateTime.Now;
+            var firstOfNextMonth = new DateTime(now.Year, now.Month, 1).AddMonths(1);
+            var days = (firstOfNextMonth - now.Date).Days;
+            return $"距重置 {days} 天";
+        }
+    }
     public double? LatestFlowBalanceRMB
     {
         get

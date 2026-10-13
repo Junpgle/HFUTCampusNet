@@ -156,7 +156,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
             _row1Ratio = dailyRemainRatio;
 
             var netData = CampusNetworkClient.Shared.LatestData;
-            double fallbackUsedMB = CampusHistoryManager.Shared.CurrentMonthUsedFlowMB ?? 0.0;
+            double fallbackUsedMB = CampusHistoryManager.Shared.CurrentMonthUsedFlowMB;
             double monthlyUsedMB = Math.Max(0.0, Math.Max(netData.UsedMB ?? 0.0, fallbackUsedMB));
             double freeLimitMB = 200.0 * 1024.0;
             double maxLimitMB = 400.0 * 1024.0;
@@ -305,7 +305,7 @@ public sealed class HistoryBarChartControl : FrameworkElement
             var emptyFt = new FormattedText(
                 "暂无充足历史统计数据，系统将随日常使用自动积累",
                 CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
+                System.Windows.FlowDirection.LeftToRight,
                 typeface,
                 12,
                 new SolidColorBrush(Color.FromRgb(120, 128, 140)),
@@ -353,7 +353,7 @@ public sealed class HistoryBarChartControl : FrameworkElement
             var valFt = new FormattedText(
                 item.DisplayValue,
                 CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
+                System.Windows.FlowDirection.LeftToRight,
                 typeface,
                 10,
                 valTextBrush,
@@ -363,7 +363,7 @@ public sealed class HistoryBarChartControl : FrameworkElement
             var dateFt = new FormattedText(
                 item.Label,
                 CultureInfo.CurrentUICulture,
-                FlowDirection.LeftToRight,
+                System.Windows.FlowDirection.LeftToRight,
                 typeface,
                 10,
                 dateTextBrush,
@@ -706,7 +706,7 @@ public sealed class HistoryStatsWindow : Window
 
         if (_currentMode == 1 && ElectricityService.Shared.LatestData == null)
         {
-            ElectricityService.Shared.FetchData(_ => ReloadData());
+            ElectricityService.Shared.FetchData((_, _) => ReloadData());
         }
         else if (_currentMode == 2 && CampusCardService.Shared.LatestData == null)
         {
@@ -908,7 +908,7 @@ public sealed class HistoryStatsWindow : Window
                 balText = "-- 元";
             }
 
-            double bestMonthlyMB = Math.Max(netData.UsedMB ?? 0.0, CampusHistoryManager.Shared.CurrentMonthUsedFlowMB ?? 0.0);
+            double bestMonthlyMB = Math.Max(netData.UsedMB ?? 0.0, CampusHistoryManager.Shared.CurrentMonthUsedFlowMB);
             string monthlyUsedStr = (bestMonthlyMB > 0 || netData.UsedMB.HasValue)
                 ? $"本月累计已用 {FormatMB(bestMonthlyMB)}"
                 : "校园网账户实时余额";

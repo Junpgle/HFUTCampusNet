@@ -1062,6 +1062,9 @@ public class LoginWebWindow : Window
         _webView.CoreWebView2.Navigate("http://172.18.2.2/");
     }
 
+    public void ShowLoginWindow() => ShowWindow();
+    public static void ShowLogin() => Shared.ShowWindow();
+
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         if (!e.IsSuccess) return;

@@ -25,6 +25,9 @@ public sealed class EmptyClassroomService
 
     public static List<CampusBuildingOption> AllBuildings => DefaultBuildings;
 
+    public static readonly List<int> AvailableSemesters = new() { 354, 334, 314 };
+    public static string SemesterTitle(int code) => CourseCalendarHelper.FormatSemesterName(code);
+
     // 默认校区与教学楼预设
     public static readonly List<CampusBuildingOption> DefaultBuildings = new()
     {
@@ -219,6 +222,11 @@ public sealed class EmptyClassroomService
     public void FetchClassroomSemesterSchedule(int roomId, Action<CourseScheduleData?> callback)
     {
         callback(new CourseScheduleData { SemesterName = "本学期自习室课表" });
+    }
+
+    public void FetchClassroomSemesterSchedule(ClassroomOccupationItem room, int semesterCode, bool forceRefresh, Action<CourseScheduleData?, string?> callback)
+    {
+        callback(new CourseScheduleData { SemesterName = SemesterTitle(semesterCode), RoomName = room.RoomName }, null);
     }
 
     public StudyCampus InferCampus(ClassroomOccupationItem room) => (StudyCampus)room.CampusId;
