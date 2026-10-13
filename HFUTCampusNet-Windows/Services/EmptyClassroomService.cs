@@ -261,12 +261,6 @@ public sealed class EmptyClassroomService
         };
     }
 
-    public List<ClassroomOccupationItem> RecommendedTodayAllDayFreeRooms(int limit = 4)
-    {
-        var today = TodayDateString();
-        return CachedRooms.Where(r => r.DateString == today && r.IsAllDayFree).Take(limit).ToList();
-    }
-
     public void SetNextDayStudyRoom(ClassroomOccupationItem room, StudyCampus? campus = null, string? buildingCode = null, string? buildingName = null, string? dateString = null)
     {
         SetCurrentStudyRoom(room, campus, buildingCode, buildingName);
