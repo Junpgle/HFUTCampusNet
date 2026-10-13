@@ -41,9 +41,9 @@ public sealed class CourseScheduleService
         LoadCache();
     }
 
-    public void TryBackgroundLogin()
+    public void TryBackgroundLogin(Action<bool>? callback = null)
     {
-        SyncSchedule(_ => { });
+        SyncSchedule(callback);
     }
 
     public void SwitchSemester(string semesterId)

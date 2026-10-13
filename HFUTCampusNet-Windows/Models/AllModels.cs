@@ -267,12 +267,20 @@ public sealed class CourseLesson
     public string TeacherName => TeachersText;
     public string AdminClassText => string.Empty;
     public int SpanUnits => Math.Max(1, EndUnit - StartUnit + 1);
+    public string Name => CourseName;
+    public string Room => Classroom ?? string.Empty;
 }
 
 public sealed class SemesterOptionItem
 {
     public string Id { get; set; } = string.Empty;
     public string NameZh { get; set; } = string.Empty;
+}
+
+public sealed class CourseMilestone
+{
+    public bool IsOngoing { get; set; }
+    public CourseLesson Course { get; set; } = new();
 }
 
 public sealed class CourseScheduleData
@@ -295,6 +303,22 @@ public sealed class CourseScheduleData
     public List<CourseLesson> CoursesOn(int week, int weekday) => LessonsForWeek(week).Where(l => l.Weekday == weekday).ToList();
     public string SemesterStartDateString { get; set; } = string.Empty;
     public string RoomName { get; set; } = string.Empty;
+
+    public CourseMilestone? NextCourseMilestone(DateTime? now = null)
+    {
+        var dt = now ?? DateTime.Now;
+        var cur = CurrentLesson(dt);
+        if (cur != null)
+        {
+            return new CourseMilestone { IsOngoing = true, Course = cur };
+        }
+        var next = NextLesson(dt);
+        if (next != null)
+        {
+            return new CourseMilestone { IsOngoing = false, Course = next };
+        }
+        return null;
+    }
 
     public List<CourseLesson> LessonsForDate(string dateStr)
     {
@@ -486,6 +510,8 @@ public sealed class ExamItem
     public DateTime? StartDate => CourseCalendarHelper.ParseDate(DateString, StartTimeString);
     public DateTime? ExamStartDate => StartDate;
     public DateTime? EndDate => CourseCalendarHelper.ParseDate(DateString, EndTimeString);
+    public string DateTimeText => DateTimeString;
+    public string Room => DisplayLocation;
 
     public bool IsFinished(DateTime? now = null) => (EndDate ?? DateTime.MinValue) <= (now ?? DateTime.Now);
     public bool IsOngoing(DateTime? now = null)
@@ -544,6 +570,8 @@ public sealed class GradeItem
     public double Credits { get; set; }
     public double? Gpa { get; set; }
     public string ScoreText { get; set; } = string.Empty;
+    public string Score => ScoreText;
+    public string Gp => Gpa.HasValue ? $"{Gpa.Value:F1}" : "--";
 
     public double? NumericScore
     {
@@ -855,6 +883,12 @@ public sealed class AcademicDataSnapshot
         MajorRank = "--"
     } : null;
 
+    public ExamItem? NextUpcomingExam(DateTime? now = null)
+    {
+        var dt = now ?? DateTime.Now;
+        return Exams.Where(e => !e.IsFinished(dt)).OrderBy(e => e.ExamStartDate ?? DateTime.MaxValue).FirstOrDefault();
+    }
+
     public List<SemesterGradeGroup> SemesterGroups
     {
         get
@@ -895,6 +929,9 @@ public sealed class CampusCardTransaction
     public double AmountRMB { get; set; }
     public double? BalanceAfterRMB { get; set; }
     public bool IsExpense { get; set; } = true;
+    public string Time => TimeString;
+    public string Merchant => CleanMerchantName;
+    public double AmountYuan => AmountRMB;
 
     public string CleanMerchantName
     {
@@ -988,6 +1025,11 @@ public sealed class CampusCardData
     public string DepartmentName { get; set; } = string.Empty;
     public double UnsettleAmountRMB { get => UnclaimedRMB; set => UnclaimedRMB = value; }
     public string CardStatusText { get => StatusText; set => StatusText = value; }
+    public string CardStatus => StatusText;
+    public double TodaySpentYuan => TodaySpentRMB();
+    public double WeekSpentYuan => Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, DateTime.Now.Date.AddDays(-7).ToString("yyyy-MM-dd")) >= 0 && t.IsExpense).Sum(t => t.AmountRMB);
+    public double MonthSpentYuan => CurrentMonthSpentRMB();
+    public string ErrorMessage { get; set; } = string.Empty;
 
     public string DisplayBalance => $"{BalanceRMB:F2} 元";
     public bool IsLowBalance => BalanceRMB < SettingsManager.Shared.CampusCardLowWarningThreshold;

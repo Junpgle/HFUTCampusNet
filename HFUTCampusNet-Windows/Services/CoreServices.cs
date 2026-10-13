@@ -268,7 +268,17 @@ public sealed class CampusHistoryManager
     }
 
     public double Past7DaysElectricityDailyAverageCostRMB => Past7DaysElectricityDailyAverageRMB;
-    public double CurrentMonthUsedFlowMB => CurrentMonthTotalMB;
+    public double CurrentMonthUsedFlowMB
+    {
+        get
+        {
+            lock (_lock)
+            {
+                var prefix = DateTime.Now.ToString("yyyy-MM");
+                return FlowRecords.Where(r => r.DateString.StartsWith(prefix)).Sum(r => r.DeltaMB);
+            }
+        }
+    }
     public string DailyResetCountdownString
     {
         get
