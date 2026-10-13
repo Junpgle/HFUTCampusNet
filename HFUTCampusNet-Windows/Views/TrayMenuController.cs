@@ -12,14 +12,11 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using HFUTCampusNet.Models;
-using HFUTCampusNet.Services;
-using HFUTCampusNet.Utils;
 using WinForms = System.Windows.Forms;
 using MediaColor = System.Windows.Media.Color;
 using MediaBrushes = System.Windows.Media.Brushes;
 
-namespace HFUTCampusNet.Views;
+namespace HFUTCampusNet;
 
 /// <summary>
 /// 1:1 Windows Port of MenubarQuoteCardView.swift (CampusQuotaCardView).
@@ -1221,8 +1218,7 @@ public sealed class TrayMenuController : IDisposable
     {
         try
         {
-            var stats = TrafficHistoryManager.Shared.CalculateStats();
-            return Math.Max(0, stats.TodayUsedMB);
+            return Math.Max(0, CampusHistoryManager.Shared.TodayFlowDeltaMB);
         }
         catch
         {
@@ -1234,8 +1230,7 @@ public sealed class TrayMenuController : IDisposable
     {
         try
         {
-            var stats = TrafficHistoryManager.Shared.CalculateStats();
-            return Math.Max(0, stats.MonthUsedMB);
+            return CampusNetworkClient.Shared.LatestData.UsedMB ?? 0.0;
         }
         catch
         {

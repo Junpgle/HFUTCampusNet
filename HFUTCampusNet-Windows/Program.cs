@@ -3,10 +3,6 @@ using System.Diagnostics;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
-using HFUTCampusNet.Services;
-using HFUTCampusNet.Utils;
-using HFUTCampusNet.Views;
-
 namespace HFUTCampusNet;
 
 /// <summary>

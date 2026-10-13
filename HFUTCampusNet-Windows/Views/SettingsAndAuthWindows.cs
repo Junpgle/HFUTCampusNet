@@ -12,15 +12,12 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
-using HFUTCampusNet.Models;
-using HFUTCampusNet.Services;
-using HFUTCampusNet.Utils;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using MediaColor = System.Windows.Media.Color;
 using MediaBrushes = System.Windows.Media.Brushes;
 
-namespace HFUTCampusNet.Views;
+namespace HFUTCampusNet;
 
 #region Settings Window
 
