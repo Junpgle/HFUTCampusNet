@@ -8,9 +8,6 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Cursors = System.Windows.Input.Cursors;
 using MessageBox = System.Windows.MessageBox;
-using ToolTip = System.Windows.Controls.ToolTip;
-using ContextMenu = System.Windows.Controls.ContextMenu;
-using MenuItem = System.Windows.Controls.MenuItem;
 
 namespace HFUTCampusNet;
 

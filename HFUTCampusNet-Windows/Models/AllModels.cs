@@ -1066,14 +1066,24 @@ public static class PeriodScheduleHelper
 
 #endregion
 
-#region 7. 历史统计持久化模型
+#region 7. 历史统计持久化模型与校区枚举
+
+public enum StudyCampus
+{
+    Xuancheng = 6,
+    Feicuihu = 3,
+    Tunxilu = 2
+}
 
 public sealed class FlowDailyRecord
 {
     public string DateString { get; set; } = string.Empty;
     public double StartUsedMB { get; set; }
     public double LatestUsedMB { get; set; }
+    public double TotalUsedMB => LatestUsedMB;
     public double DeltaMB => Math.Max(0.0, LatestUsedMB - StartUsedMB);
+    public double TodayUsedMB => DeltaMB;
+    public double DailyDeltaMB => DeltaMB;
     public DateTime LastUpdated { get; set; } = DateTime.Now;
 }
 
@@ -1084,6 +1094,7 @@ public sealed class ElectricityDailyRecord
     public double LatestBalanceRMB { get; set; }
     public double? RemainingKWh { get; set; }
     public double CostRMB => Math.Max(0.0, StartBalanceRMB - LatestBalanceRMB);
+    public double DailyCostRMB => CostRMB;
     public DateTime LastUpdated { get; set; } = DateTime.Now;
 }
 

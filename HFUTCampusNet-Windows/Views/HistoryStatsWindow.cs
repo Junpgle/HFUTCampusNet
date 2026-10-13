@@ -24,7 +24,7 @@ public sealed class BarChartItem
 /// <summary>
 /// 套餐限额进度条卡片（单日限额 30GB + 每月限额 200GB免费/400GB上限 + 3终端同时在线 / 电费充裕度 / 校园一卡通充裕度）
 /// </summary>
-public sealed class CampusQuotaCardControl : Border
+public sealed class HistoryStatsQuotaCardControl : Border
 {
     private readonly TextBlock _headerLabel;
     private readonly TextBlock _row1Title;
@@ -42,7 +42,7 @@ public sealed class CampusQuotaCardControl : Border
     private double _row1Ratio = 1.0;
     private double _row2Ratio = 1.0;
 
-    public CampusQuotaCardControl()
+    public HistoryStatsQuotaCardControl()
     {
         CornerRadius = new CornerRadius(10);
         Background = new SolidColorBrush(Color.FromArgb(245, 250, 251, 253));
@@ -209,7 +209,7 @@ public sealed class CampusQuotaCardControl : Border
 
             double dayRatio = Math.Clamp(daysLeft / 60.0, 0.0, 1.0);
             _row2Title.Text = "预计续航周期 (按 60 天满周期基准)";
-            _row2SubLeft.Text = $"近 7 天日均消费 {CampusHistoryManager.Shared.Past7DaysElectricityDailyAverageCostRMB:F2} 元/天";
+            _row2SubLeft.Text = $"近 7 天日均消费 {CampusHistoryManager.Shared.Past7DaysElectricityDailyAverageRMB:F2} 元/天";
             _row2SubRight.Text = daysLeft > 0 ? $"约余 {daysLeft} 天" : "测算中";
             _row2Ratio = dayRatio;
         }
@@ -403,7 +403,7 @@ public sealed class HistoryStatsWindow : Window
     private readonly TextBlock[] _cardValueLabels = new TextBlock[4];
     private readonly TextBlock[] _cardSubLabels = new TextBlock[4];
 
-    private readonly CampusQuotaCardControl _quotaCardView;
+    private readonly HistoryStatsQuotaCardControl _quotaCardView;
     private readonly HistoryBarChartControl _chartView;
     private readonly TextBlock _tableTitleLabel;
     private readonly DataGrid _tableView;
@@ -558,7 +558,7 @@ public sealed class HistoryStatsWindow : Window
         rootGrid.Children.Add(cardsGrid);
 
         // 3. 套餐限额进度条卡片
-        _quotaCardView = new CampusQuotaCardControl
+        _quotaCardView = new HistoryStatsQuotaCardControl
         {
             Margin = new Thickness(20, 0, 20, 10)
         };

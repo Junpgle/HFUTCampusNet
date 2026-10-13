@@ -25,3 +25,14 @@ global using DataGridTemplateColumn = System.Windows.Controls.DataGridTemplateCo
 global using MenuItem = System.Windows.Controls.MenuItem;
 global using ContextMenu = System.Windows.Controls.ContextMenu;
 global using ToolTip = System.Windows.Controls.ToolTip;
+
+global using Timer = System.Threading.Timer;
+global using Application = System.Windows.Application;
+global using MessageBox = System.Windows.MessageBox;
+
+// 历史记录与组件兼容类型别名
+global using DailyFlowRecord = HFUTCampusNet.FlowDailyRecord;
+global using DailyElectricityRecord = HFUTCampusNet.ElectricityDailyRecord;
+global using CourseScheduleItem = HFUTCampusNet.CourseLesson;
+global using EmptyClassroomRoomItem = HFUTCampusNet.ClassroomOccupationItem;
+global using ClassroomSemesterScheduleData = HFUTCampusNet.CourseScheduleData;
