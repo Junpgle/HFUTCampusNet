@@ -4,7 +4,7 @@ import AppKit
 public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDelegate {
     public static let shared = DesktopWidgetController()
 
-    private var visualEffectView: NSVisualEffectView!
+    private var visualEffectView: HoverTrackingVisualEffectView!
     private var usedFlowNumLabel: NSTextField!
     private var usedFlowUnitLabel: NSTextField!
     private var availFlowNumLabel: NSTextField!
@@ -18,6 +18,9 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private var progressBar: NSProgressIndicator!
     private var courseTitleLabel: NSTextField!
     private var courseDetailLabel: NSTextField!
+    private var pinModeBtn: NSButton!
+    private var refreshBtn: NSButton!
+    private var closeBtn: NSButton!
 
     private var currentData: CampusNetworkData = CampusNetworkData()
     private var currentSpeedString: String = "↓ 0B/s  ↑ 0B/s"
@@ -47,13 +50,12 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         )
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .floating
         window.hasShadow = true
         window.isMovableByWindowBackground = true
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         super.init(window: window)
         setupUI(width: width, height: height)
+        applyWindowLayerMode()
 
         NetworkSpeedMonitor.shared.start()
         startSpeedCarousel()
@@ -95,6 +97,40 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             object: nil
         )
         updateCourseDisplay()
+    }
+
+    /// 应用桌面小组件层级模式（嵌入桌面图标层 vs 置顶悬浮窗）
+    public func applyWindowLayerMode() {
+        guard let window = self.window else { return }
+        let pinned = SettingsManager.shared.widgetPinToDesktop
+        if pinned {
+            // 紧贴桌面图标层上方（低于所有普通应用窗口），配合 .stationary 在按 F11 显示桌面时驻留不飞走
+            let desktopLevel = Int(CGWindowLevelForKey(.desktopIconWindow)) + 1
+            window.level = NSWindow.Level(rawValue: desktopLevel)
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        } else {
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
+        updatePinButtonAppearance()
+    }
+
+    private func updatePinButtonAppearance() {
+        let pinned = SettingsManager.shared.widgetPinToDesktop
+        let symbolName = pinned ? "rectangle.inset.filled.on.rectangle" : "pin.fill"
+        pinModeBtn?.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "切换层级")
+        pinModeBtn?.contentTintColor = pinned ? .secondaryLabelColor : .systemOrange
+        pinModeBtn?.toolTip = pinned
+            ? "当前：嵌入桌面层模式 (不遮挡普通窗口，按 F11 驻留桌面) · 点击切换为置顶悬浮"
+            : "当前：始终置顶悬浮模式 · 点击切换为嵌入桌面层 (原生小组件模式)"
+    }
+
+    @objc public func togglePinToDesktopMode() {
+        SettingsManager.shared.widgetPinToDesktop.toggle()
+        applyWindowLayerMode()
+        if window?.isVisible == true {
+            window?.orderFront(nil)
+        }
     }
 
     @objc private func onHistoryStatsUpdated() {
@@ -144,16 +180,30 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
     private func setupUI(width: CGFloat, height: CGFloat) {
         guard let window = self.window else { return }
 
-        // 毛玻璃背景
-        visualEffectView = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        // 原生 macOS Sonoma/Sequoia 小组件风格毛玻璃背景与连续圆角
+        visualEffectView = HoverTrackingVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         visualEffectView.material = .hudWindow
         visualEffectView.blendingMode = .behindWindow
         visualEffectView.state = .active
         visualEffectView.wantsLayer = true
-        visualEffectView.layer?.cornerRadius = 16
+        visualEffectView.layer?.cornerRadius = 22
+        if #available(macOS 11.0, *) {
+            visualEffectView.layer?.cornerCurve = .continuous
+        }
         visualEffectView.layer?.masksToBounds = true
-        visualEffectView.layer?.borderWidth = 1.0
-        visualEffectView.layer?.borderColor = NSColor.separatorColor.cgColor
+        visualEffectView.layer?.borderWidth = 0.8
+        visualEffectView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        visualEffectView.onHoverChanged = { [weak self] hovering in
+            guard let self = self else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                let alpha: CGFloat = hovering ? 0.90 : 0.0
+                self.pinModeBtn?.animator().alphaValue = alpha
+                self.refreshBtn?.animator().alphaValue = alpha
+                self.closeBtn?.animator().alphaValue = alpha
+            }
+        }
+        visualEffectView.menu = buildContextMenu()
 
         window.contentView = visualEffectView
 
@@ -166,23 +216,33 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
         // 顶部微型实时网速胶囊标签
         speedBadgeLabel = NSTextField(labelWithString: "↓ 0K/s  ↑ 0K/s")
-        speedBadgeLabel.frame = NSRect(x: 102, y: height - 28, width: 175, height: 18)
+        speedBadgeLabel.frame = NSRect(x: 102, y: height - 28, width: 160, height: 18)
         speedBadgeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
         speedBadgeLabel.textColor = NSColor.systemTeal
         visualEffectView.addSubview(speedBadgeLabel)
 
-        // 刷新按钮
-        let refreshBtn = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新") ?? NSImage(), target: self, action: #selector(refreshClicked))
+        // 层级切换按钮（默认隐藏，鼠标悬停在组件上时淡入）
+        pinModeBtn = WidgetHeaderButton(image: NSImage(systemSymbolName: "rectangle.inset.filled.on.rectangle", accessibilityDescription: "切换层级") ?? NSImage(), target: self, action: #selector(togglePinToDesktopMode))
+        pinModeBtn.isBordered = false
+        pinModeBtn.frame = NSRect(x: width - 74, y: height - 28, width: 18, height: 18)
+        pinModeBtn.alphaValue = 0.0
+        visualEffectView.addSubview(pinModeBtn)
+        updatePinButtonAppearance()
+
+        // 刷新按钮（默认隐藏，鼠标悬停时淡入）
+        refreshBtn = WidgetHeaderButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "刷新") ?? NSImage(), target: self, action: #selector(refreshClicked))
         refreshBtn.isBordered = false
         refreshBtn.frame = NSRect(x: width - 52, y: height - 28, width: 18, height: 18)
         refreshBtn.toolTip = "立即刷新数据"
+        refreshBtn.alphaValue = 0.0
         visualEffectView.addSubview(refreshBtn)
 
-        // 关闭按钮
-        let closeBtn = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "隐藏") ?? NSImage(), target: self, action: #selector(hideWidget))
+        // 关闭按钮（默认隐藏，鼠标悬停时淡入）
+        closeBtn = WidgetHeaderButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "隐藏") ?? NSImage(), target: self, action: #selector(hideWidget))
         closeBtn.isBordered = false
         closeBtn.frame = NSRect(x: width - 30, y: height - 28, width: 18, height: 18)
-        closeBtn.toolTip = "隐藏桌面组件 (可在顶部菜单栏重新开启)"
+        closeBtn.toolTip = "隐藏桌面小组件 (可在顶部菜单栏重新开启)"
+        closeBtn.alphaValue = 0.0
         visualEffectView.addSubview(closeBtn)
 
         // 四格卡片区域
@@ -745,6 +805,47 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
     }
 
+    private func buildContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "桌面小组件选项")
+        let refreshItem = NSMenuItem(title: "立即刷新全部数据", action: #selector(refreshClicked), keyEquivalent: "")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let pinItem = NSMenuItem(title: "嵌入桌面层 (不遮挡窗口，F11驻留)", action: #selector(setPinnedToDesktopAction), keyEquivalent: "")
+        pinItem.target = self
+        menu.addItem(pinItem)
+
+        let floatItem = NSMenuItem(title: "置顶悬浮于所有窗口上方", action: #selector(setFloatingWindowAction), keyEquivalent: "")
+        floatItem.target = self
+        menu.addItem(floatItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let hideItem = NSMenuItem(title: "隐藏桌面小组件", action: #selector(hideWidget), keyEquivalent: "")
+        hideItem.target = self
+        menu.addItem(hideItem)
+
+        return menu
+    }
+
+    @objc private func setPinnedToDesktopAction() {
+        SettingsManager.shared.widgetPinToDesktop = true
+        applyWindowLayerMode()
+        if window?.isVisible == true {
+            window?.orderFront(nil)
+        }
+    }
+
+    @objc private func setFloatingWindowAction() {
+        SettingsManager.shared.widgetPinToDesktop = false
+        applyWindowLayerMode()
+        if window?.isVisible == true {
+            window?.orderFront(nil)
+        }
+    }
+
     @objc public func hideWidget() {
         SettingsManager.shared.showDesktopWidget = false
         window?.orderOut(nil)
@@ -752,7 +853,12 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 
     public func showWidget() {
         SettingsManager.shared.showDesktopWidget = true
-        window?.makeKeyAndOrderFront(nil)
+        applyWindowLayerMode()
+        if SettingsManager.shared.widgetPinToDesktop {
+            window?.orderFront(nil)
+        } else {
+            window?.makeKeyAndOrderFront(nil)
+        }
     }
 
     public func toggleWidget() {
@@ -765,13 +871,70 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
 }
 
 class CustomDraggableWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
         SettingsManager.shared.widgetOrigin = self.frame.origin
     }
 }
 
-// 可点击的卡片按钮（基于 draw(_:) 自适应浅色与深色模式）
+/// 支持全天候鼠标悬停侦测与右键菜单状态刷新的毛玻璃根视图
+class HoverTrackingVisualEffectView: NSVisualEffectView {
+    var onHoverChanged: ((Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChanged?(false)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        if let m = self.menu {
+            let pinned = SettingsManager.shared.widgetPinToDesktop
+            if m.items.count >= 4 {
+                m.items[2].state = pinned ? .on : .off
+                m.items[3].state = pinned ? .off : .on
+            }
+            return m
+        }
+        return super.menu(for: event)
+    }
+}
+
+/// 支持非激活窗口首次点击直接响应的顶部工具按钮
+class WidgetHeaderButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+}
+
+// 可点击的卡片按钮（基于 draw(_:) 自适应浅色与深色模式，支持首次点击直接响应）
 class ClickableCardButton: NSButton {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -781,9 +944,12 @@ class ClickableCardButton: NSButton {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: rect, xRadius: 10, yRadius: 10)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 12, yRadius: 12)
         NSColor.labelColor.withAlphaComponent(0.05).setFill()
         path.fill()
         NSColor.labelColor.withAlphaComponent(0.10).setStroke()

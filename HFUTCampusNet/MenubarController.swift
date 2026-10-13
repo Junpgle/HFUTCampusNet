@@ -15,6 +15,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var balMenuItem: NSMenuItem!
     private var updateTimeMenuItem: NSMenuItem!
     private var toggleWidgetMenuItem: NSMenuItem!
+    private var pinWidgetToDesktopMenuItem: NSMenuItem!
     private var courseParentMenuItem: NSMenuItem!
     private var emptyClassroomMenuItem: NSMenuItem!
     private var dormElectricityMenuItem: NSMenuItem!
@@ -259,9 +260,13 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         // 4. 外观、刷新频率与偏好设置
         let displaySubmenu = NSMenu()
 
-        toggleWidgetMenuItem = NSMenuItem(title: "显示桌面悬浮卡片", action: #selector(toggleWidgetAction), keyEquivalent: "w")
+        toggleWidgetMenuItem = NSMenuItem(title: "显示桌面小组件", action: #selector(toggleWidgetAction), keyEquivalent: "w")
         toggleWidgetMenuItem.target = self
         displaySubmenu.addItem(toggleWidgetMenuItem)
+
+        pinWidgetToDesktopMenuItem = NSMenuItem(title: "小组件嵌入桌面层 (不遮挡窗口，F11驻留)", action: #selector(toggleWidgetPinToDesktopAction), keyEquivalent: "")
+        pinWidgetToDesktopMenuItem.target = self
+        displaySubmenu.addItem(pinWidgetToDesktopMenuItem)
 
         displaySubmenu.addItem(NSMenuItem.separator())
 
@@ -520,8 +525,9 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     private func updateWidgetMenuState() {
         let isShowing = SettingsManager.shared.showDesktopWidget
-        toggleWidgetMenuItem.title = isShowing ? "隐藏桌面悬浮卡片" : "显示桌面悬浮卡片"
+        toggleWidgetMenuItem.title = isShowing ? "隐藏桌面小组件" : "显示桌面小组件"
         toggleWidgetMenuItem.state = isShowing ? .on : .off
+        pinWidgetToDesktopMenuItem?.state = SettingsManager.shared.widgetPinToDesktop ? .on : .off
     }
 
     @objc private func onDormElectricityUpdated() {
@@ -921,6 +927,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func toggleWidgetAction() {
         DesktopWidgetController.shared.toggleWidget()
+        updateWidgetMenuState()
+    }
+
+    @objc private func toggleWidgetPinToDesktopAction() {
+        DesktopWidgetController.shared.togglePinToDesktopMode()
         updateWidgetMenuState()
     }
 

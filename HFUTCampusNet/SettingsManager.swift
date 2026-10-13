@@ -49,6 +49,7 @@ public class SettingsManager {
         static let hideScoreInNotification = "campus_hide_score_in_notification"
         static let notifiedGradeIdsData = "campus_notified_grade_ids_data"
         static let unreadGradeIdsData = "campus_unread_grade_ids_data"
+        static let widgetPinToDesktop = "campus_widget_pin_to_desktop"
     }
 
     private init() {
@@ -57,6 +58,9 @@ public class SettingsManager {
         }
         if defaults.object(forKey: Keys.showDesktopWidget) == nil {
             defaults.set(true, forKey: Keys.showDesktopWidget)
+        }
+        if defaults.object(forKey: Keys.widgetPinToDesktop) == nil {
+            defaults.set(true, forKey: Keys.widgetPinToDesktop)
         }
         if defaults.object(forKey: Keys.widgetOpacity) == nil {
             defaults.set(0.92, forKey: Keys.widgetOpacity)
@@ -113,6 +117,12 @@ public class SettingsManager {
     public var showDesktopWidget: Bool {
         get { defaults.bool(forKey: Keys.showDesktopWidget) }
         set { defaults.set(newValue, forKey: Keys.showDesktopWidget) }
+    }
+
+    /// 是否将桌面小组件嵌入桌面图标层（true: 原生桌面小组件模式，不遮挡普通应用窗口，按 F11 显示桌面时驻留；false: 置顶悬浮窗模式）
+    public var widgetPinToDesktop: Bool {
+        get { defaults.object(forKey: Keys.widgetPinToDesktop) == nil ? true : defaults.bool(forKey: Keys.widgetPinToDesktop) }
+        set { defaults.set(newValue, forKey: Keys.widgetPinToDesktop) }
     }
 
     public var widgetOpacity: CGFloat {

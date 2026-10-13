@@ -1,0 +1,943 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+
+namespace HFUTCampusNet;
+
+public sealed class ElectricityService
+{
+    public static ElectricityService Shared { get; } = new ElectricityService();
+
+    public ElectricityData? LatestData { get; private set; }
+
+    private readonly string _cacheFilePath;
+    private readonly HttpClient _httpClient;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
+    };
+
+    private ElectricityService()
+    {
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "HFUTCampusNet");
+        Directory.CreateDirectory(appData);
+        _cacheFilePath = Path.Combine(appData, "dorm_electricity.json");
+
+        var handler = new HttpClientHandler
+        {
+            UseCookies = false,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+        };
+        _httpClient = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(12)
+        };
+
+        LoadCachedData();
+    }
+
+    private void LoadCachedData()
+    {
+        try
+        {
+            if (!SettingsManager.Shared.IsDormConfigured || !File.Exists(_cacheFilePath))
+                return;
+
+            var json = File.ReadAllText(_cacheFilePath, Encoding.UTF8);
+            var cached = JsonSerializer.Deserialize<ElectricityData>(json, JsonOptions);
+            if (cached == null)
+                return;
+
+            if (cached.Campus != SettingsManager.Shared.DormCampus ||
+                cached.Building != SettingsManager.Shared.DormBuilding ||
+                cached.Room != SettingsManager.Shared.DormRoom ||
+                cached.EndNumber != SettingsManager.Shared.DormEndNumber)
+            {
+                return;
+            }
+
+            LatestData = cached;
+        }
+        catch
+        {
+            // Ignore malformed cache
+        }
+    }
+
+    private void SaveCachedData(ElectricityData data)
+    {
+        LatestData = data;
+        try
+        {
+            var json = JsonSerializer.Serialize(data, JsonOptions);
+            File.WriteAllText(_cacheFilePath, json, Encoding.UTF8);
+        }
+        catch
+        {
+            // Ignore IO errors
+        }
+    }
+
+    /// <summary>
+    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号/端口时，清理不匹配的旧宿舍缓存与旧宿舍历史记录
+    /// </summary>
+    public void InvalidateCacheIfDormChanged()
+    {
+        if (LatestData is { } cached &&
+            SettingsManager.Shared.IsDormConfigured &&
+            cached.Campus == SettingsManager.Shared.DormCampus &&
+            cached.Building == SettingsManager.Shared.DormBuilding &&
+            cached.Room == SettingsManager.Shared.DormRoom &&
+            cached.EndNumber == SettingsManager.Shared.DormEndNumber)
+        {
+            return;
+        }
+
+        bool hadDataOrCache = LatestData != null || File.Exists(_cacheFilePath);
+        LatestData = null;
+        try
+        {
+            if (File.Exists(_cacheFilePath))
+                File.Delete(_cacheFilePath);
+        }
+        catch { }
+
+        CampusHistoryManager.Shared.ClearElectricityHistory();
+        if (hadDataOrCache)
+        {
+            AppEvents.InvokeOnUI(AppEvents.RaiseDormElectricityUpdated);
+        }
+    }
+
+    public void FetchData(Action<ElectricityData?, string?>? completion = null)
+    {
+        _ = Task.Run(async () =>
+        {
+            var (data, err) = await FetchDataAsync();
+            if (completion != null)
+            {
+                AppEvents.InvokeOnUI(() => completion(data, err));
+            }
+        });
+    }
+
+    /// <summary>
+    /// 查询宿舍电费信息（支持静默自动登录）
+    /// </summary>
+    public async Task<(ElectricityData? Data, string? ErrorMessage)> FetchDataAsync()
+    {
+        if (!SettingsManager.Shared.IsDormConfigured)
+        {
+            return (null, "尚未配置宿舍楼栋与房间号，请在「设置」中填写您的宿舍信息");
+        }
+
+        var token = SettingsManager.Shared.HuixinAuthToken;
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            var (firstData, firstErr, isConfigErr) = await ExecuteFeeQueryAsync(token!);
+            if (firstData != null)
+            {
+                return (firstData, null);
+            }
+
+            // Token 可能失效，尝试通过已保存学号密码静默重新登录
+            var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            if (!string.IsNullOrWhiteSpace(newToken))
+            {
+                var (retryData, retryErr, _) = await ExecuteFeeQueryAsync(newToken!);
+                if (retryData != null)
+                    return (retryData, null);
+                return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : retryErr);
+            }
+
+            return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : (loginErr ?? firstErr));
+        }
+        else
+        {
+            var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            if (string.IsNullOrWhiteSpace(newToken))
+            {
+                return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
+            }
+            var (data, err, _) = await ExecuteFeeQueryAsync(newToken!);
+            return (data, err);
+        }
+    }
+
+    public void ObtainHuiXinToken(Action<string?, string?>? completion)
+    {
+        _ = Task.Run(async () =>
+        {
+            var (token, err) = await ObtainHuiXinTokenAsync();
+            if (completion != null)
+            {
+                AppEvents.InvokeOnUI(() => completion(token, err));
+            }
+        });
+    }
+
+    /// <summary>
+    /// 静默调用慧新易校 OAuth 登录获取 Token（支持依次尝试校园网密码与信息门户密码，并正确编码特殊字符）
+    /// </summary>
+    public async Task<(string? Token, string? ErrorMessage)> ObtainHuiXinTokenAsync()
+    {
+        var username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
+        var portalPwd = (SettingsManager.Shared.PortalPassword ?? string.Empty).Trim();
+        var casPwd = (SettingsManager.Shared.CasPassword ?? string.Empty).Trim();
+
+        var candidates = new List<string>();
+        if (!string.IsNullOrEmpty(portalPwd))
+            candidates.Add(portalPwd);
+        if (!string.IsNullOrEmpty(casPwd) && !candidates.Contains(casPwd))
+            candidates.Add(casPwd);
+
+        if (string.IsNullOrEmpty(username) || candidates.Count == 0)
+        {
+            return (null, "尚未配置学号或密码，请在设置中保存学号与密码，或通过「统一身份认证同步」登录");
+        }
+
+        string? lastError = null;
+        foreach (var password in candidates)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/berserker-auth/oauth/token");
+                req.Headers.TryAddWithoutValidation(
+                    "Authorization",
+                    "Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0");
+                var body = $"username={EncodeFormField(username)}&password={EncodeFormField(password)}&grant_type=password&logintype=sno";
+                req.Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded");
+
+                using var resp = await _httpClient.SendAsync(req);
+                var respBytes = await resp.Content.ReadAsByteArrayAsync();
+                var respText = Encoding.UTF8.GetString(respBytes);
+
+                using var doc = JsonDocument.Parse(respText);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("access_token", out var tokenElem) &&
+                    tokenElem.ValueKind == JsonValueKind.String)
+                {
+                    var accessToken = tokenElem.GetString();
+                    if (!string.IsNullOrWhiteSpace(accessToken))
+                    {
+                        SettingsManager.Shared.HuixinAuthToken = accessToken;
+                        return (accessToken, null);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        return (null, lastError ?? "慧新易校授权失败，请核对学号与密码");
+    }
+
+    private async Task<(ElectricityData? Data, string? ErrorMessage, bool IsRoomConfigError)> ExecuteFeeQueryAsync(string token)
+    {
+        var campus = SettingsManager.Shared.DormCampus ?? "宣城校区";
+        var building = SettingsManager.Shared.DormBuilding ?? string.Empty;
+        var room = SettingsManager.Shared.DormRoom ?? string.Empty;
+        var endNumber = SettingsManager.Shared.DormEndNumber ?? "11";
+
+        var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
+            ? token
+            : $"bearer {token}";
+
+        var formParams = new Dictionary<string, string>();
+        if (campus.Contains("宣城"))
+        {
+            formParams["feeitemid"] = "261";
+            formParams["type"] = "IEC";
+            var cleanBuilding = new string(building.Where(char.IsDigit).ToArray());
+            var cleanRoom = new string(room.Where(char.IsDigit).ToArray());
+            var cleanEnd = new string(endNumber.Where(char.IsDigit).ToArray());
+
+            string roomCode;
+            if (cleanRoom.StartsWith("30") && cleanRoom.Length == 9)
+            {
+                roomCode = cleanRoom;
+            }
+            else
+            {
+                int bNum = int.TryParse(cleanBuilding, out var bParsed) ? bParsed : 0;
+                string bStr = bNum.ToString("D2", CultureInfo.InvariantCulture);
+                int rNum = int.TryParse(cleanRoom, out var rParsed) ? rParsed : 0;
+                string rStr = cleanRoom.Length >= 3 ? cleanRoom : rNum.ToString("D3", CultureInfo.InvariantCulture);
+                string suffix = string.IsNullOrEmpty(cleanEnd) ? "11" : cleanEnd;
+                roomCode = $"30{bStr}{rStr}{suffix}";
+            }
+            formParams["room"] = roomCode;
+        }
+        else
+        {
+            formParams["feeitemid"] = "1";
+            formParams["type"] = "IEC";
+            formParams["campus"] = "1sh";
+            formParams["level"] = "1";
+            formParams["building"] = building;
+            formParams["room"] = room;
+        }
+
+        var bodyString = string.Join("&", formParams.Select(kv => $"{kv.Key}={EncodeFormField(kv.Value)}"));
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData");
+            req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
+            req.Content = new StringContent(bodyString, Encoding.UTF8, "application/x-www-form-urlencoded");
+
+            using var resp = await _httpClient.SendAsync(req);
+            int statusCode = (int)resp.StatusCode;
+            if (statusCode == 401 || statusCode == 403)
+            {
+                SettingsManager.Shared.HuixinAuthToken = null;
+                return (null, "登录凭据已过期", false);
+            }
+
+            var respBytes = await resp.Content.ReadAsByteArrayAsync();
+            var respText = Encoding.UTF8.GetString(respBytes);
+
+            using var doc = JsonDocument.Parse(respText);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return (null, "服务器响应格式非 JSON", false);
+            }
+
+            if (root.TryGetProperty("code", out var codeElem) &&
+                codeElem.ValueKind == JsonValueKind.Number &&
+                codeElem.TryGetInt32(out int jsonCode) &&
+                jsonCode == 401)
+            {
+                SettingsManager.Shared.HuixinAuthToken = null;
+                return (null, "登录凭据已过期", false);
+            }
+
+            string? defaultMsg = root.TryGetProperty("msg", out var msgElem) && msgElem.ValueKind == JsonValueKind.String
+                ? msgElem.GetString()
+                : null;
+
+            if (!root.TryGetProperty("map", out var mapElem) ||
+                mapElem.ValueKind != JsonValueKind.Object ||
+                !mapElem.TryGetProperty("showData", out var showDataElem) ||
+                showDataElem.ValueKind != JsonValueKind.Object)
+            {
+                return (null, defaultMsg ?? "未能获取到电费详情，请核对楼栋与寝室号配置", true);
+            }
+
+            var stringMap = new Dictionary<string, string>();
+            double? parsedBalance = null;
+            double? parsedKWh = null;
+
+            foreach (var prop in showDataElem.EnumerateObject())
+            {
+                var k = prop.Name;
+                var vStr = JsonElementToString(prop.Value);
+                stringMap[k] = vStr;
+
+                // 精准提取剩余金额：必须截取 "剩余金额" 后方的子字符串进行正则数字匹配，严防把房间号 (300731511) 误识别为金额
+                if (vStr.Contains("剩余金额"))
+                {
+                    var parts = vStr.Split(new[] { "剩余金额" }, StringSplitOptions.None);
+                    var afterKeyword = parts.LastOrDefault() ?? string.Empty;
+                    if (TryExtractDouble(afterKeyword, out double val))
+                    {
+                        parsedBalance = Math.Round(val * 100.0) / 100.0;
+                    }
+                }
+                else if (k.Contains("剩余金额") || k.Contains("余额"))
+                {
+                    if (TryExtractDouble(vStr, out double val))
+                    {
+                        parsedBalance = Math.Round(val * 100.0) / 100.0;
+                    }
+                }
+
+                // 精准提取剩余电量
+                if (vStr.Contains("剩余电量"))
+                {
+                    var parts = vStr.Split(new[] { "剩余电量" }, StringSplitOptions.None);
+                    var afterKeyword = parts.LastOrDefault() ?? string.Empty;
+                    if (TryExtractDouble(afterKeyword, out double val))
+                    {
+                        parsedKWh = val;
+                    }
+                }
+                else if (k.Contains("剩余电量") || k.Contains("度"))
+                {
+                    if (TryExtractDouble(vStr, out double val))
+                    {
+                        parsedKWh = val;
+                    }
+                }
+            }
+
+            if (parsedBalance == null && parsedKWh == null)
+            {
+                var detailHint = stringMap.Values.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+                var msg = detailHint ?? defaultMsg ?? "未能解析到有效电费数据，请核对楼栋、房间号及端口配置";
+                return (null, msg, true);
+            }
+
+            if (parsedKWh == null && parsedBalance.HasValue)
+            {
+                parsedKWh = Math.Round((parsedBalance.Value / 0.58) * 10.0) / 10.0;
+            }
+
+            var elecData = new ElectricityData
+            {
+                Campus = campus,
+                Building = building,
+                Room = room,
+                EndNumber = endNumber,
+                BalanceRMB = parsedBalance,
+                RemainingKWh = parsedKWh,
+                LastUpdated = DateTime.Now,
+                RawDetails = stringMap
+            };
+
+            AppEvents.InvokeOnUI(() =>
+            {
+                SaveCachedData(elecData);
+                if (elecData.BalanceRMB.HasValue)
+                {
+                    CampusHistoryManager.Shared.RecordElectricity(elecData.BalanceRMB.Value, elecData.RemainingKWh);
+                }
+                CheckLowBalanceWarning(elecData);
+                AppEvents.RaiseDormElectricityUpdated();
+            });
+
+            return (elecData, null, false);
+        }
+        catch (Exception ex)
+        {
+            return (null, ex.Message, false);
+        }
+    }
+
+    private void CheckLowBalanceWarning(ElectricityData data)
+    {
+        if (!data.BalanceRMB.HasValue)
+            return;
+
+        double bal = data.BalanceRMB.Value;
+        double threshold = SettingsManager.Shared.ElectricityLowWarningThreshold;
+        if (bal < threshold)
+        {
+            string today = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            if (SettingsManager.Shared.LastNotifiedLowElectricityDate != today)
+            {
+                SettingsManager.Shared.LastNotifiedLowElectricityDate = today;
+                NotificationHelper.Send(
+                    "⚠️ 宿舍电费不足预警",
+                    $"{SettingsManager.Shared.DormRoomName} 电费仅剩 {data.DisplayBalance}，低于预警线 ({threshold:F0}元)，请及时充值以免断电！",
+                    "electricity_low_warning");
+            }
+        }
+    }
+
+    public void FetchSchoolNetInfoFromHuiXin(Action<string?, string?>? completion)
+    {
+        _ = Task.Run(async () =>
+        {
+            var (flow, balance) = await FetchSchoolNetInfoFromHuiXinAsync();
+            if (completion != null)
+            {
+                AppEvents.InvokeOnUI(() => completion(flow, balance));
+            }
+        });
+    }
+
+    /// <summary>
+    /// 离线/校外模式下通过慧新易校查询校园网流量与余额 (feeitemid=281)
+    /// </summary>
+    public async Task<(string? Flow, string? Balance)> FetchSchoolNetInfoFromHuiXinAsync()
+    {
+        var token = SettingsManager.Shared.HuixinAuthToken;
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            var (newToken, _) = await ObtainHuiXinTokenAsync();
+            if (string.IsNullOrWhiteSpace(newToken))
+                return (null, null);
+            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false);
+        }
+
+        return await QuerySchoolNetHuiXinInternalAsync(token!, allowRetry: true);
+    }
+
+    private async Task<(string? Flow, string? Balance)> QuerySchoolNetHuiXinInternalAsync(string token, bool allowRetry)
+    {
+        try
+        {
+            var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
+                ? token
+                : $"bearer {token}";
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData");
+            req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+            req.Content = new StringContent("feeitemid=281&type=IEC&level=0", Encoding.UTF8, "application/x-www-form-urlencoded");
+
+            using var resp = await _httpClient.SendAsync(req);
+            int httpStatus = (int)resp.StatusCode;
+            var respText = await resp.Content.ReadAsStringAsync();
+
+            JsonDocument? doc = null;
+            int? jsonCode = null;
+            try
+            {
+                doc = JsonDocument.Parse(respText);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("code", out var cElem) &&
+                    cElem.ValueKind == JsonValueKind.Number &&
+                    cElem.TryGetInt32(out int cVal))
+                {
+                    jsonCode = cVal;
+                }
+            }
+            catch { }
+
+            using (doc)
+            {
+                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401)
+                {
+                    SettingsManager.Shared.HuixinAuthToken = null;
+                    if (allowRetry)
+                    {
+                        var (newToken, _) = await ObtainHuiXinTokenAsync();
+                        if (!string.IsNullOrWhiteSpace(newToken))
+                            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false);
+                    }
+                    return (null, null);
+                }
+
+                if (doc == null ||
+                    doc.RootElement.ValueKind != JsonValueKind.Object ||
+                    !doc.RootElement.TryGetProperty("map", out var mapElem) ||
+                    mapElem.ValueKind != JsonValueKind.Object ||
+                    !mapElem.TryGetProperty("showData", out var showDataElem) ||
+                    showDataElem.ValueKind != JsonValueKind.Object)
+                {
+                    return (null, null);
+                }
+
+                string? rawFlow = TryGetShowDataString(showDataElem, "本期已使用流量")
+                    ?? TryGetShowDataString(showDataElem, "已使用流量")
+                    ?? TryGetShowDataString(showDataElem, "已用流量");
+                string? rawFee = TryGetShowDataString(showDataElem, "储值余额")
+                    ?? TryGetShowDataString(showDataElem, "账户余额")
+                    ?? TryGetShowDataString(showDataElem, "余额");
+
+                if (rawFlow == null || rawFee == null)
+                {
+                    foreach (var prop in showDataElem.EnumerateObject())
+                    {
+                        if (rawFlow == null && (prop.Name.Contains("已使用流量") || prop.Name.Contains("已用流量")))
+                            rawFlow = JsonElementToString(prop.Value);
+                        else if (rawFee == null && prop.Name.Contains("余额"))
+                            rawFee = JsonElementToString(prop.Value);
+                    }
+                }
+
+                string? cleanFlow = rawFlow?.Split('（', '(').FirstOrDefault()?.Trim();
+                if (!string.IsNullOrEmpty(cleanFlow) &&
+                    double.TryParse(cleanFlow, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+                {
+                    cleanFlow = $"{cleanFlow} M";
+                }
+
+                string? cleanFee = rawFee?.Split('（', '(').FirstOrDefault()?.Trim();
+                if (!string.IsNullOrEmpty(cleanFee))
+                {
+                    var numPart = cleanFee.Replace("元", "").Trim();
+                    if (double.TryParse(numPart, NumberStyles.Any, CultureInfo.InvariantCulture, out double feeVal))
+                    {
+                        cleanFee = $"{feeVal:F2} 元";
+                    }
+                }
+
+                return (cleanFlow, cleanFee);
+            }
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
+    private static string? TryGetShowDataString(JsonElement showData, string key)
+    {
+        if (showData.TryGetProperty(key, out var elem))
+            return JsonElementToString(elem);
+        return null;
+    }
+
+    internal static string JsonElementToString(JsonElement elem)
+    {
+        return elem.ValueKind switch
+        {
+            JsonValueKind.String => elem.GetString() ?? string.Empty,
+            JsonValueKind.Number => elem.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => elem.GetRawText()
+        };
+    }
+
+    private static bool TryExtractDouble(string text, out double value)
+    {
+        var m = Regex.Match(text, @"-?[0-9]+(?:\.[0-9]+)?");
+        if (m.Success && double.TryParse(m.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            return true;
+        value = 0;
+        return false;
+    }
+
+    internal static string EncodeFormField(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+        return Uri.EscapeDataString(input);
+    }
+}
+
+public sealed class CampusCardService
+{
+    public static CampusCardService Shared { get; } = new CampusCardService();
+
+    public CampusCardData? LatestData { get; private set; }
+
+    private readonly string _cacheFilePath;
+    private readonly HttpClient _httpClient;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
+    };
+
+    private CampusCardService()
+    {
+        var appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "HFUTCampusNet");
+        Directory.CreateDirectory(appData);
+        _cacheFilePath = Path.Combine(appData, "campus_card_cache.json");
+
+        var handler = new HttpClientHandler
+        {
+            UseCookies = false,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+        };
+        _httpClient = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(12)
+        };
+
+        LoadCachedData();
+    }
+
+    private void LoadCachedData()
+    {
+        try
+        {
+            if (!File.Exists(_cacheFilePath))
+                return;
+
+            var json = File.ReadAllText(_cacheFilePath, Encoding.UTF8);
+            var cached = JsonSerializer.Deserialize<CampusCardData>(json, JsonOptions);
+            if (cached != null)
+            {
+                LatestData = cached;
+            }
+        }
+        catch
+        {
+            // Ignore malformed cache
+        }
+    }
+
+    private void SaveCachedData(CampusCardData data)
+    {
+        LatestData = data;
+        try
+        {
+            var json = JsonSerializer.Serialize(data, JsonOptions);
+            File.WriteAllText(_cacheFilePath, json, Encoding.UTF8);
+        }
+        catch
+        {
+            // Ignore IO errors
+        }
+    }
+
+    public void ClearCache()
+    {
+        LatestData = null;
+        try
+        {
+            if (File.Exists(_cacheFilePath))
+                File.Delete(_cacheFilePath);
+        }
+        catch { }
+
+        AppEvents.InvokeOnUI(AppEvents.RaiseCampusCardUpdated);
+    }
+
+    public void FetchData(Action<CampusCardData?, string?>? completion = null)
+    {
+        _ = Task.Run(async () =>
+        {
+            var (data, err) = await FetchDataAsync();
+            if (completion != null)
+            {
+                AppEvents.InvokeOnUI(() => completion(data, err));
+            }
+        });
+    }
+
+    /// <summary>
+    /// 拉取校园卡余额与近期消费账单（自动复用或静默获取慧新易校 Token）
+    /// </summary>
+    public async Task<(CampusCardData? Data, string? ErrorMessage)> FetchDataAsync()
+    {
+        var token = SettingsManager.Shared.HuixinAuthToken;
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            return await ExecuteCardQueryAsync(token!, allowRetry: true);
+        }
+
+        var (newToken, loginErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+        if (string.IsNullOrWhiteSpace(newToken))
+        {
+            return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
+        }
+
+        return await ExecuteCardQueryAsync(newToken!, allowRetry: false);
+    }
+
+    private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(string token, bool allowRetry)
+    {
+        var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
+            ? token
+            : $"bearer {token}";
+
+        try
+        {
+            using var cardReq = new HttpRequestMessage(HttpMethod.Get, "http://121.251.19.62/berserker-app/ykt/tsm/queryCard");
+            cardReq.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+            cardReq.Headers.TryAddWithoutValidation("Authorization", authHeader);
+            cardReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
+
+            using var resp = await _httpClient.SendAsync(cardReq);
+            int httpStatus = (int)resp.StatusCode;
+            var respText = await resp.Content.ReadAsStringAsync();
+
+            JsonDocument? doc = null;
+            int jsonCode = httpStatus;
+            try
+            {
+                doc = JsonDocument.Parse(respText);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("code", out var cElem) &&
+                    cElem.ValueKind == JsonValueKind.Number &&
+                    cElem.TryGetInt32(out int cVal))
+                {
+                    jsonCode = cVal;
+                }
+            }
+            catch { }
+
+            using (doc)
+            {
+                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401)
+                {
+                    SettingsManager.Shared.HuixinAuthToken = null;
+                    if (allowRetry)
+                    {
+                        var (newToken, retryErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+                        if (!string.IsNullOrWhiteSpace(newToken))
+                        {
+                            return await ExecuteCardQueryAsync(newToken!, allowRetry: false);
+                        }
+                        return (null, retryErr ?? "慧新易校授权已过期，请核对学号与密码");
+                    }
+                    return (null, "慧新易校授权已过期，请核对学号与密码");
+                }
+
+                if (doc == null ||
+                    doc.RootElement.ValueKind != JsonValueKind.Object ||
+                    !doc.RootElement.TryGetProperty("data", out var dataElem) ||
+                    dataElem.ValueKind != JsonValueKind.Object ||
+                    !dataElem.TryGetProperty("card", out var cardArrElem) ||
+                    cardArrElem.ValueKind != JsonValueKind.Array ||
+                    cardArrElem.GetArrayLength() == 0)
+                {
+                    return (null, "未能解析到校园一卡通账户信息");
+                }
+
+                var firstCard = cardArrElem[0];
+                var account = GetJsonString(firstCard, "account") ?? string.Empty;
+                var holderName = (GetJsonString(firstCard, "name") ?? string.Empty).Trim();
+                var deptName = GetJsonString(firstCard, "department_name")?.Trim();
+                int dbBalanceFen = GetJsonInt(firstCard, "db_balance") ?? 0;
+                int unsettleFen = GetJsonInt(firstCard, "unsettle_amount") ?? 0;
+                int lostFlag = GetJsonInt(firstCard, "lostflag") ?? 0;
+                int freezeFlag = GetJsonInt(firstCard, "freezeflag") ?? 0;
+
+                string statusText = lostFlag != 0 ? "已挂失" : (freezeFlag != 0 ? "已冻结" : "正常");
+                double balanceRMB = dbBalanceFen / 100.0;
+                double unsettleRMB = unsettleFen / 100.0;
+
+                var transactions = await FetchTransactionsAsync(authHeader, 150);
+
+                var cardData = new CampusCardData
+                {
+                    CardAccount = account,
+                    HolderName = holderName,
+                    DepartmentName = deptName,
+                    BalanceRMB = balanceRMB,
+                    UnsettleAmountRMB = unsettleRMB,
+                    CardStatusText = statusText,
+                    Transactions = transactions,
+                    LastUpdated = DateTime.Now
+                };
+
+                AppEvents.InvokeOnUI(() =>
+                {
+                    SaveCachedData(cardData);
+                    CheckLowBalanceAndBudgetWarning(cardData);
+                    AppEvents.RaiseCampusCardUpdated();
+                });
+
+                return (cardData, null);
+            }
+        }
+        catch (Exception ex)
+        {
+            return (null, ex.Message);
+        }
+    }
+
+    private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(string authHeader, int size)
+    {
+        var list = new List<CampusCardTransaction>();
+        try
+        {
+            var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current=1&size={size}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+            req.Headers.TryAddWithoutValidation("Authorization", authHeader);
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
+
+            using var resp = await _httpClient.SendAsync(req);
+            var respText = await resp.Content.ReadAsStringAsync();
+
+            using var doc = JsonDocument.Parse(respText);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                !doc.RootElement.TryGetProperty("data", out var dataElem) ||
+                dataElem.ValueKind != JsonValueKind.Object ||
+                !dataElem.TryGetProperty("records", out var recordsElem) ||
+                recordsElem.ValueKind != JsonValueKind.Array)
+            {
+                return list;
+            }
+
+            int idx = 0;
+            foreach (var rec in recordsElem.EnumerateArray())
+            {
+                var orderId = GetJsonString(rec, "orderId") ?? $"tx-{idx}";
+                var resume = GetJsonString(rec, "resume") ?? "校园卡交易";
+                var turnoverType = GetJsonString(rec, "turnoverType") ?? "消费";
+                var jnTimeStr = GetJsonString(rec, "jndatetimeStr")
+                    ?? GetJsonString(rec, "effectdateStr")
+                    ?? string.Empty;
+                int tranAmtFen = GetJsonInt(rec, "tranamt") ?? 0;
+                int? cardBalFen = GetJsonInt(rec, "cardBalance");
+
+                double amountRMB = Math.Abs(tranAmtFen) / 100.0;
+                double? balAfterRMB = cardBalFen.HasValue ? cardBalFen.Value / 100.0 : null;
+
+                list.Add(new CampusCardTransaction
+                {
+                    Id = orderId,
+                    MerchantName = resume,
+                    AmountRMB = amountRMB,
+                    BalanceAfterRMB = balAfterRMB,
+                    TurnoverType = turnoverType,
+                    DateTimeString = jnTimeStr
+                });
+                idx++;
+            }
+        }
+        catch
+        {
+            // Ignore transaction fetch errors so card balance still succeeds
+        }
+
+        return list;
+    }
+
+    private void CheckLowBalanceAndBudgetWarning(CampusCardData data)
+    {
+        double threshold = SettingsManager.Shared.CampusCardLowWarningThreshold;
+        string todayStr = CourseCalendarHelper.DateString(DateTime.Now);
+
+        if (data.BalanceRMB < threshold && SettingsManager.Shared.LastNotifiedLowCardBalanceDate != todayStr)
+        {
+            SettingsManager.Shared.LastNotifiedLowCardBalanceDate = todayStr;
+            NotificationHelper.Send(
+                "💳 校园一卡通余额不足预警",
+                $"当前卡内余额仅剩 {data.DisplayBalance}，已低于预警线 ({threshold:F0}元)，去食堂或超市前请记得在慧新易校或支付宝充值！",
+                "campus_card_low_warning");
+        }
+    }
+
+    private static string? GetJsonString(JsonElement obj, string propName)
+    {
+        if (obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(propName, out var val))
+        {
+            if (val.ValueKind == JsonValueKind.String)
+                return val.GetString();
+            if (val.ValueKind == JsonValueKind.Number)
+                return val.GetRawText();
+        }
+        return null;
+    }
+
+    private static int? GetJsonInt(JsonElement obj, string propName)
+    {
+        if (obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(propName, out var val))
+        {
+            if (val.ValueKind == JsonValueKind.Number)
+            {
+                if (val.TryGetInt32(out int i))
+                    return i;
+                if (val.TryGetDouble(out double d))
+                    return (int)d;
+            }
+            else if (val.ValueKind == JsonValueKind.String &&
+                     double.TryParse(val.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double ds))
+            {
+                return (int)ds;
+            }
+        }
+        return null;
+    }
+}
