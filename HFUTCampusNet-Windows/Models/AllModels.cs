@@ -58,6 +58,9 @@ public sealed class OnlineDeviceSession
             return $"{TerminalType}{hostPart} · {Ip}  [{UsedFlowMB:F1} M · {UseMinutes} 分钟]";
         }
     }
+
+    public string DisplayType => string.IsNullOrWhiteSpace(TerminalType) ? "终端设备" : TerminalType;
+    public string UsedFlow => UsedFlowMB >= 1024 ? $"{UsedFlowMB / 1024.0:F2} GB" : $"{UsedFlowMB:F1} MB";
 }
 
 public enum NetworkStatus

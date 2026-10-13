@@ -30,6 +30,7 @@ public static class AppEvents
     public static event Action? HistoryStatsUpdated;
     public static event Action? CampusCardUpdated;
     public static event Action? AcademicDataUpdated;
+    public static event Action? UpdateCheckFinished;
 
     public static void RaiseNetworkDataUpdated() => NetworkDataUpdated?.Invoke();
     public static void RaiseSpeedUpdated(string d, string u, string c) => SpeedUpdated?.Invoke(d, u, c);
@@ -39,6 +40,7 @@ public static class AppEvents
     public static void RaiseHistoryStatsUpdated() => HistoryStatsUpdated?.Invoke();
     public static void RaiseCampusCardUpdated() => CampusCardUpdated?.Invoke();
     public static void RaiseAcademicDataUpdated() => AcademicDataUpdated?.Invoke();
+    public static void RaiseUpdateCheckFinished() => UpdateCheckFinished?.Invoke();
 
     public static void InvokeOnUI(Action action)
     {

@@ -281,7 +281,7 @@ public sealed class TrayMenuController : IDisposable
         AppEvents.CourseScheduleUpdated += () => AppEvents.InvokeOnUI(OnDataUpdated);
         AppEvents.AcademicDataUpdated += () => AppEvents.InvokeOnUI(OnDataUpdated);
         AppEvents.EmptyClassroomUpdated += () => AppEvents.InvokeOnUI(OnDataUpdated);
-        AppEvents.SpeedUpdated += (_, _) => AppEvents.InvokeOnUI(UpdateTrayTooltip);
+        AppEvents.SpeedUpdated += (_, _, _) => AppEvents.InvokeOnUI(UpdateTrayTooltip);
         AppEvents.UpdateCheckFinished += () => AppEvents.InvokeOnUI(UpdateTrayTooltip);
 
         _carouselTimer.Start();
@@ -337,8 +337,9 @@ public sealed class TrayMenuController : IDisposable
         }
 
         var elec = ElectricityService.Shared.LatestData;
-        if (elec != null && elec.IsSuccess && double.TryParse(elec.RemainingKWh, NumberStyles.Any, CultureInfo.InvariantCulture, out double kwh))
+        if (elec != null && elec.IsSuccess && elec.RemainingKWh.HasValue)
         {
+            double kwh = elec.RemainingKWh.Value;
             double threshold = SettingsManager.Shared.ElectricityLowWarningThreshold;
             if (threshold > 0 && kwh <= threshold)
             {
@@ -402,6 +403,7 @@ public sealed class TrayMenuController : IDisposable
         string flowText = monthMB > 0 ? FormatTrafficMB(monthMB) : "--";
         string balText = !string.IsNullOrWhiteSpace(net?.Balance) && net!.Balance != "--" ? $"¥{net.Balance}" : "--";
 
+        var elec = ElectricityService.Shared.LatestData;
         string elecText = elec != null && elec.IsSuccess && elec.RemainingKWh.HasValue
             ? $"{elec.RemainingKWh.Value:F1}度"
             : "--";
