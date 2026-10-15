@@ -453,13 +453,15 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             object: nil
         )
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+        let rTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
             guard let self = self, self.window?.isVisible == true, !self.isWindowLoading else { return }
             self.refreshDateSegmentLabelsAndSelection()
             self.updateLastSyncTimeDisplay()
             self.renderSummaryBar()
             self.reloadFilteredRooms()
         }
+        rTimer.tolerance = 5.0
+        refreshTimer = rTimer
     }
 
     required init?(coder: NSCoder) {

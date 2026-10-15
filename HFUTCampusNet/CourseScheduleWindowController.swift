@@ -117,11 +117,13 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
             object: nil
         )
 
-        // 每分钟刷新一次当前时间指示线
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+        // 每分钟刷新一次当前时间指示线，容差 5 秒允许定时器合并
+        let cTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
             guard let self = self, self.window?.isVisible == true else { return }
             self.renderSchedule()
         }
+        cTimer.tolerance = 5.0
+        refreshTimer = cTimer
 
         // 初始化当前周次
         if let schedule = CourseScheduleService.shared.currentSchedule {

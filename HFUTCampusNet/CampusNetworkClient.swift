@@ -24,6 +24,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private var isHeartbeating: Bool = false
     private var pendingForceDashboard: Bool = false
     private var isFetchingDashboard: Bool = false
+    private var isMonitoring = false
+    private var isPausedForSleep = false
     private var wasOffline: Bool = false
     private var isManuallyLoggedOut: Bool = false
     private var manualLogoutTimestamp: Date? = nil
@@ -59,31 +61,63 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     /// 启动实时监测
     public func startMonitoring() {
-        stopMonitoring()
+        isMonitoring = true
 
         // 立即执行一次快速探测
         performHeartbeatCheck()
 
-        // 启动快速心跳 (每 8 秒探测网关)
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
+        scheduleMonitoringTimers()
+    }
+
+    /// 仅重排定时器，不立即发起网络请求。
+    private func scheduleMonitoringTimers() {
+        heartbeatTimer?.invalidate()
+        dashboardTimer?.invalidate()
+
+        let onBattery = SettingsManager.isOnBatteryPower()
+
+        // 心跳间隔：插电 30 秒，电池下按省电设置放宽（内核级 NWPathMonitor 已毫秒级重连，心跳无需频繁探测）
+        let heartbeatInterval = PowerSaver.heartbeatInterval(onBattery: onBattery)
+        let hTimer = Timer.scheduledTimer(withTimeInterval: heartbeatInterval, repeats: true) { [weak self] _ in
             self?.performHeartbeatCheck()
         }
+        hTimer.tolerance = PowerSaver.tolerance(for: heartbeatInterval)
+        heartbeatTimer = hTimer
 
-        // 启动自服务数据轮询 (默认 5 分钟)
-        let interval = SettingsManager.shared.refreshInterval
-        dashboardTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.fetchDashboardData()
-            ElectricityService.shared.fetchData { _ in }
-            CampusCardService.shared.fetchData { _ in }
+        // 自服务数据轮询：电池下按省电设置放宽，降低后台 TLS 握手与无线射频功耗
+        let interval = PowerSaver.dashboardInterval(onBattery: onBattery)
+        let divisor = PowerSaver.secondaryDivisor(onBattery: onBattery)
+        var pollCounter = 0
+        let dTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.fetchDashboardData()
+            pollCounter += 1
+            // 电费与一卡通每 N 个周期拉取一次（插电时 N = 1）
+            if pollCounter % divisor == 0 {
+                ElectricityService.shared.fetchData { _ in }
+                CampusCardService.shared.fetchData { _ in }
+            }
         }
+        dTimer.tolerance = PowerSaver.tolerance(for: interval)
+        dashboardTimer = dTimer
     }
 
     /// 停止监测
     public func stopMonitoring() {
+        isMonitoring = false
+        invalidateMonitoringTimers()
+    }
+
+    private func invalidateMonitoringTimers() {
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         dashboardTimer?.invalidate()
         dashboardTimer = nil
+    }
+
+    @objc private func handlePowerSourceChange() {
+        guard isMonitoring else { return }
+        scheduleMonitoringTimers()
     }
 
     /// 重新设定自服务刷新周期
@@ -120,20 +154,72 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerConfigChange),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerSourceChange),
+            name: .powerSourceDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func handleSystemSleep() {
+        // 睡眠前停止心跳与轮询定时器，杜绝睡眠期间唤醒系统
+        guard SettingsManager.shared.shouldPauseOnScreenSleep, !isPausedForSleep else { return }
+        isPausedForSleep = true
+        stopMonitoring()
     }
 
     @objc private func handleSystemWake() {
-        // 电脑掀开盖子或休眠唤醒，延时 1 秒后立即做一次心跳与重连
+        // 唤醒后恢复定时监测
+        guard isPausedForSleep else { return }
+        isPausedForSleep = false
+        startMonitoring()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             self?.performHeartbeatCheck(forceDashboard: true)
         }
+    }
+
+    @objc private func handlePowerConfigChange() {
+        // 省电配置变化时重设心跳与数据轮询定时器
+        if isPausedForSleep {
+            guard !SettingsManager.shared.shouldPauseOnScreenSleep else { return }
+            isPausedForSleep = false
+            startMonitoring()
+            return
+        }
+        guard isMonitoring else { return }
+        scheduleMonitoringTimers()
     }
 
     private func setupPathMonitor() {
         pathMonitor = NWPathMonitor()
         pathMonitor?.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, !self.isPausedForSleep else { return }
                 if path.status == .satisfied {
                     // Wi-Fi 重新连上，立刻触发检测与自动重连！
                     self.performHeartbeatCheck(forceDashboard: true)

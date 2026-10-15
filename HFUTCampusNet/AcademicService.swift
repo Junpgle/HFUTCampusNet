@@ -12,6 +12,9 @@ public class AcademicService: NSObject, URLSessionDelegate {
     public private(set) var lastErrorMessage: String?
 
     private var monitorTimer: Timer?
+    private var isMonitoring = false
+    private var isPausedForSleep = false
+    private var monitorGeneration = 0
     private let fileManager = FileManager.default
 
     private lazy var session: URLSession = {
@@ -33,6 +36,71 @@ public class AcademicService: NSObject, URLSessionDelegate {
     private override init() {
         super.init()
         loadCachedData()
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerConfigChange),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerSourceChange),
+            name: .powerSourceDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func handleSystemSleep() {
+        guard SettingsManager.shared.shouldPauseOnScreenSleep, !isPausedForSleep else { return }
+        isPausedForSleep = true
+        stopMonitoring()
+    }
+
+    @objc private func handleSystemWake() {
+        guard isPausedForSleep else { return }
+        isPausedForSleep = false
+        startMonitoring()
+    }
+
+    @objc private func handlePowerConfigChange() {
+        if isPausedForSleep {
+            guard !SettingsManager.shared.shouldPauseOnScreenSleep else { return }
+            isPausedForSleep = false
+            startMonitoring()
+            return
+        }
+        guard isMonitoring else { return }
+        scheduleMonitorTimer()
+    }
+
+    @objc private func handlePowerSourceChange() {
+        guard isMonitoring else { return }
+        scheduleMonitorTimer()
     }
 
     // MARK: - SSL Trust Delegate (兼容校园网内部证书)
@@ -104,18 +172,32 @@ public class AcademicService: NSObject, URLSessionDelegate {
     // MARK: - 后台定时轮询监控（出分静默监控 & 考场同步）
 
     public func startMonitoring() {
-        stopMonitoring()
+        isMonitoring = true
+        monitorGeneration += 1
+        let generation = monitorGeneration
         // 启动后延迟 5 秒执行首次静默同步
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self, self.isMonitoring, self.monitorGeneration == generation else { return }
+            self.syncAll(silent: true, completion: nil)
+        }
+        scheduleMonitorTimer()
+    }
+
+    private func scheduleMonitorTimer() {
+        monitorTimer?.invalidate()
+        // 成绩与考场同步周期：插电 15 分钟，电池下按省电设置放宽
+        let onBattery = SettingsManager.isOnBatteryPower()
+        let interval = PowerSaver.academicInterval(onBattery: onBattery)
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.syncAll(silent: true, completion: nil)
         }
-        // 每 15 分钟在后台轮询一次最新成绩与考场安排
-        monitorTimer = Timer.scheduledTimer(withTimeInterval: 900.0, repeats: true) { [weak self] _ in
-            self?.syncAll(silent: true, completion: nil)
-        }
+        t.tolerance = PowerSaver.tolerance(for: interval)
+        monitorTimer = t
     }
 
     public func stopMonitoring() {
+        isMonitoring = false
+        monitorGeneration += 1
         monitorTimer?.invalidate()
         monitorTimer = nil
     }

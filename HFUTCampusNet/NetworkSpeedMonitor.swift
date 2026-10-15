@@ -31,11 +31,60 @@ public class NetworkSpeedMonitor {
     private var lastIBytes: UInt64 = 0
     private var lastOBytes: UInt64 = 0
     private var lastTimestamp: Date = Date()
-    private var isStarted = false
+    public private(set) var isStarted = false
+    public var isScreenSleeping: Bool = false {
+        didSet {
+            evaluateState()
+        }
+    }
 
     private var lastInterfaceBytes: [String: (ibytes: UInt32, obytes: UInt32)] = [:]
+    private var lastPeakSavedSpeed: Double = 0.0
+    private var lastPeakSavedTime: Date = Date.distantPast
 
-    private init() {}
+    private init() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerConfigChanged),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerConfigChanged),
+            name: .powerSourceDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func onPowerConfigChanged() {
+        evaluateState()
+    }
+
+    /// 根据当前菜单栏模式、小组件可见性、电池状态以及屏幕休眠状态综合评估是否需要开启网速采样
+    public func evaluateState() {
+        if isScreenSleeping {
+            stop()
+            return
+        }
+
+        // 如果用户启用了「隐藏网速采样」且当前省电措施应介入，彻底停止网速采样以省电
+        if SettingsManager.shared.shouldHideSpeedNow {
+            stop()
+            return
+        }
+
+        let menubarStyle = SettingsManager.shared.menubarStyle
+        // 样式 0 (轮播), 2 (仅网速), 3 (并排显示) 需要网速
+        let menubarNeedsSpeed = (menubarStyle == 0 || menubarStyle == 2 || menubarStyle == 3)
+        let widgetNeedsSpeed = SettingsManager.shared.showDesktopWidget && DesktopWidgetController.shared.isWidgetVisible
+
+        if menubarNeedsSpeed || widgetNeedsSpeed {
+            start()
+        } else {
+            stop()
+        }
+    }
 
     public func start() {
         guard !isStarted else { return }
@@ -44,15 +93,22 @@ public class NetworkSpeedMonitor {
         lastInterfaceBytes = getInterfaceNetworkBytes()
         lastTimestamp = Date()
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // 开启定时器合并容差 (Tolerance)，允许 macOS 内核合并唤醒，大幅减少 CPU 深度节能模式打断
+        t.tolerance = 0.25
+        timer = t
     }
 
     public func stop() {
+        guard isStarted || timer != nil else { return }
         timer?.invalidate()
         timer = nil
         isStarted = false
+        currentDownloadBytes = 0.0
+        currentUploadBytes = 0.0
+        lastInterfaceBytes.removeAll()
     }
 
     private func tick() {
@@ -85,7 +141,10 @@ public class NetworkSpeedMonitor {
         lastTimestamp = now
 
         let currentSpeedMBs = max(currentDownloadBytes, currentUploadBytes) / (1024.0 * 1024.0)
-        if currentSpeedMBs > 0.01 {
+        // 峰值速度更新防抖：超过前次 5% 或间隔超过 30 秒才向磁盘发起持久化更新
+        if currentSpeedMBs > 0.05 && (currentSpeedMBs > lastPeakSavedSpeed * 1.05 || now.timeIntervalSince(lastPeakSavedTime) > 30.0) {
+            lastPeakSavedSpeed = currentSpeedMBs
+            lastPeakSavedTime = now
             CampusHistoryManager.shared.updatePeakSpeed(speedMBs: currentSpeedMBs)
         }
 
@@ -109,9 +168,11 @@ public class NetworkSpeedMonitor {
                let addr = current.pointee.ifa_addr,
                let data = current.pointee.ifa_data,
                Int32(addr.pointee.sa_family) == AF_LINK {
-                let name = String(cString: cName)
-                // 仅统计物理外网接口（en* 为 Wi-Fi/以太网，pdp_ip* 为蜂窝热点），排除 lo0、VPN/代理虚拟网卡 (utun*/ipsec*/ppp*) 及隔空投送 (awdl0/llw0) 避免流量翻倍
-                if name.hasPrefix("en") || name.hasPrefix("pdp_ip") {
+                // 仅统计物理外网接口 (en* 为 Wi-Fi/以太网，pdp* 为蜂窝移动)，在 C 字符层直接快速判断，避免对虚拟网卡分配 Swift String
+                let isEn = (cName[0] == 101 && cName[1] == 110) // "en"
+                let isPdp = (cName[0] == 112 && cName[1] == 100 && cName[2] == 112) // "pdp"
+                if isEn || isPdp {
+                    let name = String(cString: cName)
                     let networkData = data.assumingMemoryBound(to: if_data.self)
                     let prev = result[name] ?? (0, 0)
                     result[name] = (

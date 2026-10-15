@@ -57,9 +57,6 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         setupUI(width: width, height: height)
         applyWindowLayerMode()
 
-        NetworkSpeedMonitor.shared.start()
-        startSpeedCarousel()
-
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(onCourseScheduleUpdated),
@@ -94,6 +91,18 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
             self,
             selector: #selector(onAcademicDataUpdated),
             name: .academicDataDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerStateChanged),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerStateChanged),
+            name: .powerSourceDidChange,
             object: nil
         )
         updateCourseDisplay()
@@ -184,7 +193,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         visualEffectView = HoverTrackingVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         visualEffectView.material = .hudWindow
         visualEffectView.blendingMode = .behindWindow
-        visualEffectView.state = .active
+        visualEffectView.state = .followsWindowActiveState
         visualEffectView.wantsLayer = true
         visualEffectView.layer?.cornerRadius = 22
         if #available(macOS 11.0, *) {
@@ -578,25 +587,70 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func startSpeedCarousel() {
+    public func startSpeedCarousel() {
+        guard isWidgetVisible else { return }
         carouselTimer?.invalidate()
-        carouselTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+        let t = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
+            guard let self = self, self.isWidgetVisible else { return }
             self.carouselIndex = (self.carouselIndex + 1) % 6
             if self.carouselIndex == 0 {
                 self.updateCourseDisplay()
             }
             self.renderBottomLabel()
         }
+        t.tolerance = 0.5
+        carouselTimer = t
+    }
+
+    public func stopSpeedCarousel() {
+        carouselTimer?.invalidate()
+        carouselTimer = nil
     }
 
     public func speedMonitorDidUpdate(download: String, upload: String, compact: String) {
+        guard isWidgetVisible else { return }
+
+        if SettingsManager.shared.shouldHideSpeedNow {
+            currentSpeedString = "省电模式 (网速已休眠)"
+            speedBadgeLabel?.stringValue = "🔋省电"
+            if carouselIndex == 0 {
+                updateTimeLabel?.stringValue = "省电模式 · 网速已挂起"
+                updateTimeLabel?.textColor = NSColor.secondaryLabelColor
+            }
+            return
+        }
+
         currentSpeedString = "↓ \(download)   ↑ \(upload)"
         speedBadgeLabel?.stringValue = compact
         if carouselIndex == 0 {
             updateTimeLabel?.stringValue = "实时速率：\(currentSpeedString)"
             updateTimeLabel?.textColor = NSColor.systemTeal
         }
+    }
+
+    @objc private func onPowerStateChanged() {
+        guard isWidgetVisible else { return }
+        updateSpeedDisplayForPowerState()
+    }
+
+    private func updateSpeedDisplayForPowerState() {
+        if SettingsManager.shared.shouldHideSpeedNow {
+            currentSpeedString = "省电模式 (网速已休眠)"
+            speedBadgeLabel?.stringValue = "🔋省电"
+            if carouselIndex == 0 {
+                updateTimeLabel?.stringValue = "省电模式 · 网速已挂起"
+                updateTimeLabel?.textColor = NSColor.secondaryLabelColor
+            }
+        } else {
+            let monitor = NetworkSpeedMonitor.shared
+            currentSpeedString = "↓ \(monitor.formattedDownloadSpeed)   ↑ \(monitor.formattedUploadSpeed)"
+            speedBadgeLabel?.stringValue = monitor.compactSpeedString
+            if carouselIndex == 0 {
+                updateTimeLabel?.stringValue = "实时速率：\(currentSpeedString)"
+                updateTimeLabel?.textColor = NSColor.systemTeal
+            }
+        }
+        renderBottomLabel()
     }
 
     public func updateData(_ data: CampusNetworkData) {
@@ -846,9 +900,15 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         }
     }
 
+    public var isWidgetVisible: Bool {
+        return window?.isVisible == true
+    }
+
     @objc public func hideWidget() {
         SettingsManager.shared.showDesktopWidget = false
+        stopSpeedCarousel()
         window?.orderOut(nil)
+        NetworkSpeedMonitor.shared.evaluateState()
     }
 
     public func showWidget() {
@@ -859,6 +919,9 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         } else {
             window?.makeKeyAndOrderFront(nil)
         }
+        updateSpeedDisplayForPowerState()
+        startSpeedCarousel()
+        NetworkSpeedMonitor.shared.evaluateState()
     }
 
     public func toggleWidget() {

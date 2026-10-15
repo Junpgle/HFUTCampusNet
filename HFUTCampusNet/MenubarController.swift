@@ -22,6 +22,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private var campusCardMenuItem: NSMenuItem!
     private var academicMenuItem: NSMenuItem!
     private var checkUpdateMenuItem: NSMenuItem!
+    private var hideSpeedOnBatteryMenuItem: NSMenuItem?
     private var quotaMenuCardView: CampusQuotaCardView?
 
     private var currentData: CampusNetworkData = CampusNetworkData()
@@ -31,13 +32,53 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     private var carouselTimer: Timer?
     private var carouselToggle: Bool = false
+    private var isMenuOpen: Bool = false
+    private var isPausedForSleep: Bool = false
 
     private override init() {
         super.init()
         setupStatusItem()
         startCarousel()
         NetworkSpeedMonitor.shared.delegate = self
-        NetworkSpeedMonitor.shared.start()
+        NetworkSpeedMonitor.shared.evaluateState()
+
+        // 监听屏幕睡眠与点亮（合盖/息屏自动挂起网速与轮播）
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(onScreenSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(onScreenWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(onSystemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(onSystemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerConfigChanged),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerConfigChanged),
+            name: .powerSourceDidChange,
+            object: nil
+        )
 
         NotificationCenter.default.addObserver(
             self,
@@ -102,7 +143,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         return img
     }
 
-    private func statusDotImage(color: NSColor, diameter: CGFloat = 7) -> NSImage {
+    private static let greenDotImage: NSImage = makeStatusDotImage(color: .systemGreen)
+    private static let orangeDotImage: NSImage = makeStatusDotImage(color: .systemOrange)
+
+    private static func makeStatusDotImage(color: NSColor, diameter: CGFloat = 7) -> NSImage {
         let canvasSize = NSSize(width: 14, height: 14)
         let img = NSImage(size: canvasSize, flipped: false) { rect in
             let dotRect = NSRect(
@@ -117,6 +161,16 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         }
         img.isTemplate = false
         return img
+    }
+
+    private func statusDotImage(color: NSColor, diameter: CGFloat = 7) -> NSImage {
+        if color == .systemGreen && diameter == 7 {
+            return Self.greenDotImage
+        }
+        if color == .systemOrange && diameter == 7 {
+            return Self.orangeDotImage
+        }
+        return Self.makeStatusDotImage(color: color, diameter: diameter)
     }
 
     private func setupStatusItem() {
@@ -315,6 +369,18 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         intervalParentItem.submenu = intervalMenu
         displaySubmenu.addItem(intervalParentItem)
 
+        displaySubmenu.addItem(NSMenuItem.separator())
+
+        let batterySpeedItem = NSMenuItem(
+            title: "隐藏网速以省电",
+            action: #selector(toggleHideSpeedOnBatteryAction(_:)),
+            keyEquivalent: ""
+        )
+        batterySpeedItem.target = self
+        batterySpeedItem.state = SettingsManager.shared.hideSpeedOnBattery ? .on : .off
+        hideSpeedOnBatteryMenuItem = batterySpeedItem
+        displaySubmenu.addItem(batterySpeedItem)
+
         let displayParentItem = NSMenuItem(title: "显示与刷新选项", action: nil, keyEquivalent: "")
         displayParentItem.image = symbolImage("slider.horizontal.3")
         displayParentItem.submenu = displaySubmenu
@@ -341,12 +407,30 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         menu.addItem(quitItem)
     }
 
-    private func startCarousel() {
+    public func startCarousel() {
         carouselTimer?.invalidate()
+        carouselTimer = nil
+
+        // 电池供电且开启省电轮播、或隐藏网速、或状态栏不是智能轮播模式，都无需唤醒轮播定时器
+        if SettingsManager.shared.shouldHideSpeedNow
+            || SettingsManager.shared.shouldPauseCarouselNow
+            || isPausedForSleep
+            || SettingsManager.shared.menubarStyle != 0 {
+            carouselToggle = false
+            return
+        }
+
         let interval = SettingsManager.shared.carouselInterval
-        carouselTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.carouselTick()
         }
+        t.tolerance = 0.5
+        carouselTimer = t
+    }
+
+    public func stopCarousel() {
+        carouselTimer?.invalidate()
+        carouselTimer = nil
     }
 
     private func carouselTick() {
@@ -357,7 +441,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     private func updateTopStatusLine() {
         let statusPrefix = currentData.isLoggedIn ? "已在线" : "未认证"
         networkStatusMenuItem?.image = statusDotImage(color: currentData.isLoggedIn ? .systemGreen : .systemOrange)
-        networkStatusMenuItem?.title = "\(statusPrefix)  ·  ↓ \(currentDownloadSpeed)   ↑ \(currentUploadSpeed)"
+        if SettingsManager.shared.shouldHideSpeedNow {
+            networkStatusMenuItem?.title = "\(statusPrefix)  ·  🔋 省电模式 (网速休眠)"
+        } else {
+            networkStatusMenuItem?.title = "\(statusPrefix)  ·  ↓ \(currentDownloadSpeed)   ↑ \(currentUploadSpeed)"
+        }
     }
 
     public func speedMonitorDidUpdate(download: String, upload: String, compact: String) {
@@ -365,13 +453,62 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         currentUploadSpeed = upload
         currentSpeedCompact = compact
 
-        updateTopStatusLine()
+        // 仅在用户实际点开菜单栏时才刷新顶部状态行，杜绝每秒后台重复渲染
+        if isMenuOpen {
+            updateTopStatusLine()
+        }
         DesktopWidgetController.shared.speedMonitorDidUpdate(download: download, upload: upload, compact: compact)
+
+        if SettingsManager.shared.shouldHideSpeedNow {
+            return
+        }
 
         let style = SettingsManager.shared.menubarStyle
         if style == 2 || style == 3 || (style == 0 && carouselToggle) {
             renderTitle()
         }
+    }
+
+    @objc private func onScreenSleep() {
+        pauseForSleepIfNeeded()
+    }
+
+    @objc private func onSystemWillSleep() {
+        pauseForSleepIfNeeded()
+    }
+
+    private func pauseForSleepIfNeeded() {
+        guard SettingsManager.shared.shouldPauseOnScreenSleep, !isPausedForSleep else { return }
+        isPausedForSleep = true
+        stopCarousel()
+        NetworkSpeedMonitor.shared.isScreenSleeping = true
+    }
+
+    @objc private func onScreenWake() {
+        resumeFromSleep()
+    }
+
+    @objc private func onSystemDidWake() {
+        resumeFromSleep()
+    }
+
+    private func resumeFromSleep() {
+        guard isPausedForSleep else { return }
+        isPausedForSleep = false
+        NetworkSpeedMonitor.shared.isScreenSleeping = false
+        startCarousel()
+        renderTitle()
+    }
+
+    @objc private func onPowerConfigChanged() {
+        if isPausedForSleep && !SettingsManager.shared.shouldPauseOnScreenSleep {
+            isPausedForSleep = false
+            NetworkSpeedMonitor.shared.isScreenSleeping = false
+        }
+        hideSpeedOnBatteryMenuItem?.state = SettingsManager.shared.hideSpeedOnBattery ? .on : .off
+        startCarousel()
+        renderTitle()
+        NetworkSpeedMonitor.shared.evaluateState()
     }
 
     public func updateData(_ data: CampusNetworkData) {
@@ -486,6 +623,13 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         let wifiIcon = symbolImage(isOffline ? "wifi.slash" : "wifi", pointSize: 12.5, weight: .medium)
 
+        if SettingsManager.shared.shouldHideSpeedNow {
+            // 电池模式且开启隐藏网速：统一显示流量与状态，彻底隐藏网速
+            button.image = wifiIcon
+            button.title = flowTitle
+            return
+        }
+
         switch style {
         case 0:
             if carouselToggle {
@@ -513,6 +657,9 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
     }
 
     public func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
+        updateTopStatusLine()
+        hideSpeedOnBatteryMenuItem?.state = SettingsManager.shared.hideSpeedOnBattery ? .on : .off
         updateWidgetMenuState()
         updateCourseSubmenu()
         updateAcademicSubmenu()
@@ -521,6 +668,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         updateCampusCardMenu()
         quotaMenuCardView?.refresh(mode: 0)
         CampusNetworkClient.shared.fetchOnlineDevices()
+    }
+
+    public func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
     }
 
     private func updateWidgetMenuState() {
@@ -874,7 +1025,17 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                 item.state = (item == sender) ? .on : .off
             }
         }
+        startCarousel()
         renderTitle()
+        NetworkSpeedMonitor.shared.evaluateState()
+    }
+
+    @objc private func toggleHideSpeedOnBatteryAction(_ sender: NSMenuItem) {
+        SettingsManager.shared.hideSpeedOnBattery.toggle()
+        sender.state = SettingsManager.shared.hideSpeedOnBattery ? .on : .off
+        startCarousel()
+        renderTitle()
+        NetworkSpeedMonitor.shared.evaluateState()
     }
 
     @objc private func oneClickLoginAction() {

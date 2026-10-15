@@ -47,6 +47,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     private var lastRolloverDateString: String = EmptyClassroomService.todayDateString()
 
     private var monitorTimer: Timer?
+    private var isMonitoring = false
+    private var isPausedForSleep = false
     private let fileManager = FileManager.default
 
     private lazy var session: URLSession = {
@@ -87,6 +89,58 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerConfigChange),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePowerSourceChange),
+            name: .powerSourceDidChange,
+            object: nil
+        )
+    }
+
+    @objc private func handleSystemSleep() {
+        guard SettingsManager.shared.shouldPauseOnScreenSleep, !isPausedForSleep else { return }
+        isPausedForSleep = true
+        stopMonitoring()
+    }
+
+    @objc private func handlePowerConfigChange() {
+        if isPausedForSleep {
+            guard !SettingsManager.shared.shouldPauseOnScreenSleep else { return }
+            isPausedForSleep = false
+            startMonitoring()
+            return
+        }
+        guard isMonitoring else { return }
+        scheduleMonitorTimer()
+    }
+
+    @objc private func handlePowerSourceChange() {
+        guard isMonitoring else { return }
+        scheduleMonitorTimer()
     }
 
     // MARK: - SSL Trust Delegate (兼容校园网内部证书)
@@ -239,7 +293,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     // MARK: - 定时监测与每日自动推进
 
     public func startMonitoring() {
-        stopMonitoring()
+        isMonitoring = true
+        scheduleMonitorTimer()
         checkStudyRoomDayRollover(triggerSyncIfNeeded: false)
 
         // 启动时自动拉取今日与明日的主力自习教学楼空教室数据
@@ -248,22 +303,35 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             self?.evaluateAndNotifyIfNeeded()
         }
 
-        // 每 60 秒检查一次当前自习教室是否即将上课或进入晚间搬书时段
-        monitorTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+    }
+
+    private func scheduleMonitorTimer() {
+        monitorTimer?.invalidate()
+
+        // 自习室检查周期：插电 60 秒，电池下按省电设置放宽，减少对能效核心的打扰
+        let onBattery = SettingsManager.isOnBatteryPower()
+        let interval = PowerSaver.studyRoomInterval(onBattery: onBattery)
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.checkStudyRoomDayRollover(triggerSyncIfNeeded: true)
             self.evaluateAndNotifyIfNeeded()
         }
+        t.tolerance = PowerSaver.tolerance(for: interval)
+        monitorTimer = t
     }
 
     public func stopMonitoring() {
+        isMonitoring = false
         monitorTimer?.invalidate()
         monitorTimer = nil
     }
 
     @objc private func handleSystemWake() {
+        guard isPausedForSleep else { return }
+        isPausedForSleep = false
+        startMonitoring()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.isMonitoring, !self.isPausedForSleep else { return }
             self.checkStudyRoomDayRollover(triggerSyncIfNeeded: true)
             let campus = self.currentPreferredCampus
             let todayEmpty = self.cachedStudyRooms(campus: campus, dateString: Self.todayDateString()).isEmpty
