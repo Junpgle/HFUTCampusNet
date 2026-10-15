@@ -115,13 +115,21 @@ public class ElectricityService {
             return
         }
 
+        let oauthClientId = ProcessInfo.processInfo.environment["HFUTCAMPUSNET_OAUTH_CLIENT_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let oauthClientSecret = ProcessInfo.processInfo.environment["HFUTCAMPUSNET_OAUTH_CLIENT_SECRET"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !oauthClientId.isEmpty, !oauthClientSecret.isEmpty else {
+            let err = NSError(domain: "cn.edu.hfut.electricity", code: 503, userInfo: [NSLocalizedDescriptionKey: "未配置慧新易校 OAuth 客户端环境变量 HFUTCAMPUSNET_OAUTH_CLIENT_ID / HFUTCAMPUSNET_OAUTH_CLIENT_SECRET"])
+            DispatchQueue.main.async { completion(.failure(err)) }
+            return
+        }
+        let oauthClientCredentials = oauthClientId + ":" + oauthClientSecret
+
         func tryCandidate(at index: Int) {
             let password = candidates[index]
             let url = URL(string: "http://121.251.19.62/berserker-auth/oauth/token")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 10.0
-            let oauthClientCredentials = "mobile_service_platform:mobile_service_platform_secret"
             let basicAuthorization = Data(oauthClientCredentials.utf8).base64EncodedString()
             request.setValue("Basic \(basicAuthorization)", forHTTPHeaderField: "Authorization")
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

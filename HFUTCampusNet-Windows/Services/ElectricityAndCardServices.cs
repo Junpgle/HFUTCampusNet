@@ -209,13 +209,20 @@ public sealed class ElectricityService
             return (null, "尚未配置学号或密码，请在设置中保存学号与密码，或通过「统一身份认证同步」登录");
         }
 
+        var oauthClientId = Environment.GetEnvironmentVariable("HFUTCAMPUSNET_OAUTH_CLIENT_ID")?.Trim();
+        var oauthClientSecret = Environment.GetEnvironmentVariable("HFUTCAMPUSNET_OAUTH_CLIENT_SECRET")?.Trim();
+        if (string.IsNullOrWhiteSpace(oauthClientId) || string.IsNullOrWhiteSpace(oauthClientSecret))
+        {
+            return (null, "未配置慧新易校 OAuth 客户端环境变量 HFUTCAMPUSNET_OAUTH_CLIENT_ID / HFUTCAMPUSNET_OAUTH_CLIENT_SECRET");
+        }
+        var oauthClientCredentials = string.Concat(oauthClientId, ":", oauthClientSecret);
+
         string? lastError = null;
         foreach (var password in candidates)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/berserker-auth/oauth/token");
-                var oauthClientCredentials = "mobile_service_platform:mobile_service_platform_secret";
                 var basicAuthorization = Convert.ToBase64String(Encoding.UTF8.GetBytes(oauthClientCredentials));
                 req.Headers.TryAddWithoutValidation(
                     "Authorization",
