@@ -11,10 +11,12 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using WinForms = System.Windows.Forms;
 using MediaColor = System.Windows.Media.Color;
 using MediaBrushes = System.Windows.Media.Brushes;
+using System.Windows.Markup;
 
 namespace HFUTCampusNet;
 
@@ -46,8 +48,10 @@ public class CampusQuotaCardControl : Border
         Padding = compact ? new Thickness(12, 10, 12, 10) : new Thickness(14, 12, 14, 12);
         Margin = compact ? new Thickness(6, 4, 6, 4) : new Thickness(0);
         MinWidth = compact ? 290 : 300;
-        Background = new SolidColorBrush(MediaColor.FromArgb(245, 34, 36, 44));
-        BorderBrush = new SolidColorBrush(MediaColor.FromArgb(45, 255, 255, 255));
+        Background = ThemeManager.Shared.IsDarkTheme
+            ? new SolidColorBrush(MediaColor.FromArgb(245, 34, 36, 44))
+            : new SolidColorBrush(MediaColor.FromArgb(250, 255, 255, 255));
+        BorderBrush = ThemeManager.Shared.CardBorderBrush;
         BorderThickness = new Thickness(1);
 
         var root = new StackPanel { Orientation = Orientation.Vertical };
@@ -59,14 +63,14 @@ public class CampusQuotaCardControl : Border
             Text = "今日免费额度 (30 GB)",
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(235, 238, 245))
+            Foreground = ThemeManager.Shared.TextPrimary
         };
         _dailyValueLabel = new TextBlock
         {
             Text = "-- / 30 GB",
             FontSize = 11,
             FontWeight = FontWeights.Medium,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(185, 192, 205)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             HorizontalAlignment = HorizontalAlignment.Right
         };
         DockPanel.SetDock(dailyTitle, Dock.Left);
@@ -80,7 +84,9 @@ public class CampusQuotaCardControl : Border
         {
             Height = 7,
             CornerRadius = new CornerRadius(3.5),
-            Background = new SolidColorBrush(MediaColor.FromArgb(45, 255, 255, 255)),
+            Background = ThemeManager.Shared.IsDarkTheme
+                ? new SolidColorBrush(MediaColor.FromArgb(45, 255, 255, 255))
+                : new SolidColorBrush(MediaColor.FromArgb(35, 0, 0, 0)),
             Margin = new Thickness(0, 0, 0, 10),
             ClipToBounds = true
         };
@@ -103,14 +109,14 @@ public class CampusQuotaCardControl : Border
             Text = "本月累计流量 (200 GB)",
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(235, 238, 245))
+            Foreground = ThemeManager.Shared.TextPrimary
         };
         _monthlyValueLabel = new TextBlock
         {
             Text = "-- / 200 GB",
             FontSize = 11,
             FontWeight = FontWeights.Medium,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(185, 192, 205)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             HorizontalAlignment = HorizontalAlignment.Right
         };
         DockPanel.SetDock(_monthlyTitleLabel, Dock.Left);
@@ -124,7 +130,9 @@ public class CampusQuotaCardControl : Border
         {
             Height = 7,
             CornerRadius = new CornerRadius(3.5),
-            Background = new SolidColorBrush(MediaColor.FromArgb(45, 255, 255, 255)),
+            Background = ThemeManager.Shared.IsDarkTheme
+                ? new SolidColorBrush(MediaColor.FromArgb(45, 255, 255, 255))
+                : new SolidColorBrush(MediaColor.FromArgb(35, 0, 0, 0)),
             Margin = new Thickness(0, 0, 0, 8),
             ClipToBounds = true
         };
@@ -134,7 +142,7 @@ public class CampusQuotaCardControl : Border
             CornerRadius = new CornerRadius(3.5),
             HorizontalAlignment = HorizontalAlignment.Left,
             Width = 0,
-            Background = new SolidColorBrush(MediaColor.FromRgb(10, 132, 255))
+            Background = ThemeManager.Shared.Accent
         };
         _monthlyBarTrack.Child = _monthlyBarFill;
         _monthlyBarTrack.SizeChanged += (_, _) => UpdateBarWidths();
@@ -146,13 +154,13 @@ public class CampusQuotaCardControl : Border
         {
             Text = "今日剩余 30.0 GB",
             FontSize = 10.5,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(155, 162, 178))
+            Foreground = ThemeManager.Shared.TextMuted
         };
         _footerRightLabel = new TextBlock
         {
             Text = "点击查看详细报表 ›",
             FontSize = 10.5,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(120, 175, 255)),
+            Foreground = ThemeManager.Shared.Accent,
             HorizontalAlignment = HorizontalAlignment.Right
         };
         DockPanel.SetDock(_footerLeftLabel, Dock.Left);
@@ -216,12 +224,67 @@ public sealed class TrayMenuController : IDisposable
 {
     public static TrayMenuController Shared { get; } = new TrayMenuController();
 
+    private const int WhMouseLl = 14;
+    private const int WmLButtonDown = 0x0201;
+    private const int WmRButtonDown = 0x0204;
+    private const int WmMButtonDown = 0x0207;
+    private const int WmXButtonDown = 0x020B;
+    private const int WmNcLButtonDown = 0x00A1;
+    private const int WmNcRButtonDown = 0x00A4;
+    private const int WmNcMButtonDown = 0x00A7;
+    private const uint GaRoot = 2;
+
+    private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LowLevelMouseData
+    {
+        public NativePoint Point;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string? moduleName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc callback, IntPtr moduleHandle, uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hookHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hookHandle, int code, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr windowHandle, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsChild(IntPtr parentHandle, IntPtr childHandle);
 
     private WinForms.NotifyIcon? _notifyIcon;
     private ContextMenu? _contextMenu;
     private CampusQuotaCardControl? _quotaCardControl;
+    private readonly LowLevelMouseProc _outsideClickHookProc;
+    private ContextMenu? _outsideClickMonitoredMenu;
+    private readonly HashSet<IntPtr> _outsideClickPopupWindows = new();
+    private readonly List<MenuItem> _outsideClickTrackedMenuItems = new();
+    private IntPtr _outsideClickHook;
 
     private readonly DispatcherTimer _carouselTimer;
     private int _carouselSlotIndex;
@@ -236,6 +299,7 @@ public sealed class TrayMenuController : IDisposable
 
     private TrayMenuController()
     {
+        _outsideClickHookProc = HandleOutsideMouseClick;
         _carouselTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(Math.Max(2.0, SettingsManager.Shared.CarouselInterval))
@@ -436,17 +500,186 @@ public sealed class TrayMenuController : IDisposable
         _contextMenu.IsOpen = true;
     }
 
+    private void StartOutsideClickMonitor(ContextMenu menu)
+    {
+        StopOutsideClickMonitor();
+        _outsideClickMonitoredMenu = menu;
+        AttachSubmenuStateHandlers(menu);
+        RefreshOpenMenuPopupWindows();
+        _outsideClickHook = SetWindowsHookEx(WhMouseLl, _outsideClickHookProc, GetModuleHandle(null), 0);
+
+        if (_outsideClickHook == IntPtr.Zero)
+        {
+            int error = Marshal.GetLastWin32Error();
+            Debug.WriteLine($"[Tray Menu] Could not install outside-click hook: {error}");
+            StopOutsideClickMonitor(menu);
+        }
+    }
+
+    private void StopOutsideClickMonitor(ContextMenu? menu = null)
+    {
+        if (menu != null && !ReferenceEquals(_outsideClickMonitoredMenu, menu))
+        {
+            return;
+        }
+
+        if (_outsideClickHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_outsideClickHook);
+            _outsideClickHook = IntPtr.Zero;
+        }
+
+        foreach (var menuItem in _outsideClickTrackedMenuItems)
+        {
+            menuItem.SubmenuOpened -= OnSubmenuStateChanged;
+            menuItem.SubmenuClosed -= OnSubmenuStateChanged;
+        }
+
+        _outsideClickTrackedMenuItems.Clear();
+        _outsideClickPopupWindows.Clear();
+        _outsideClickMonitoredMenu = null;
+    }
+
+    private IntPtr HandleOutsideMouseClick(int code, IntPtr wParam, IntPtr lParam)
+    {
+        try
+        {
+            if (code >= 0 && IsMouseButtonDownMessage(wParam.ToInt32()) &&
+                _outsideClickMonitoredMenu is { IsOpen: true } menu)
+            {
+                var mouseData = Marshal.PtrToStructure<LowLevelMouseData>(lParam);
+                if (!IsPointInsideOpenMenu(mouseData.Point))
+                {
+                    menu.Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() =>
+                    {
+                        if (ReferenceEquals(_outsideClickMonitoredMenu, menu) && menu.IsOpen)
+                        {
+                            menu.IsOpen = false;
+                        }
+                    }));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Tray Menu] Outside-click handling failed: {ex.Message}");
+        }
+
+        return CallNextHookEx(_outsideClickHook, code, wParam, lParam);
+    }
+
+    private static bool IsMouseButtonDownMessage(int message) => message is
+        WmLButtonDown or WmRButtonDown or WmMButtonDown or WmXButtonDown or
+        WmNcLButtonDown or WmNcRButtonDown or WmNcMButtonDown;
+
+    private bool IsPointInsideOpenMenu(NativePoint point)
+    {
+        if (_outsideClickPopupWindows.Count == 0)
+        {
+            return false;
+        }
+
+        var clickedWindow = WindowFromPoint(point);
+        if (clickedWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var clickedRoot = GetAncestor(clickedWindow, GaRoot);
+        return _outsideClickPopupWindows.Any(popupWindow =>
+            clickedWindow == popupWindow || clickedRoot == popupWindow || IsChild(popupWindow, clickedWindow));
+    }
+
+    private void RefreshOpenMenuPopupWindows()
+    {
+        var menu = _outsideClickMonitoredMenu;
+        if (menu == null)
+        {
+            return;
+        }
+
+        _outsideClickPopupWindows.Clear();
+        if (PresentationSource.FromVisual(menu) is HwndSource menuSource && menuSource.Handle != IntPtr.Zero)
+        {
+            _outsideClickPopupWindows.Add(menuSource.Handle);
+        }
+
+        CollectOpenSubmenuPopupWindows(menu, _outsideClickPopupWindows);
+    }
+
+    private void AttachSubmenuStateHandlers(ItemsControl parent)
+    {
+        foreach (var item in parent.Items)
+        {
+            if (item is not MenuItem menuItem)
+            {
+                continue;
+            }
+
+            menuItem.SubmenuOpened += OnSubmenuStateChanged;
+            menuItem.SubmenuClosed += OnSubmenuStateChanged;
+            _outsideClickTrackedMenuItems.Add(menuItem);
+            AttachSubmenuStateHandlers(menuItem);
+        }
+    }
+
+    private void OnSubmenuStateChanged(object? sender, RoutedEventArgs e)
+    {
+        var menu = _outsideClickMonitoredMenu;
+        if (menu == null)
+        {
+            return;
+        }
+
+        menu.Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() =>
+        {
+            if (ReferenceEquals(_outsideClickMonitoredMenu, menu) && menu.IsOpen)
+            {
+                RefreshOpenMenuPopupWindows();
+            }
+        }));
+    }
+
+    private static void CollectOpenSubmenuPopupWindows(ItemsControl parent, HashSet<IntPtr> popupWindows)
+    {
+        foreach (var item in parent.Items)
+        {
+            if (item is not MenuItem menuItem)
+            {
+                continue;
+            }
+
+            if (menuItem.IsSubmenuOpen &&
+                menuItem.Template?.FindName("PART_Popup", menuItem) is Popup { IsOpen: true, Child: Visual popupVisual } popup &&
+                PresentationSource.FromVisual(popupVisual) is HwndSource popupSource &&
+                popupSource.Handle != IntPtr.Zero)
+            {
+                popupWindows.Add(popupSource.Handle);
+            }
+
+            CollectOpenSubmenuPopupWindows(menuItem, popupWindows);
+        }
+    }
+
     private ContextMenu BuildTrayContextMenu()
     {
         var menu = new ContextMenu
         {
-            Background = new SolidColorBrush(MediaColor.FromArgb(250, 26, 28, 35)),
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(238, 240, 246)),
-            BorderBrush = new SolidColorBrush(MediaColor.FromArgb(65, 255, 255, 255)),
+            Background = ThemeManager.Shared.WindowBackground,
+            Foreground = ThemeManager.Shared.TextPrimary,
+            BorderBrush = ThemeManager.Shared.CardBorderBrush,
             BorderThickness = new Thickness(1),
             Padding = new Thickness(4, 6, 4, 6),
-            HasDropShadow = true
+            HasDropShadow = true,
+            StaysOpen = false
         };
+        menu.Opened += (_, _) => StartOutsideClickMonitor(menu);
+        menu.Closed += (_, _) =>
+        {
+            StopOutsideClickMonitor(menu);
+            CloseOpenSubmenus(menu);
+        };
+        ApplyThemeToContextMenu(menu);
 
         var net = CampusNetworkClient.Shared.LatestData;
         double todayUsedMB = SafeGetTodayUsedMB();
@@ -537,7 +770,7 @@ public sealed class TrayMenuController : IDisposable
 
         // 14. 退出校园网监测
         var quitItem = CreateStyledMenuItem("⏻ 退出校园网监测", "Ctrl+Q");
-        quitItem.Foreground = new SolidColorBrush(MediaColor.FromRgb(255, 105, 97));
+        quitItem.Foreground = ThemeManager.Shared.Danger;
         quitItem.Click += (_, _) =>
         {
             Dispose();
@@ -546,6 +779,26 @@ public sealed class TrayMenuController : IDisposable
         menu.Items.Add(quitItem);
 
         return menu;
+    }
+
+    private static void CloseOpenSubmenus(ItemsControl parent)
+    {
+        foreach (var item in parent.Items)
+        {
+            if (item is not MenuItem menuItem)
+            {
+                continue;
+            }
+
+            // The themed menu template hosts submenus in separate Popup windows.
+            // Reset their bound state when the parent context menu closes so none are left behind.
+            if (menuItem.IsSubmenuOpen)
+            {
+                menuItem.IsSubmenuOpen = false;
+            }
+
+            CloseOpenSubmenus(menuItem);
+        }
     }
 
     private MenuItem BuildCampusNetworkMenuItem(CampusNetworkData? net, double todayUsedMB, double monthUsedMB)
@@ -1151,7 +1404,7 @@ public sealed class TrayMenuController : IDisposable
         var item = new MenuItem
         {
             Header = header,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(235, 238, 245)),
+            Foreground = ThemeManager.Shared.TextPrimary,
             Background = MediaBrushes.Transparent,
             FontSize = 12.5,
             Padding = new Thickness(8, 5, 10, 5)
@@ -1169,7 +1422,7 @@ public sealed class TrayMenuController : IDisposable
         {
             Header = text,
             IsEnabled = false,
-            Foreground = new SolidColorBrush(MediaColor.FromRgb(155, 162, 178)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             FontSize = 11.5,
             Padding = new Thickness(8, 3, 10, 3)
         };
@@ -1179,9 +1432,268 @@ public sealed class TrayMenuController : IDisposable
     {
         return new Separator
         {
-            Background = new SolidColorBrush(MediaColor.FromArgb(35, 255, 255, 255)),
+            Background = ThemeManager.Shared.IsDarkTheme
+                ? new SolidColorBrush(MediaColor.FromArgb(35, 255, 255, 255))
+                : new SolidColorBrush(MediaColor.FromArgb(25, 0, 0, 0)),
             Margin = new Thickness(6, 4, 6, 4)
         };
+    }
+
+    private static void ApplyThemeToContextMenu(ContextMenu menu)
+    {
+        const string Xaml = @"
+<ResourceDictionary xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
+                    xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml"">
+
+    <!-- 极简现代深色 ScrollBar 样式（消除系统浅色/反色大白条） -->
+    <Style TargetType=""ScrollBar"">
+        <Setter Property=""SnapsToDevicePixels"" Value=""True""/>
+        <Setter Property=""OverridesDefaultStyle"" Value=""True""/>
+        <Style.Triggers>
+            <Trigger Property=""Orientation"" Value=""Vertical"">
+                <Setter Property=""Width"" Value=""6""/>
+                <Setter Property=""Template"">
+                    <Setter.Value>
+                        <ControlTemplate TargetType=""ScrollBar"">
+                            <Grid Background=""Transparent"" SnapsToDevicePixels=""True"">
+                                <Track x:Name=""PART_Track"" IsDirectionReversed=""True"">
+                                    <Track.Thumb>
+                                        <Thumb>
+                                            <Thumb.Template>
+                                                <ControlTemplate TargetType=""Thumb"">
+                                                    <Border x:Name=""ThumbBorder"" Background=""#586074"" CornerRadius=""3""/>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property=""IsMouseOver"" Value=""True"">
+                                                            <Setter TargetName=""ThumbBorder"" Property=""Background"" Value=""#828EA8""/>
+                                                        </Trigger>
+                                                        <Trigger Property=""IsDragging"" Value=""True"">
+                                                            <Setter TargetName=""ThumbBorder"" Property=""Background"" Value=""#A6B4D4""/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Thumb.Template>
+                                        </Thumb>
+                                    </Track.Thumb>
+                                </Track>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Trigger>
+            <Trigger Property=""Orientation"" Value=""Horizontal"">
+                <Setter Property=""Height"" Value=""0""/>
+                <Setter Property=""Visibility"" Value=""Collapsed""/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 深色 ScrollViewer 样式 -->
+    <Style TargetType=""ScrollViewer"">
+        <Setter Property=""OverridesDefaultStyle"" Value=""True""/>
+        <Setter Property=""HorizontalScrollBarVisibility"" Value=""Disabled""/>
+        <Setter Property=""VerticalScrollBarVisibility"" Value=""Auto""/>
+        <Setter Property=""Template"">
+            <Setter.Value>
+                <ControlTemplate TargetType=""ScrollViewer"">
+                    <Grid Background=""Transparent"">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width=""*""/>
+                            <ColumnDefinition Width=""Auto""/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollContentPresenter Grid.Column=""0"" CanContentScroll=""{TemplateBinding CanContentScroll}""/>
+                        <ScrollBar x:Name=""PART_VerticalScrollBar""
+                                   Grid.Column=""1""
+                                   Orientation=""Vertical""
+                                   Margin=""1,2,1,2""
+                                   Value=""{TemplateBinding VerticalOffset}""
+                                   Maximum=""{TemplateBinding ScrollableHeight}""
+                                   ViewportSize=""{TemplateBinding ViewportHeight}""
+                                   Visibility=""{TemplateBinding ComputedVerticalScrollBarVisibility}""/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType=""ContextMenu"">
+        <Setter Property=""SnapsToDevicePixels"" Value=""True""/>
+        <Setter Property=""OverridesDefaultStyle"" Value=""True""/>
+        <Setter Property=""Grid.IsSharedSizeScope"" Value=""True""/>
+        <Setter Property=""HasDropShadow"" Value=""True""/>
+        <Setter Property=""Template"">
+            <Setter.Value>
+                <ControlTemplate TargetType=""ContextMenu"">
+                    <Border Background=""#F61C1E26""
+                            BorderBrush=""#38FFFFFF""
+                            BorderThickness=""1""
+                            CornerRadius=""10""
+                            Padding=""4,6,4,6"">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius=""16"" ShadowDepth=""4"" Direction=""270"" Opacity=""0.45"" Color=""Black""/>
+                        </Border.Effect>
+                        <ScrollViewer CanContentScroll=""True""
+                                      VerticalScrollBarVisibility=""Auto""
+                                      HorizontalScrollBarVisibility=""Disabled""
+                                      MaxHeight=""640"">
+                            <StackPanel IsItemsHost=""True"" KeyboardNavigation.DirectionalNavigation=""Cycle""/>
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType=""MenuItem"">
+        <Setter Property=""FontSize"" Value=""12.5""/>
+        <Setter Property=""Foreground"" Value=""#EBEEF5""/>
+        <Setter Property=""Background"" Value=""Transparent""/>
+        <Setter Property=""Padding"" Value=""8,5,10,5""/>
+        <Setter Property=""Template"">
+            <Setter.Value>
+                <ControlTemplate TargetType=""MenuItem"">
+                    <Grid SnapsToDevicePixels=""True"">
+                        <Border x:Name=""BgBorder""
+                                Background=""{TemplateBinding Background}""
+                                CornerRadius=""6""
+                                Padding=""{TemplateBinding Padding}""
+                                Margin=""1,1,1,1"">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width=""Auto"" SharedSizeGroup=""Icon""/>
+                                    <ColumnDefinition Width=""*""/>
+                                    <ColumnDefinition Width=""Auto"" SharedSizeGroup=""Shortcut""/>
+                                    <ColumnDefinition Width=""Auto""/>
+                                </Grid.ColumnDefinitions>
+
+                                <ContentPresenter x:Name=""IconPresenter""
+                                                  Grid.Column=""0""
+                                                  Content=""{TemplateBinding Icon}""
+                                                  Margin=""0,0,8,0""
+                                                  VerticalAlignment=""Center""/>
+
+                                <ContentPresenter x:Name=""HeaderPresenter""
+                                                  Grid.Column=""1""
+                                                  Content=""{TemplateBinding Header}""
+                                                  ContentTemplate=""{TemplateBinding HeaderTemplate}""
+                                                  RecognizesAccessKey=""True""
+                                                  VerticalAlignment=""Center""/>
+
+                                <TextBlock x:Name=""GestureText""
+                                           Grid.Column=""2""
+                                           Text=""{TemplateBinding InputGestureText}""
+                                           Margin=""16,0,0,0""
+                                           Foreground=""#8E98B0""
+                                           FontSize=""11""
+                                           VerticalAlignment=""Center""/>
+
+                                <TextBlock x:Name=""SubmenuArrow""
+                                           Grid.Column=""3""
+                                           Text=""›""
+                                           FontWeight=""Bold""
+                                           FontSize=""13""
+                                           Margin=""10,0,2,0""
+                                           Foreground=""#7E88A6""
+                                           VerticalAlignment=""Center""
+                                           Visibility=""Collapsed""/>
+                            </Grid>
+                        </Border>
+
+                        <Popup x:Name=""PART_Popup""
+                               AllowsTransparency=""True""
+                               Placement=""Right""
+                               VerticalOffset=""-5""
+                               HorizontalOffset=""2""
+                               IsOpen=""{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}""
+                               Focusable=""False""
+                               PopupAnimation=""Fade"">
+                            <Border Background=""#F61C1E26""
+                                    BorderBrush=""#38FFFFFF""
+                                    BorderThickness=""1""
+                                    CornerRadius=""10""
+                                    Padding=""4,6,4,6""
+                                    SnapsToDevicePixels=""True"">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius=""16"" ShadowDepth=""4"" Direction=""270"" Opacity=""0.45"" Color=""Black""/>
+                                </Border.Effect>
+                                <ScrollViewer CanContentScroll=""True""
+                                              VerticalScrollBarVisibility=""Auto""
+                                              HorizontalScrollBarVisibility=""Disabled""
+                                              MaxHeight=""600"">
+                                    <StackPanel IsItemsHost=""True"" KeyboardNavigation.DirectionalNavigation=""Cycle""/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+
+                    <ControlTemplate.Triggers>
+                        <!-- 有子菜单时显示展开箭头 -->
+                        <Trigger Property=""HasItems"" Value=""True"">
+                            <Setter TargetName=""SubmenuArrow"" Property=""Visibility"" Value=""Visible""/>
+                        </Trigger>
+                        <!-- 鼠标悬停高亮状态 -->
+                        <Trigger Property=""IsHighlighted"" Value=""True"">
+                            <Setter TargetName=""BgBorder"" Property=""Background"" Value=""#323646""/>
+                            <Setter Property=""Foreground"" Value=""#FFFFFF""/>
+                            <Setter TargetName=""SubmenuArrow"" Property=""Foreground"" Value=""#CAD4F0""/>
+                        </Trigger>
+                        <!-- 子菜单已展开状态保持深色高亮 -->
+                        <Trigger Property=""IsSubmenuOpen"" Value=""True"">
+                            <Setter TargetName=""BgBorder"" Property=""Background"" Value=""#282B38""/>
+                        </Trigger>
+                        <!-- 禁用态保持高对比度颜色，避免对比度过低看不清 -->
+                        <Trigger Property=""IsEnabled"" Value=""False"">
+                            <Setter Property=""Foreground"" Value=""#8E98B0""/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType=""Separator"">
+        <Setter Property=""Background"" Value=""#22FFFFFF""/>
+        <Setter Property=""Margin"" Value=""6,4,6,4""/>
+        <Setter Property=""Height"" Value=""1""/>
+        <Setter Property=""Template"">
+            <Setter.Value>
+                <ControlTemplate TargetType=""Separator"">
+                    <Border Background=""{TemplateBinding Background}""
+                            Height=""{TemplateBinding Height}""
+                            Margin=""{TemplateBinding Margin}""/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>";
+
+        string themedXaml = Xaml;
+        if (!ThemeManager.Shared.IsDarkTheme)
+        {
+            themedXaml = themedXaml
+                .Replace("#586074", "#A6ADB8")
+                .Replace("#828EA8", "#7A8492")
+                .Replace("#A6B4D4", "#596270")
+                .Replace("#F61C1E26", "#FAFFFFFF")
+                .Replace("#38FFFFFF", "#26000000")
+                .Replace("#282B38", "#E8EEF6")
+                .Replace("#323646", "#E6F1FF")
+                .Replace("#EBEEF5", "#1D1D1F")
+                .Replace("#FFFFFF", "#1D1D1F")
+                .Replace("#CAD4F0", "#3D526B")
+                .Replace("#7E88A6", "#6E6E73")
+                .Replace("#8E98B0", "#8E8E93")
+                .Replace("#22FFFFFF", "#1F000000");
+        }
+
+        try
+        {
+            var dict = (ResourceDictionary)XamlReader.Parse(themedXaml);
+            menu.Resources.MergedDictionaries.Add(dict);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MenuTheme Error]: {ex.Message}");
+        }
     }
 
     private static Icon CreateCampusTrayIcon(bool isOnline)
@@ -1277,6 +1789,12 @@ public sealed class TrayMenuController : IDisposable
         if (_disposed) return;
         _disposed = true;
         _carouselTimer.Stop();
+        StopOutsideClickMonitor();
+
+        if (_contextMenu?.IsOpen == true)
+        {
+            _contextMenu.IsOpen = false;
+        }
 
         if (_notifyIcon != null)
         {
