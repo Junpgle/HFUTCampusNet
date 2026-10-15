@@ -6,6 +6,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, CampusNetworkClientDelegate 
         // 设置为轻量级状态栏 Accessory 模式
         NSApp.setActivationPolicy(.accessory)
 
+        PowerSaver.startMonitoringPowerSource()
+
         CampusNetworkClient.shared.delegate = self
 
         // 初始化通知中心代理与状态栏控制器

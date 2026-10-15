@@ -17,6 +17,23 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private var courseTableCheckbox: NSButton!
     private var courseStatusLabel: NSTextField!
 
+    // 应用内省电措施控件
+    private var powerEnableCheckbox: NSButton!
+    private var powerApplyOnACCheckbox: NSButton!
+    private var powerStatusLabel: NSTextField!
+    private var powerScrollView: NSScrollView!
+    /// key → 「纳入」复选框（仅值类措施）
+    private var powerCheckControls: [String: NSButton] = [:]
+    /// key → 值控件（开关）
+    private var powerValueControls: [String: NSControl] = [:]
+    /// key → 可自由填写的数值框（仅值类措施）
+    private var powerValueFields: [String: NSTextField] = [:]
+    /// key → 说明行
+    private var powerDescLabels: [String: NSTextField] = [:]
+    private var powerStatusTimer: Timer?
+    private let powerCardHeight: CGFloat = 516
+    private let powerCardTop: CGFloat = 524
+
     // 宿舍电费配置控件
     private var dormCampusPopup: NSPopUpButton!
     private var dormBuildingField: NSTextField!
@@ -30,7 +47,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 590),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 720),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -51,6 +68,19 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             self,
             selector: #selector(onExternalServiceUpdated),
             name: .dormElectricityDidUpdate,
+            object: nil
+        )
+        // 省电设置被别处改动时（如菜单栏勾选项）同步刷新卡片
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerConfigChanged),
+            name: .powerModeConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onPowerSourceChanged),
+            name: .powerSourceDidChange,
             object: nil
         )
     }
@@ -119,7 +149,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private func setupUI() {
         guard let window = self.window else { return }
-        let contentView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 590))
+        let contentView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 1060))
 
         // 0. 顶部统一身份认证与统计栏
         let ssoBox = makeGroupCard(frame: NSRect(x: 20, y: 16, width: 500, height: 54))
@@ -351,37 +381,299 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         contentView.addSubview(courseCard)
 
-        // 4. 底部分割线与操作栏
-        let bottomSep = NSBox(frame: NSRect(x: 20, y: 528, width: 500, height: 1))
-        bottomSep.boxType = .separator
-        contentView.addSubview(bottomSep)
+        // 4. 应用内省电措施卡片
+        buildPowerSaverCard(in: contentView)
+
+        // 5. 主体放入滚动视图，底部保留固定操作栏
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 540, height: 674))
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
+        scrollView.documentView = contentView
+        powerScrollView = scrollView
+
+        let footer = FlippedTimelineView(frame: NSRect(x: 0, y: 674, width: 540, height: 46))
+        let footerSep = NSBox(frame: NSRect(x: 0, y: 0, width: 540, height: 1))
+        footerSep.boxType = .separator
+        footer.addSubview(footerSep)
 
         let updateBtn = NSButton(title: "检查更新...", target: self, action: #selector(checkUpdateClicked))
         updateBtn.bezelStyle = .rounded
-        updateBtn.frame = NSRect(x: 20, y: 542, width: 96, height: 30)
-        contentView.addSubview(updateBtn)
+        updateBtn.frame = NSRect(x: 20, y: 8, width: 96, height: 30)
+        footer.addSubview(updateBtn)
 
         let testBtn = NSButton(title: "测试网关登录", target: self, action: #selector(testLoginClicked))
         testBtn.bezelStyle = .rounded
-        testBtn.frame = NSRect(x: 202, y: 542, width: 106, height: 30)
-        contentView.addSubview(testBtn)
+        testBtn.frame = NSRect(x: 202, y: 8, width: 106, height: 30)
+        footer.addSubview(testBtn)
 
         let logoutBtn = NSButton(title: "注销网关", target: self, action: #selector(logoutClicked))
         logoutBtn.bezelStyle = .rounded
-        logoutBtn.frame = NSRect(x: 314, y: 542, width: 86, height: 30)
-        contentView.addSubview(logoutBtn)
+        logoutBtn.frame = NSRect(x: 314, y: 8, width: 86, height: 30)
+        footer.addSubview(logoutBtn)
 
         let saveBtn = NSButton(title: "保存设置", target: self, action: #selector(saveClicked))
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
-        saveBtn.frame = NSRect(x: 406, y: 542, width: 114, height: 30)
-        contentView.addSubview(saveBtn)
+        saveBtn.frame = NSRect(x: 406, y: 8, width: 114, height: 30)
+        footer.addSubview(saveBtn)
 
-        window.contentView = contentView
+        let rootView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 720))
+        rootView.addSubview(scrollView)
+        rootView.addSubview(footer)
+        window.contentView = rootView
     }
 
     @objc private func checkUpdateClicked() {
         UpdateChecker.shared.checkForUpdates(manual: true)
+    }
+
+    // MARK: - 应用内省电措施（仅电池供电时生效）
+
+    private func buildPowerSaverCard(in contentView: NSView) {
+        let card = makeGroupCard(frame: NSRect(x: 20, y: powerCardTop, width: 500, height: powerCardHeight))
+
+        let title = NSTextField(labelWithString: "应用内省电措施")
+        title.frame = NSRect(x: 16, y: 12, width: 300, height: 18)
+        title.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        card.addSubview(title)
+
+        powerEnableCheckbox = NSButton(checkboxWithTitle: "启用省电措施（默认仅电池供电时生效）", target: self, action: #selector(onPowerMasterChanged))
+        powerEnableCheckbox.font = NSFont.systemFont(ofSize: 12)
+        powerEnableCheckbox.frame = NSRect(x: 16, y: 34, width: 420, height: 20)
+        powerEnableCheckbox.state = SettingsManager.shared.powerSaverEnabled ? .on : .off
+        card.addSubview(powerEnableCheckbox)
+
+        powerApplyOnACCheckbox = NSButton(checkboxWithTitle: "插电时也应用（始终省电，不再区分电源类型）", target: self, action: #selector(onPowerApplyOnACChanged))
+        powerApplyOnACCheckbox.font = NSFont.systemFont(ofSize: 12)
+        powerApplyOnACCheckbox.frame = NSRect(x: 16, y: 56, width: 420, height: 20)
+        powerApplyOnACCheckbox.state = SettingsManager.shared.powerSaverApplyOnAC ? .on : .off
+        card.addSubview(powerApplyOnACCheckbox)
+
+        let hint = NSTextField(wrappingLabelWithString: "只调整本应用自身的后台同步与刷新节奏，不改动任何系统电源设置；改完即时生效并长期保存。")
+        hint.frame = NSRect(x: 16, y: 78, width: 468, height: 30)
+        hint.font = NSFont.systemFont(ofSize: 10.5)
+        hint.textColor = .secondaryLabelColor
+        card.addSubview(hint)
+
+        let sepTop = NSBox(frame: NSRect(x: 14, y: 112, width: 472, height: 1))
+        sepTop.boxType = .separator
+        card.addSubview(sepTop)
+
+        for (index, measure) in PowerSaver.measures.enumerated() {
+            let base = 120 + CGFloat(index) * 44
+            let control: NSControl
+
+            if measure.kind == .toggle {
+                let sw = NSSwitch(frame: NSRect(x: 444, y: base, width: 40, height: 24))
+                sw.tag = index
+                sw.target = self
+                sw.action = #selector(onPowerRowChanged(_:))
+                sw.state = PowerSaver.isIncluded(measure.key) ? .on : .off
+                control = sw
+            } else {
+                let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(onPowerRowChanged(_:)))
+                check.tag = index
+                check.frame = NSRect(x: 16, y: base + 2, width: 18, height: 20)
+                check.state = PowerSaver.isIncluded(measure.key) ? .on : .off
+                card.addSubview(check)
+                powerCheckControls[measure.key] = check
+
+                control = makePowerValueField(measure: measure, frame: NSRect(x: 350, y: base + 1, width: 72, height: 22))
+
+                let unitLabel = NSTextField(labelWithString: PowerSaver.unit(for: measure.kind))
+                unitLabel.frame = NSRect(x: 428, y: base + 4, width: 56, height: 16)
+                unitLabel.font = NSFont.systemFont(ofSize: 11)
+                unitLabel.textColor = .secondaryLabelColor
+                card.addSubview(unitLabel)
+            }
+
+            let nameLabel = NSTextField(labelWithString: measure.title)
+            let nameWidth: CGFloat = measure.kind == .toggle ? 398 : 300
+            nameLabel.frame = NSRect(x: 38, y: base + 4, width: nameWidth, height: 16)
+            nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            nameLabel.lineBreakMode = .byTruncatingTail
+            card.addSubview(nameLabel)
+
+            let desc = NSTextField(labelWithString: powerDescText(for: measure))
+            desc.frame = NSRect(x: 38, y: base + 26, width: 446, height: 13)
+            desc.font = NSFont.systemFont(ofSize: 10.5)
+            desc.textColor = .secondaryLabelColor
+            desc.lineBreakMode = .byTruncatingTail
+            card.addSubview(desc)
+            powerDescLabels[measure.key] = desc
+
+            card.addSubview(control)
+            powerValueControls[measure.key] = control
+        }
+
+        let sepBottom = NSBox(frame: NSRect(x: 14, y: 476, width: 472, height: 1))
+        sepBottom.boxType = .separator
+        card.addSubview(sepBottom)
+
+        powerStatusLabel = NSTextField(labelWithString: "")
+        powerStatusLabel.frame = NSRect(x: 16, y: 486, width: 468, height: 18)
+        powerStatusLabel.lineBreakMode = .byTruncatingTail
+        card.addSubview(powerStatusLabel)
+
+        contentView.addSubview(card)
+    }
+
+    /// 说明行文案：值类措施给出可填范围，插电同样生效时不再提示插电侧默认值
+    private func powerDescText(for measure: PowerSaverMeasure) -> String {
+        guard measure.kind != .toggle else { return measure.detail }
+        var parts = [PowerSaver.rangeHint(for: measure)]
+        parts.append(SettingsManager.shared.powerSaverApplyOnAC ? "插电同样生效" : measure.acHint)
+        return "\(measure.detail)（\(parts.joined(separator: " · "))）"
+    }
+
+    private func updatePowerRowDescriptions() {
+        for measure in PowerSaver.measures {
+            powerDescLabels[measure.key]?.stringValue = powerDescText(for: measure)
+        }
+    }
+
+    /// 可自由填写的数值框；失焦或回车时提交并限制在合法范围内
+    private func makePowerValueField(measure: PowerSaverMeasure, frame: NSRect) -> NSTextField {
+        let field = NSTextField(frame: frame)
+        field.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        field.alignment = .right
+        field.isEditable = true
+        field.isSelectable = true
+        field.delegate = self
+        field.target = self
+        field.action = #selector(onPowerValueFieldChanged(_:))
+        powerValueFields[measure.key] = field
+        field.stringValue = String(PowerSaver.displayValue(measure.key))
+        return field
+    }
+
+    /// 提交数值框：解析、限制范围并写回（未变化时不触发重建定时器）
+    private func commitPowerValueField(_ field: NSTextField?) {
+        guard let field = field,
+              let key = powerValueFields.first(where: { $0.value === field })?.key,
+              let measure = PowerSaver.measures.first(where: { $0.key == key }) else { return }
+        let current = PowerSaver.displayValue(key)
+        let value = PowerSaver.clamp(field.stringValue, fallback: current, measure: measure)
+        field.stringValue = String(value)
+        if value != current {
+            PowerSaver.setDisplayValue(value, for: key)
+        }
+    }
+
+    @objc private func onPowerValueFieldChanged(_ sender: NSTextField) {
+        commitPowerValueField(sender)
+    }
+
+    /// 从 SettingsManager 重新填充省电卡片（外部改动或重新打开窗口时）
+    private func reloadPowerCard() {
+        guard powerEnableCheckbox != nil else { return }
+        powerEnableCheckbox.state = SettingsManager.shared.powerSaverEnabled ? .on : .off
+        powerApplyOnACCheckbox?.state = SettingsManager.shared.powerSaverApplyOnAC ? .on : .off
+        for measure in PowerSaver.measures {
+            let included = PowerSaver.isIncluded(measure.key)
+            powerCheckControls[measure.key]?.state = included ? .on : .off
+            if let sw = powerValueControls[measure.key] as? NSSwitch {
+                sw.state = included ? .on : .off
+            }
+            if let field = powerValueFields[measure.key] {
+                field.stringValue = String(PowerSaver.displayValue(measure.key))
+            }
+        }
+        updatePowerRowDescriptions()
+        updatePowerControlEnabledStates()
+        updatePowerStatusLine()
+    }
+
+    private func updatePowerControlEnabledStates() {
+        let masterOn = SettingsManager.shared.powerSaverEnabled
+        powerApplyOnACCheckbox?.isEnabled = masterOn
+        for measure in PowerSaver.measures {
+            guard let control = powerValueControls[measure.key] else { continue }
+            if measure.kind == .toggle {
+                control.isEnabled = masterOn
+            } else {
+                let check = powerCheckControls[measure.key]
+                check?.isEnabled = masterOn
+                control.isEnabled = masterOn && check?.state == .on
+            }
+        }
+    }
+
+    private func updatePowerStatusLine() {
+        guard powerStatusLabel != nil else { return }
+        let prefs = SettingsManager.shared
+        guard prefs.powerSaverEnabled else {
+            powerStatusLabel.attributedStringValue = makePowerStatus(
+                .secondaryLabelColor, "省电措施已停用 · 后台始终按全速节奏同步")
+            return
+        }
+        let onBattery = SettingsManager.isOnBatteryPower()
+        let count = PowerSaver.activeCount(onBattery: onBattery)
+
+        if prefs.powerSaverApplyOnAC {
+            powerStatusLabel.attributedStringValue = makePowerStatus(
+                .systemGreen,
+                onBattery
+                    ? (count > 0 ? "电池供电 · 已生效 \(count) 项省电措施" : "电池供电 · 尚未勾选任何省电措施")
+                    : (count > 0 ? "插电 · 省电措施始终生效（\(count) 项）" : "插电 · 省电措施始终生效，尚未勾选项")
+            )
+            return
+        }
+        guard onBattery else {
+            powerStatusLabel.attributedStringValue = makePowerStatus(
+                .secondaryLabelColor, "接通电源 · 省电措施暂不生效")
+            return
+        }
+        powerStatusLabel.attributedStringValue = makePowerStatus(
+            .systemGreen,
+            count > 0 ? "电池供电 · 已生效 \(count) 项省电措施" : "电池供电 · 尚未勾选任何省电措施"
+        )
+    }
+
+    private func makePowerStatus(_ dotColor: NSColor, _ text: String) -> NSAttributedString {
+        makeStatusAttributedString(dotColor: dotColor, text: text)
+    }
+
+    /// 插拔电源不会触发任何配置通知，窗口打开期间轮询一次当前电源状态
+    private func startPowerStatusTimer() {
+        powerStatusTimer?.invalidate()
+        powerStatusTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self = self, self.window?.isVisible == true else { return }
+            self.updatePowerStatusLine()
+        }
+    }
+
+    @objc private func onPowerMasterChanged() {
+        SettingsManager.shared.powerSaverEnabled = (powerEnableCheckbox.state == .on)
+    }
+
+    @objc private func onPowerApplyOnACChanged() {
+        SettingsManager.shared.powerSaverApplyOnAC = (powerApplyOnACCheckbox.state == .on)
+    }
+
+    @objc private func onPowerRowChanged(_ sender: NSControl) {
+        guard sender.tag >= 0, sender.tag < PowerSaver.measures.count else { return }
+        let measure = PowerSaver.measures[sender.tag]
+
+        if let control = sender as? NSButton {
+            // 开关类措施用 NSSwitch，不会走到这里；这里是值类措施的「纳入」复选框
+            PowerSaver.setIncluded(control.state == .on, for: measure.key)
+            updatePowerControlEnabledStates()
+        } else if let sw = sender as? NSSwitch {
+            PowerSaver.setIncluded(sw.state == .on, for: measure.key)
+        }
+        updatePowerStatusLine()
+    }
+
+    @objc private func onPowerConfigChanged() {
+        reloadPowerCard()
+    }
+
+    @objc private func onPowerSourceChanged() {
+        updatePowerStatusLine()
     }
 
     public func showSettings() {
@@ -424,6 +716,11 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         updateCourseStatusDisplay()
         updateDormStatusDisplay()
+
+        reloadPowerCard()
+        startPowerStatusTimer()
+        powerScrollView?.contentView.scroll(to: .zero)
+        powerScrollView?.reflectScrolledClipView(powerScrollView!.contentView)
 
         PortalAuthService.shared.checkStatus { [weak self] status in
             DispatchQueue.main.async {
@@ -719,6 +1016,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     public func windowWillClose(_ notification: Notification) {
+        powerStatusTimer?.invalidate()
+        powerStatusTimer = nil
         saveCredentials(checkDormInvalidation: true)
         if SettingsManager.shared.isDormConfigured && ElectricityService.shared.latestData == nil {
             ElectricityService.shared.fetchData { _ in }
@@ -730,6 +1029,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) {
+        commitPowerValueField(obj.object as? NSTextField)
         saveCredentials(checkDormInvalidation: true)
     }
 }

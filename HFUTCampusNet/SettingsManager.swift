@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import IOKit.ps
 
 public class SettingsManager {
     public static let shared = SettingsManager()
@@ -15,6 +16,7 @@ public class SettingsManager {
         static let widgetOpacity = "campus_widget_opacity"
         static let menubarStyle = "campus_menubar_style" // 0: 智能轮播, 1: 仅流量余额, 2: 仅实时网速, 3: 并排显示
         static let carouselInterval = "campus_carousel_interval" // 轮播秒数 (默认 3.5s)
+        static let hideSpeedOnBattery = "campus_hide_speed_on_battery" // 隐藏网速以省电
         static let portalUsername = "campus_portal_username"
         static let portalPassword = "campus_portal_password"
         static let autoLoginPortal = "campus_auto_login_portal"
@@ -50,6 +52,21 @@ public class SettingsManager {
         static let notifiedGradeIdsData = "campus_notified_grade_ids_data"
         static let unreadGradeIdsData = "campus_unread_grade_ids_data"
         static let widgetPinToDesktop = "campus_widget_pin_to_desktop"
+        // 应用内省电措施（默认仅电池生效，可选择插电同样生效）
+        static let powerSaverEnabled = "campus_power_saver_enabled"                    // 总开关
+        static let powerSaverApplyOnAC = "campus_power_saver_apply_on_ac"              // 插电时也应用
+        static let powerSaverIncludeHeartbeat = "campus_power_saver_include_heartbeat" // 心跳降频
+        static let powerSaverHeartbeatSec = "campus_power_saver_heartbeat_sec"
+        static let powerSaverIncludeDashboard = "campus_power_saver_include_dashboard"  // 自服务数据轮询降频
+        static let powerSaverDashboardSec = "campus_power_saver_dashboard_sec"
+        static let powerSaverIncludeSecondary = "campus_power_saver_include_secondary"  // 电费/一卡通降频
+        static let powerSaverSecondaryDivisor = "campus_power_saver_secondary_divisor"
+        static let powerSaverIncludeAcademic = "campus_power_saver_include_academic"    // 成绩/考场降频
+        static let powerSaverAcademicSec = "campus_power_saver_academic_sec"
+        static let powerSaverIncludeStudyRoom = "campus_power_saver_include_studyroom"  // 自习室检查降频
+        static let powerSaverStudyRoomSec = "campus_power_saver_studyroom_sec"
+        static let powerSaverPauseCarousel = "campus_power_saver_pause_carousel"        // 暂停状态栏轮播
+        static let powerSaverPauseScreenSleep = "campus_power_saver_pause_screen_sleep" // 息屏/睡眠时暂停监测
     }
 
     private init() {
@@ -100,6 +117,48 @@ public class SettingsManager {
         }
         if defaults.object(forKey: Keys.autoCheckUpdate) == nil {
             defaults.set(true, forKey: Keys.autoCheckUpdate)
+        }
+        if defaults.object(forKey: Keys.powerSaverEnabled) == nil {
+            defaults.set(true, forKey: Keys.powerSaverEnabled)
+        }
+        if defaults.object(forKey: Keys.powerSaverApplyOnAC) == nil {
+            defaults.set(false, forKey: Keys.powerSaverApplyOnAC)
+        }
+        if defaults.object(forKey: Keys.powerSaverIncludeHeartbeat) == nil {
+            defaults.set(true, forKey: Keys.powerSaverIncludeHeartbeat)
+        }
+        if defaults.object(forKey: Keys.powerSaverHeartbeatSec) == nil {
+            defaults.set(90, forKey: Keys.powerSaverHeartbeatSec)
+        }
+        if defaults.object(forKey: Keys.powerSaverIncludeDashboard) == nil {
+            defaults.set(true, forKey: Keys.powerSaverIncludeDashboard)
+        }
+        if defaults.object(forKey: Keys.powerSaverDashboardSec) == nil {
+            defaults.set(900, forKey: Keys.powerSaverDashboardSec)
+        }
+        if defaults.object(forKey: Keys.powerSaverIncludeSecondary) == nil {
+            defaults.set(true, forKey: Keys.powerSaverIncludeSecondary)
+        }
+        if defaults.object(forKey: Keys.powerSaverSecondaryDivisor) == nil {
+            defaults.set(2, forKey: Keys.powerSaverSecondaryDivisor)
+        }
+        if defaults.object(forKey: Keys.powerSaverIncludeAcademic) == nil {
+            defaults.set(true, forKey: Keys.powerSaverIncludeAcademic)
+        }
+        if defaults.object(forKey: Keys.powerSaverAcademicSec) == nil {
+            defaults.set(3600, forKey: Keys.powerSaverAcademicSec)
+        }
+        if defaults.object(forKey: Keys.powerSaverIncludeStudyRoom) == nil {
+            defaults.set(true, forKey: Keys.powerSaverIncludeStudyRoom)
+        }
+        if defaults.object(forKey: Keys.powerSaverStudyRoomSec) == nil {
+            defaults.set(300, forKey: Keys.powerSaverStudyRoomSec)
+        }
+        if defaults.object(forKey: Keys.powerSaverPauseCarousel) == nil {
+            defaults.set(true, forKey: Keys.powerSaverPauseCarousel)
+        }
+        if defaults.object(forKey: Keys.powerSaverPauseScreenSleep) == nil {
+            defaults.set(true, forKey: Keys.powerSaverPauseScreenSleep)
         }
         // 账号默认留空，由用户首次在设置中填写
     }
@@ -416,6 +475,185 @@ public class SettingsManager {
             }
         }
     }
+
+    public var hideSpeedOnBattery: Bool {
+        get { defaults.bool(forKey: Keys.hideSpeedOnBattery) }
+        set {
+            defaults.set(newValue, forKey: Keys.hideSpeedOnBattery)
+            NotificationCenter.default.post(name: .powerModeConfigDidChange, object: nil)
+        }
+    }
+
+    // MARK: - 应用内省电措施（仅电池供电时生效，插电立即恢复）
+
+    private func postPowerConfigChanged() {
+        NotificationCenter.default.post(name: .powerModeConfigDidChange, object: nil)
+    }
+
+    /// 省电措施总开关
+    public var powerSaverEnabled: Bool {
+        get { defaults.object(forKey: Keys.powerSaverEnabled) == nil ? true : defaults.bool(forKey: Keys.powerSaverEnabled) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverEnabled)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 插电时也应用省电措施（不再区分电源类型）
+    public var powerSaverApplyOnAC: Bool {
+        get { defaults.bool(forKey: Keys.powerSaverApplyOnAC) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverApplyOnAC)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时降低网关心跳频率
+    public var powerSaverIncludeHeartbeat: Bool {
+        get { defaults.object(forKey: Keys.powerSaverIncludeHeartbeat) == nil ? true : defaults.bool(forKey: Keys.powerSaverIncludeHeartbeat) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverIncludeHeartbeat)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电下的心跳间隔（秒）
+    public var powerSaverHeartbeatSec: Int {
+        get { intOrDefault(Keys.powerSaverHeartbeatSec, fallback: 90) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverHeartbeatSec)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时放慢自服务数据轮询
+    public var powerSaverIncludeDashboard: Bool {
+        get { defaults.object(forKey: Keys.powerSaverIncludeDashboard) == nil ? true : defaults.bool(forKey: Keys.powerSaverIncludeDashboard) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverIncludeDashboard)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电下的自服务数据轮询间隔（秒）
+    public var powerSaverDashboardSec: Int {
+        get { intOrDefault(Keys.powerSaverDashboardSec, fallback: 900) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverDashboardSec)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时把电费与一卡通降为每 N 个轮询周期拉取一次
+    public var powerSaverIncludeSecondary: Bool {
+        get { defaults.object(forKey: Keys.powerSaverIncludeSecondary) == nil ? true : defaults.bool(forKey: Keys.powerSaverIncludeSecondary) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverIncludeSecondary)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电费/一卡通的降频倍数（每 N 个周期一次，1 = 不降频）
+    public var powerSaverSecondaryDivisor: Int {
+        get { max(1, intOrDefault(Keys.powerSaverSecondaryDivisor, fallback: 2)) }
+        set {
+            defaults.set(max(1, newValue), forKey: Keys.powerSaverSecondaryDivisor)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时降低成绩与考场同步频率
+    public var powerSaverIncludeAcademic: Bool {
+        get { defaults.object(forKey: Keys.powerSaverIncludeAcademic) == nil ? true : defaults.bool(forKey: Keys.powerSaverIncludeAcademic) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverIncludeAcademic)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电下的成绩与考场同步间隔（秒）
+    public var powerSaverAcademicSec: Int {
+        get { intOrDefault(Keys.powerSaverAcademicSec, fallback: 3600) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverAcademicSec)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时降低自习室检查频率
+    public var powerSaverIncludeStudyRoom: Bool {
+        get { defaults.object(forKey: Keys.powerSaverIncludeStudyRoom) == nil ? true : defaults.bool(forKey: Keys.powerSaverIncludeStudyRoom) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverIncludeStudyRoom)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电下的自习室检查间隔（秒）
+    public var powerSaverStudyRoomSec: Int {
+        get { intOrDefault(Keys.powerSaverStudyRoomSec, fallback: 300) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverStudyRoomSec)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 电池供电时暂停状态栏轮播
+    public var powerSaverPauseCarousel: Bool {
+        get { defaults.object(forKey: Keys.powerSaverPauseCarousel) == nil ? true : defaults.bool(forKey: Keys.powerSaverPauseCarousel) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverPauseCarousel)
+            postPowerConfigChanged()
+        }
+    }
+
+    /// 息屏 / 睡眠时暂停网速采样与后台轮询
+    public var powerSaverPauseScreenSleep: Bool {
+        get { defaults.object(forKey: Keys.powerSaverPauseScreenSleep) == nil ? true : defaults.bool(forKey: Keys.powerSaverPauseScreenSleep) }
+        set {
+            defaults.set(newValue, forKey: Keys.powerSaverPauseScreenSleep)
+            postPowerConfigChanged()
+        }
+    }
+
+    private func intOrDefault(_ key: String, fallback: Int) -> Int {
+        if defaults.object(forKey: key) == nil { return fallback }
+        return defaults.integer(forKey: key)
+    }
+
+    /// 检测当前是否处于电池供电状态
+    public static func isOnBatteryPower() -> Bool {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {
+            return false
+        }
+        for source in sources {
+            if let desc = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any],
+               let state = desc[kIOPSPowerSourceStateKey as String] as? String {
+                if state == (kIOPSBatteryPowerValue as String) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// 当前是否应该压制/隐藏网速（开启了隐藏选项，且处于电池供电或已选择插电同样生效）
+    public var shouldHideSpeedNow: Bool {
+        guard powerSaverEnabled, hideSpeedOnBattery else { return false }
+        return powerSaverApplyOnAC || Self.isOnBatteryPower()
+    }
+
+    /// 当前是否应该暂停状态栏轮播
+    public var shouldPauseCarouselNow: Bool {
+        guard powerSaverEnabled, powerSaverPauseCarousel else { return false }
+        return powerSaverApplyOnAC || Self.isOnBatteryPower()
+    }
+
+    /// 息屏/睡眠时是否暂停监测
+    public var shouldPauseOnScreenSleep: Bool {
+        return powerSaverEnabled && powerSaverPauseScreenSleep
+    }
 }
 
 extension Notification.Name {
@@ -424,4 +662,6 @@ extension Notification.Name {
     public static let emptyClassroomDidUpdate = Notification.Name("cn.edu.hfut.emptyClassroomDidUpdate")
     public static let academicDataDidUpdate = Notification.Name("cn.edu.hfut.academicDataDidUpdate")
     public static let campusCardDidUpdate = Notification.Name("cn.edu.hfut.campusCardDidUpdate")
+    public static let powerModeConfigDidChange = Notification.Name("cn.edu.hfut.powerModeConfigDidChange")
+    public static let powerSourceDidChange = Notification.Name("cn.edu.hfut.powerSourceDidChange")
 }

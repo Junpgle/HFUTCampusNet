@@ -36,6 +36,7 @@ SOURCES=(
     "HFUTCampusNet/AcademicWindowController.swift"
     "HFUTCampusNet/HistoryStatsWindowController.swift"
     "HFUTCampusNet/SettingsManager.swift"
+    "HFUTCampusNet/PowerSaver.swift"
     "HFUTCampusNet/NotificationHelper.swift"
     "HFUTCampusNet/UpdateChecker.swift"
     "HFUTCampusNet/NetworkSpeedMonitor.swift"
