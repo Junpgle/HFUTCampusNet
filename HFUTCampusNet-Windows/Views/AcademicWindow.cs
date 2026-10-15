@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 
 namespace HFUTCampusNet;
@@ -14,10 +15,17 @@ public sealed class AcademicWindow : Window
     public static AcademicWindow Shared => _shared ??= new AcademicWindow();
 
     private int _currentMode = 0; // 0: 成绩单, 1: 考试, 2: 培养方案, 3: 教材与评教
+    private int _selectedTermIndex;
+    private bool _updatingTermOptions;
+    private bool _isSyncing;
 
-    private readonly ComboBox _tabComboBox;
+    private readonly Button[] _modeButtons = new Button[4];
+    private readonly Border _segmentContainer;
+    private readonly ComboBox _termComboBox;
     private readonly TextBlock _sectionTitleLabel;
+    private readonly TextBlock _statusLabel;
     private readonly CheckBox _hideScoreCheckbox;
+    private readonly Button _syncButton;
 
     // 4 指标卡片
     private readonly Border[] _cardBorders = new Border[4];
@@ -30,10 +38,10 @@ public sealed class AcademicWindow : Window
     private AcademicWindow()
     {
         Title = "合肥工业大学 - 学业成绩、考场安排与培养方案";
-        Width = 980;
-        Height = 700;
-        MinWidth = 880;
-        MinHeight = 560;
+        Width = 996;
+        Height = 740;
+        MinWidth = 896;
+        MinHeight = 600;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         var root = new Grid { Margin = new Thickness(16) };
@@ -44,32 +52,57 @@ public sealed class AcademicWindow : Window
 
         // Top Bar
         var topBar = new Grid { Margin = new Thickness(0, 0, 0, 14) };
-        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        _tabComboBox = new ComboBox
+        var leftTools = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var segmentGrid = new Grid { Width = 464, Height = 26 };
+        string[] modeNames = { "成绩单与 GPA", "考试与校历进度", "培养方案与毕业学分", "课程教材与评教" };
+        for (int i = 0; i < modeNames.Length; i++)
         {
-            Width = 240,
+            segmentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            int mode = i;
+            _modeButtons[i] = CreateSegmentButton(modeNames[i], () => SelectMode(mode));
+            Grid.SetColumn(_modeButtons[i], i);
+            segmentGrid.Children.Add(_modeButtons[i]);
+        }
+        _segmentContainer = new Border
+        {
+            Width = 470,
             Height = 32,
-            FontSize = 13,
-            FontWeight = FontWeights.Medium,
-            ItemsSource = new[] { "成绩单与 GPA", "考试与校历进度", "培养方案与毕业学分", "课程教材与评教" },
-            SelectedIndex = 0
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(2),
+            Child = segmentGrid
         };
-        _tabComboBox.SelectionChanged += (_, _) =>
+        leftTools.Children.Add(_segmentContainer);
+
+        _termComboBox = new ComboBox
         {
-            _currentMode = _tabComboBox.SelectedIndex;
+            Width = 190,
+            Height = 28,
+            FontSize = 11.5,
+            Margin = new Thickness(8, 0, 8, 0),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        _termComboBox.SelectionChanged += (_, _) =>
+        {
+            if (_updatingTermOptions || _termComboBox.SelectedItem is not ComboBoxItem selected) return;
+            var groups = AcademicService.Shared.LatestData?.SemesterGroups ?? new List<SemesterGradeGroup>();
+            if (selected.Tag is int groupIndex)
+                _selectedTermIndex = groupIndex;
+            else if (selected.Tag is string tag && tag == "all-terms")
+                _selectedTermIndex = groups.Count;
             ReloadUI();
         };
-        Grid.SetColumn(_tabComboBox, 0);
-        topBar.Children.Add(_tabComboBox);
+        leftTools.Children.Add(_termComboBox);
 
         _hideScoreCheckbox = new CheckBox
         {
-            Content = "通知中隐藏具体分数与 GPA",
+            Content = "通知隐藏具体分数",
+            FontSize = 11.5,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(16, 0, 0, 0),
+            Margin = new Thickness(4, 0, 0, 0),
             IsChecked = SettingsManager.Shared.HideScoreInNotification
         };
         _hideScoreCheckbox.Checked += (_, _) =>
@@ -82,21 +115,39 @@ public sealed class AcademicWindow : Window
             SettingsManager.Shared.HideScoreInNotification = false;
             SettingsManager.Shared.Save();
         };
-        Grid.SetColumn(_hideScoreCheckbox, 1);
-        topBar.Children.Add(_hideScoreCheckbox);
+        leftTools.Children.Add(_hideScoreCheckbox);
+        Grid.SetColumn(leftTools, 0);
+        topBar.Children.Add(leftTools);
 
-        var refreshBtn = new Button
+        _syncButton = CreateActionButton("立即同步", () =>
         {
-            Content = "立即同步教务数据",
-            Padding = new Thickness(12, 6, 12, 6),
-            FontSize = 12
-        };
-        refreshBtn.Click += (_, _) =>
-        {
-            AcademicService.Shared.SyncAll(silent: false, _ => AppEvents.InvokeOnUI(ReloadUI));
-        };
-        Grid.SetColumn(refreshBtn, 2);
-        topBar.Children.Add(refreshBtn);
+            _isSyncing = true;
+            ReloadUI();
+            AcademicService.Shared.SyncAll(silent: false, ok =>
+            {
+                AppEvents.InvokeOnUI(() =>
+                {
+                    _isSyncing = false;
+                    ReloadUI();
+                    if (!ok && (AcademicService.Shared.LatestData == null || AcademicService.Shared.LatestData.AllGrades.Count == 0))
+                    {
+                        var res = MessageBox.Show(
+                            "未获取到成绩与考试数据。这通常是因为尚未登录教务系统或统一身份认证，或凭据已过期。\n\n是否立即打开教务登录页面？",
+                            "教务认证提示",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Question);
+                        if (res == MessageBoxResult.Yes)
+                        {
+                            CourseLoginWebWindow.Shared.ShowWindow();
+                        }
+                    }
+                });
+            });
+        });
+        _syncButton.Width = 95;
+        _syncButton.Height = 30;
+        Grid.SetColumn(_syncButton, 1);
+        topBar.Children.Add(_syncButton);
 
         Grid.SetRow(topBar, 0);
         root.Children.Add(topBar);
@@ -135,16 +186,31 @@ public sealed class AcademicWindow : Window
         Grid.SetRow(cardsGrid, 1);
         root.Children.Add(cardsGrid);
 
-        // Section Title
+        // Section title and sync status
+        var sectionHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        sectionHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        sectionHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _sectionTitleLabel = new TextBlock
         {
             Text = "清单",
-            FontSize = 13,
+            FontSize = 12.5,
             FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 0, 0, 8)
         };
-        Grid.SetRow(_sectionTitleLabel, 2);
-        root.Children.Add(_sectionTitleLabel);
+        Grid.SetColumn(_sectionTitleLabel, 0);
+        sectionHeader.Children.Add(_sectionTitleLabel);
+        _statusLabel = new TextBlock
+        {
+            FontSize = 11,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Width = 400,
+            MaxWidth = 400
+        };
+        Grid.SetColumn(_statusLabel, 1);
+        sectionHeader.Children.Add(_statusLabel);
+        Grid.SetRow(sectionHeader, 2);
+        root.Children.Add(sectionHeader);
 
         // DataGrid
         _dataGrid = new DataGrid
@@ -154,27 +220,166 @@ public sealed class AcademicWindow : Window
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column,
             RowHeaderWidth = 0,
-            FontSize = 12
+            FontSize = 12,
+            RowHeight = 26,
+            BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+            BorderThickness = new Thickness(1)
         };
         Grid.SetRow(_dataGrid, 3);
         root.Children.Add(_dataGrid);
 
         Content = root;
 
+        Closing += (_, e) =>
+        {
+            e.Cancel = true;
+            Hide();
+        };
+
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        ApplyTheme();
+        ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(ApplyTheme);
+
         AppEvents.AcademicDataUpdated += () => AppEvents.InvokeOnUI(ReloadUI);
+        ReloadUI();
+    }
+
+    private static Button CreateSegmentButton(string text, Action onClick)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Padding = new Thickness(3, 4, 3, 4),
+            Margin = new Thickness(1),
+            FontSize = 11.5,
+            FontWeight = FontWeights.Medium,
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            FocusVisualStyle = null,
+            Template = CreateFlatButtonTemplate(new CornerRadius(6))
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private static Button CreateActionButton(string text, Action onClick)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Padding = new Thickness(12, 5, 12, 5),
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            BorderThickness = new Thickness(0),
+            FocusVisualStyle = null,
+            Template = CreateFlatButtonTemplate(new CornerRadius(7))
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private static ControlTemplate CreateFlatButtonTemplate(CornerRadius radius)
+    {
+        var template = new ControlTemplate(typeof(Button));
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(Border.CornerRadiusProperty, radius);
+        border.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("Background")
+        {
+            RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+        });
+        border.SetBinding(Border.BorderBrushProperty, new System.Windows.Data.Binding("BorderBrush")
+        {
+            RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+        });
+        border.SetBinding(Border.BorderThicknessProperty, new System.Windows.Data.Binding("BorderThickness")
+        {
+            RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+        });
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        presenter.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
+        border.AppendChild(presenter);
+        template.VisualTree = border;
+        return template;
+    }
+
+    private void SelectMode(int mode)
+    {
+        _currentMode = Math.Clamp(mode, 0, 3);
+        ReloadUI();
+    }
+
+    private void ApplyTheme()
+    {
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        Background = ThemeManager.Shared.WindowBackground;
+        Foreground = ThemeManager.Shared.TextPrimary;
+
+        _sectionTitleLabel.Foreground = ThemeManager.Shared.TextPrimary;
+        _statusLabel.Foreground = ThemeManager.Shared.TextMuted;
+        _hideScoreCheckbox.Foreground = ThemeManager.Shared.TextPrimary;
+        _segmentContainer.Background = ThemeManager.Shared.ControlBackground;
+        _segmentContainer.BorderBrush = ThemeManager.Shared.ControlBorderBrush;
+        _termComboBox.Background = ThemeManager.Shared.ControlBackground;
+        _termComboBox.Foreground = ThemeManager.Shared.TextPrimary;
+        _termComboBox.BorderBrush = ThemeManager.Shared.ControlBorderBrush;
+        ThemeManager.Shared.ApplyComboBoxTheme(_termComboBox);
+        _syncButton.Background = ThemeManager.Shared.Accent;
+        _syncButton.Foreground = Brushes.White;
+        _syncButton.BorderBrush = ThemeManager.Shared.Accent;
+        for (int i = 0; i < _modeButtons.Length; i++)
+        {
+            bool selected = i == _currentMode;
+            _modeButtons[i].Background = selected ? ThemeManager.Shared.Accent : Brushes.Transparent;
+            _modeButtons[i].Foreground = selected ? Brushes.White : ThemeManager.Shared.TextSecondary;
+        }
+
+        for (int i = 0; i < 4; i++)
+        {
+            if (_cardBorders[i] != null)
+            {
+                _cardBorders[i].Background = ThemeManager.Shared.CardBackground;
+                _cardBorders[i].BorderBrush = ThemeManager.Shared.CardBorderBrush;
+                _cardTitles[i].Foreground = ThemeManager.Shared.TextSecondary;
+                _cardSubs[i].Foreground = ThemeManager.Shared.TextMuted;
+                if (_cardValues[i].Foreground == null || _cardValues[i].Foreground == Brushes.Black)
+                {
+                    _cardValues[i].Foreground = ThemeManager.Shared.TextPrimary;
+                }
+            }
+        }
+
+        if (_dataGrid != null)
+        {
+            ThemeManager.Shared.ApplyDataGridTheme(_dataGrid);
+            _dataGrid.Background = ThemeManager.Shared.TableBackground;
+            _dataGrid.RowBackground = ThemeManager.Shared.TableBackground;
+            _dataGrid.AlternatingRowBackground = ThemeManager.Shared.TableAlternatingBackground;
+            _dataGrid.HorizontalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
+            _dataGrid.VerticalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
+            _dataGrid.Foreground = ThemeManager.Shared.TextPrimary;
+            _dataGrid.BorderBrush = ThemeManager.Shared.TableGridLineBrush;
+
+        }
     }
 
     public void ShowWindow(int mode = 0)
     {
         _currentMode = Math.Clamp(mode, 0, 3);
-        _tabComboBox.SelectedIndex = _currentMode;
         if (_currentMode == 0)
         {
             AcademicService.Shared.MarkAllGradesAsRead();
         }
+        ApplyTheme();
         Show();
         Activate();
         ReloadUI();
+
+        if (AcademicService.Shared.LatestData == null || AcademicService.Shared.LatestData.AllGrades.Count == 0)
+        {
+            AcademicService.Shared.SyncAll(silent: true, _ => AppEvents.InvokeOnUI(ReloadUI));
+        }
     }
 
     private void SetCard(int index, string title, string val, string sub, Brush color)
@@ -193,22 +398,61 @@ public sealed class AcademicWindow : Window
     private void ReloadUI()
     {
         var snap = AcademicService.Shared.LatestData;
+        var groups = snap?.SemesterGroups ?? new List<SemesterGradeGroup>();
+        UpdateTermOptions(groups);
+        _termComboBox.Visibility = _currentMode == 0 ? Visibility.Visible : Visibility.Collapsed;
+        for (int i = 0; i < _modeButtons.Length; i++)
+        {
+            bool selected = i == _currentMode;
+            _modeButtons[i].Background = selected ? ThemeManager.Shared.Accent : Brushes.Transparent;
+            _modeButtons[i].Foreground = selected ? Brushes.White : ThemeManager.Shared.TextSecondary;
+        }
+        UpdateSyncStatus(snap);
         _dataGrid.Columns.Clear();
 
         switch (_currentMode)
         {
             case 0:
                 // 成绩单与 GPA
-                _sectionTitleLabel.Text = $"全部已出分科目清单 (共 {snap?.AllGrades.Count ?? 0} 门)";
-                var overallGpa = snap?.OverallWeightedGPA.HasValue == true ? $"{snap.OverallWeightedGPA.Value:F2}" : "--";
-                var overallScore = snap?.OverallWeightedAverageScore.HasValue == true ? $"{snap.OverallWeightedAverageScore.Value:F1} 分" : "--";
-                var totalCredits = $"{snap?.TotalEarnedCredits ?? 0:F1} 学分";
-                int passCount = snap?.AllGrades.Count(g => g.Passed) ?? 0;
-
-                SetCard(0, "全学程加权 GPA", overallGpa, "全部已修计点课程加权", Brushes.DodgerBlue);
-                SetCard(1, "全学程加权均分", overallScore, "按课程学分折算", Brushes.MediumPurple);
-                SetCard(2, "累计获得学分", totalCredits, $"共 {snap?.SemesterGroups.Count ?? 0} 个学期", Brushes.Teal);
-                SetCard(3, "已出分科目数", $"{passCount} / {snap?.AllGrades.Count ?? 0} 门", "通过率考核", Brushes.SeaGreen);
+                bool isAllTerms = groups.Count > 0 && _selectedTermIndex >= groups.Count;
+                var activeGroup = !isAllTerms && _selectedTermIndex < groups.Count ? groups[_selectedTermIndex] : null;
+                if (isAllTerms && snap != null)
+                {
+                    var allGrades = snap.AllGrades;
+                    _sectionTitleLabel.Text = $"全部学期成绩单（共 {allGrades.Count} 门课程）";
+                    var overallGpa = snap.OverallWeightedGPA.HasValue ? $"{snap.OverallWeightedGPA.Value:F2} / 4.3" : "--";
+                    var overallScore = snap.OverallWeightedAverageScore.HasValue ? $"{snap.OverallWeightedAverageScore.Value:F2} 分" : "--";
+                    int passCount = allGrades.Count(g => g.Passed);
+                    SetCard(0, "全学程加权 GPA", overallGpa, "全部已修读计点课程加权", Brushes.DodgerBlue);
+                    SetCard(1, "全学程加权平均分", overallScore, "按课程学分加权折算", Brushes.MediumPurple);
+                    SetCard(2, "累计获得学分", $"{snap.TotalEarnedCredits:F1} 学分", $"共 {groups.Count} 个学期", Brushes.Teal);
+                    var passRate = allGrades.Count == 0 ? 100 : Math.Round(passCount * 100.0 / allGrades.Count);
+                    SetCard(3, "已出分科目数", $"{passCount} / {allGrades.Count} 门", $"通过率 {passRate:F0}%", Brushes.SeaGreen);
+                    _dataGrid.ItemsSource = allGrades;
+                }
+                else if (activeGroup != null)
+                {
+                    var grades = activeGroup.Grades;
+                    _sectionTitleLabel.Text = $"{activeGroup.TermName} 成绩明细（共 {grades.Count} 门）";
+                    var termGpa = activeGroup.WeightedGPA.HasValue ? $"{activeGroup.WeightedGPA.Value:F2}" : "--";
+                    var termScore = activeGroup.WeightedAverageScore.HasValue ? $"{activeGroup.WeightedAverageScore.Value:F2} 分" : "--";
+                    var overallGpa = snap?.OverallWeightedGPA.HasValue == true ? $"{snap.OverallWeightedGPA.Value:F2}" : "--";
+                    var allCredits = snap != null ? $"总修 {snap.TotalEarnedCredits:F1} 学分" : "--";
+                    SetCard(0, "本学期加权 GPA", termGpa, activeGroup.TermName, Brushes.DodgerBlue);
+                    SetCard(1, "本学期加权平均分", termScore, $"本学期共 {grades.Count} 门已出分", Brushes.MediumPurple);
+                    SetCard(2, "本学期获得学分", $"{activeGroup.TotalCredits:F1} 学分", "已通过科目学分合计", Brushes.Teal);
+                    SetCard(3, "全学程总 GPA", overallGpa, allCredits, Brushes.SeaGreen);
+                    _dataGrid.ItemsSource = grades;
+                }
+                else
+                {
+                    _sectionTitleLabel.Text = "课程成绩明细";
+                    SetCard(0, "本学期加权 GPA", "--", "等待同步成绩数据", Brushes.Gray);
+                    SetCard(1, "本学期加权平均分", "--", "等待同步成绩数据", Brushes.Gray);
+                    SetCard(2, "本学期获得学分", "--", "等待同步成绩数据", Brushes.Gray);
+                    SetCard(3, "全学程总 GPA", "--", "等待同步成绩数据", Brushes.Gray);
+                    _dataGrid.ItemsSource = new List<GradeItem>();
+                }
 
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "课程名称", Binding = new System.Windows.Data.Binding("CourseName"), Width = 220 });
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "学期", Binding = new System.Windows.Data.Binding("TermName"), Width = 150 });
@@ -217,14 +461,18 @@ public sealed class AcademicWindow : Window
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "成绩", Binding = new System.Windows.Data.Binding("ScoreText"), Width = 80 });
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "课程代码", Binding = new System.Windows.Data.Binding("CourseCode"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
 
-                _dataGrid.ItemsSource = snap?.AllGrades ?? new List<GradeItem>();
                 break;
 
             case 1:
                 // 考试与校历进度
                 var milestone = SemesterMilestoneInfo.Calculate(schedule: CourseScheduleService.Shared.CurrentSchedule);
-                var upcoming = snap?.UpcomingExams() ?? new List<ExamItem>();
-                _sectionTitleLabel.Text = $"本学期考试安排 (共 {snap?.Exams.Count ?? 0} 场，待考 {upcoming.Count} 场 · {milestone.SemesterName})";
+                var allExams = snap?.Exams ?? new List<ExamItem>();
+                var now = DateTime.Now;
+                var upcoming = allExams.Where(e => !e.IsFinished(now)).OrderBy(e => e.ExamStartDate ?? DateTime.MaxValue).ToList();
+                var finished = allExams.Where(e => e.IsFinished(now)).OrderByDescending(e => e.ExamStartDate ?? DateTime.MinValue).ToList();
+                _sectionTitleLabel.Text = allExams.Count == 0
+                    ? $"本学期考试安排与校历里程碑（{milestone.SemesterName} · 暂未发布排考）"
+                    : $"本学期考试安排（共 {allExams.Count} 场，待考 {upcoming.Count} 场 · {milestone.SemesterName}）";
 
                 var nextExam = upcoming.FirstOrDefault();
                 if (nextExam != null)
@@ -234,11 +482,11 @@ public sealed class AcademicWindow : Window
                 }
                 else
                 {
-                    SetCard(0, "最近一场考试", "暂无待考科目", "本学期排考尚未公布或已考完", Brushes.SeaGreen);
-                    SetCard(1, "期末周倒计时", $"约 {milestone.DaysUntilExamWeek} 天", "已进入期末备考阶段", Brushes.DodgerBlue);
+                    SetCard(0, "最近一场考试", "暂无待考科目", allExams.Count == 0 ? "教务系统尚未公布本学期排考" : "本学期考试已全部结束", Brushes.SeaGreen);
+                    SetCard(1, "期末考试周倒计时", milestone.DaysUntilExamWeek > 0 ? $"约 {milestone.DaysUntilExamWeek} 天" : "已进入期末阶段", $"待考 {upcoming.Count} 场 / 已考 {finished.Count} 场", Brushes.DodgerBlue);
                 }
-                SetCard(2, "校历学期进度", $"{milestone.ProgressPercentage:F0}%", $"第 {milestone.CurrentWeek} / {milestone.TotalWeeks} 周", Brushes.Teal);
-                SetCard(3, $"距{milestone.VacationName}放假", $"约 {milestone.DaysUntilVacation} 天", $"学期结束: {milestone.EndDateString}", Brushes.MediumPurple);
+                SetCard(2, "本学期校历进度", $"第 {milestone.CurrentWeek}/{milestone.TotalWeeks} 周 ({milestone.ProgressPercentage:F0}%)", $"{milestone.StartDateString} ~ {milestone.EndDateString}", Brushes.Teal);
+                SetCard(3, $"距离{milestone.VacationName}放假", milestone.DaysUntilVacation > 0 ? $"还有 {milestone.DaysUntilVacation} 天" : "假期进行中", $"学期结束日：{milestone.EndDateString}", Brushes.MediumPurple);
 
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "考试科目", Binding = new System.Windows.Data.Binding("CourseName"), Width = 220 });
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "考试日期与时间", Binding = new System.Windows.Data.Binding("DateTimeString"), Width = 180 });
@@ -246,7 +494,7 @@ public sealed class AcademicWindow : Window
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "考试考场", Binding = new System.Windows.Data.Binding("DisplayLocation"), Width = 220 });
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "考试性质", Binding = new System.Windows.Data.Binding("ExamType"), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
 
-                _dataGrid.ItemsSource = snap?.Exams ?? new List<ExamItem>();
+                _dataGrid.ItemsSource = upcoming.Concat(finished).ToList();
                 break;
 
             case 2:
@@ -314,6 +562,78 @@ public sealed class AcademicWindow : Window
 
                 _dataGrid.ItemsSource = books;
                 break;
+        }
+    }
+
+    private void UpdateTermOptions(List<SemesterGradeGroup> groups)
+    {
+        if (_currentMode != 0) return;
+        _updatingTermOptions = true;
+        try
+        {
+            _termComboBox.Items.Clear();
+            if (groups.Count == 0)
+            {
+                _selectedTermIndex = 0;
+                _termComboBox.Items.Add(new ComboBoxItem { Content = "暂无学期成绩", IsEnabled = false });
+                _termComboBox.SelectedIndex = 0;
+                return;
+            }
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var group = groups[i];
+                _termComboBox.Items.Add(new ComboBoxItem
+                {
+                    Content = $"{group.TermName} ({group.Grades.Count}门)",
+                    Tag = i
+                });
+            }
+            _termComboBox.Items.Add(new ComboBoxItem { Content = "────────", IsEnabled = false });
+            _termComboBox.Items.Add(new ComboBoxItem
+            {
+                Content = $"全部学期汇总 ({AcademicService.Shared.LatestData?.AllGrades.Count ?? 0}门)",
+                Tag = "all-terms"
+            });
+
+            if (_selectedTermIndex < 0 || _selectedTermIndex > groups.Count) _selectedTermIndex = 0;
+            _termComboBox.SelectedIndex = _selectedTermIndex == groups.Count ? groups.Count + 1 : _selectedTermIndex;
+        }
+        finally
+        {
+            _updatingTermOptions = false;
+            ThemeManager.Shared.ApplyComboBoxTheme(_termComboBox);
+        }
+    }
+
+    private void UpdateSyncStatus(AcademicDataSnapshot? snapshot)
+    {
+        if (_isSyncing)
+        {
+            _syncButton.Content = "同步中...";
+            _syncButton.IsEnabled = false;
+            _statusLabel.Text = "正在向合工大教务系统同步最新成绩、排考、培养方案与教材...";
+            return;
+        }
+
+        _syncButton.Content = "立即同步";
+        _syncButton.IsEnabled = true;
+        var lastSync = new[] { snapshot?.LastGradesSyncTime, snapshot?.LastExamsSyncTime }
+            .Where(time => time.HasValue)
+            .Select(time => time!.Value)
+            .DefaultIfEmpty()
+            .Max();
+        if (lastSync != default)
+        {
+            _statusLabel.Text = $"上次同步：{lastSync:MM-dd HH:mm:ss}（每 15 分钟后台静默检测新出分）";
+        }
+        else if (!string.IsNullOrWhiteSpace(snapshot?.LastErrorMessage))
+        {
+            _statusLabel.Text = $"同步提示：{snapshot.LastErrorMessage}";
+        }
+        else
+        {
+            _statusLabel.Text = "尚未同步，点击右上角「立即同步」拉取数据";
         }
     }
 }

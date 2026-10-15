@@ -5,20 +5,22 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>HFUTCampusNet</RootNamespace>
     <AssemblyName>HFUTCampusNet</AssemblyName>
+    <ApplicationIcon>Assets\HFUTCampusNet.ico</ApplicationIcon>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>2.0.0</Version>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
+    <Version>2.1.0</Version>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
+    <FileVersion>2.1.0.0</FileVersion>
     <Product>HFUT 校园网与智慧校园助手</Product>
     <Company>HFUTCampusNet</Company>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <Resource Include="Assets\HFUTCampusNet.ico" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
   </ItemGroup>
