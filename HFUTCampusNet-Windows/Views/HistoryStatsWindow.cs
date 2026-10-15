@@ -44,8 +44,8 @@ public sealed class HistoryStatsQuotaCardControl : Border
     public HistoryStatsQuotaCardControl()
     {
         CornerRadius = new CornerRadius(10);
-        Background = new SolidColorBrush(Color.FromArgb(245, 250, 251, 253));
-        BorderBrush = new SolidColorBrush(Color.FromArgb(32, 0, 0, 0));
+        Background = ThemeManager.Shared.CardBackground;
+        BorderBrush = ThemeManager.Shared.CardBorderBrush;
         BorderThickness = new Thickness(1);
         Padding = new Thickness(18, 12, 18, 12);
 
@@ -55,7 +55,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
         {
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(105, 112, 125)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             Margin = new Thickness(0, 0, 0, 10),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
@@ -71,6 +71,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
 
         Child = rootStack;
         SizeChanged += (_, _) => UpdateBarWidths();
+        ApplyTheme();
     }
 
     private static UIElement BuildQuotaRow(
@@ -87,7 +88,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
         {
             FontSize = 12.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(28, 32, 38)),
+            Foreground = ThemeManager.Shared.TextPrimary,
             Margin = new Thickness(0, 0, 0, 3)
         };
         panel.Children.Add(titleLabel);
@@ -99,7 +100,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
         subLeftLabel = new TextBlock
         {
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(105, 112, 125)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         Grid.SetColumn(subLeftLabel, 0);
@@ -109,7 +110,7 @@ public sealed class HistoryStatsQuotaCardControl : Border
         {
             FontSize = 11,
             FontWeight = FontWeights.Medium,
-            Foreground = new SolidColorBrush(Color.FromRgb(85, 92, 105)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             Margin = new Thickness(8, 0, 0, 0)
         };
         Grid.SetColumn(subRightLabel, 1);
@@ -121,7 +122,9 @@ public sealed class HistoryStatsQuotaCardControl : Border
         {
             Height = 6,
             CornerRadius = new CornerRadius(3),
-            Background = new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)),
+            Background = ThemeManager.Shared.IsDarkTheme
+                ? new SolidColorBrush(Color.FromArgb(45, 255, 255, 255))
+                : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)),
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
 
@@ -241,6 +244,24 @@ public sealed class HistoryStatsQuotaCardControl : Border
         UpdateBarWidths();
     }
 
+    public void ApplyTheme()
+    {
+        Background = ThemeManager.Shared.CardBackground;
+        BorderBrush = ThemeManager.Shared.CardBorderBrush;
+        _headerLabel.Foreground = ThemeManager.Shared.TextSecondary;
+        _row1Title.Foreground = ThemeManager.Shared.TextPrimary;
+        _row1SubLeft.Foreground = ThemeManager.Shared.TextSecondary;
+        _row1SubRight.Foreground = ThemeManager.Shared.TextSecondary;
+        _row2Title.Foreground = ThemeManager.Shared.TextPrimary;
+        _row2SubLeft.Foreground = ThemeManager.Shared.TextSecondary;
+        _row2SubRight.Foreground = ThemeManager.Shared.TextSecondary;
+        _row1Track.Background = ThemeManager.Shared.IsDarkTheme
+            ? new SolidColorBrush(Color.FromArgb(45, 255, 255, 255))
+            : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+        _row2Track.Background = _row1Track.Background;
+        UpdateBarWidths();
+    }
+
     private void UpdateBarWidths()
     {
         ApplyBarVisual(_row1Track, _row1Fill, _row1Ratio);
@@ -258,7 +279,9 @@ public sealed class HistoryStatsQuotaCardControl : Border
         else if (clamped < 0.30)
             fill.Background = new SolidColorBrush(Color.FromRgb(245, 158, 11));
         else
-            fill.Background = new SolidColorBrush(Color.FromArgb(200, 35, 42, 52));
+            fill.Background = ThemeManager.Shared.IsDarkTheme
+                ? new SolidColorBrush(Color.FromArgb(220, 215, 220, 232))
+                : new SolidColorBrush(Color.FromArgb(200, 35, 42, 52));
     }
 }
 
@@ -293,8 +316,13 @@ public sealed class HistoryBarChartControl : FrameworkElement
         if (w <= 20 || h <= 20) return;
 
         var bgRect = new Rect(0.5, 0.5, w - 1, h - 1);
-        var bgBrush = new SolidColorBrush(Color.FromArgb(230, 250, 251, 253));
-        var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)), 1.0);
+        bool isDark = ThemeManager.Shared.IsDarkTheme;
+        var bgBrush = new SolidColorBrush(isDark
+            ? Color.FromRgb(28, 30, 38)
+            : Color.FromArgb(230, 250, 251, 253));
+        var borderPen = new Pen(new SolidColorBrush(isDark
+            ? Color.FromArgb(38, 255, 255, 255)
+            : Color.FromArgb(30, 0, 0, 0)), 1.0);
         dc.DrawRoundedRectangle(bgBrush, borderPen, bgRect, 10, 10);
 
         var typeface = new Typeface(new FontFamily("Microsoft YaHei UI, Segoe UI"), FontStyles.Normal, FontWeights.Medium, FontStretches.Normal);
@@ -308,7 +336,7 @@ public sealed class HistoryBarChartControl : FrameworkElement
                 System.Windows.FlowDirection.LeftToRight,
                 typeface,
                 12,
-                new SolidColorBrush(Color.FromRgb(120, 128, 140)),
+                new SolidColorBrush(isDark ? Color.FromRgb(150, 156, 171) : Color.FromRgb(120, 128, 140)),
                 dpi);
             dc.DrawText(emptyFt, new Point((w - emptyFt.Width) / 2.0, (h - emptyFt.Height) / 2.0));
             return;
@@ -322,7 +350,9 @@ public sealed class HistoryBarChartControl : FrameworkElement
         double barWidth = Math.Min(42.0, Math.Max(10.0, (w - 60.0) / (count * 2.0)));
         double slotWidth = (w - 40.0) / count;
 
-        var dashPen = new Pen(new SolidColorBrush(Color.FromArgb(26, 0, 0, 0)), 1.0)
+        var dashPen = new Pen(new SolidColorBrush(isDark
+            ? Color.FromArgb(30, 255, 255, 255)
+            : Color.FromArgb(26, 0, 0, 0)), 1.0)
         {
             DashStyle = new DashStyle(new double[] { 4, 4 }, 0)
         };
@@ -335,8 +365,8 @@ public sealed class HistoryBarChartControl : FrameworkElement
         var topBrush = new SolidColorBrush(_barColor);
         var bottomBrush = new SolidColorBrush(Color.FromArgb(190, _barColor.R, _barColor.G, _barColor.B));
         var barGrad = new LinearGradientBrush(topBrush.Color, bottomBrush.Color, new Point(0, 0), new Point(0, 1));
-        var valTextBrush = new SolidColorBrush(Color.FromRgb(90, 98, 112));
-        var dateTextBrush = new SolidColorBrush(Color.FromRgb(135, 142, 155));
+        var valTextBrush = new SolidColorBrush(isDark ? Color.FromRgb(205, 210, 220) : Color.FromRgb(90, 98, 112));
+        var dateTextBrush = new SolidColorBrush(isDark ? Color.FromRgb(150, 156, 171) : Color.FromRgb(135, 142, 155));
 
         for (int i = 0; i < _items.Count; i++)
         {
@@ -406,6 +436,10 @@ public sealed class HistoryStatsWindow : Window
     private readonly HistoryBarChartControl _chartView;
     private readonly TextBlock _tableTitleLabel;
     private readonly DataGrid _tableView;
+    private Border _topBar = null!;
+    private Border _segBorder = null!;
+    private readonly Border[] _cardBorders = new Border[4];
+    private Border _tableBorder = null!;
 
     private int _currentMode; // 0: 校园网流量, 1: 宿舍电费, 2: 校园一卡通账单
     private List<DailyFlowRecord> _currentFlowRecords = new();
@@ -415,10 +449,10 @@ public sealed class HistoryStatsWindow : Window
     private HistoryStatsWindow()
     {
         Title = "校园用量统计与历史分析 - 合肥工业大学";
-        Width = 880;
-        Height = 780;
-        MinWidth = 820;
-        MinHeight = 640;
+        Width = 896;
+        Height = 820;
+        MinWidth = 836;
+        MinHeight = 680;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(244, 245, 248));
 
@@ -431,7 +465,7 @@ public sealed class HistoryStatsWindow : Window
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // 1. 顶部控制条
-        var topBar = new Border
+        _topBar = new Border
         {
             Background = Brushes.White,
             BorderBrush = new SolidColorBrush(Color.FromArgb(25, 0, 0, 0)),
@@ -443,7 +477,7 @@ public sealed class HistoryStatsWindow : Window
         topBarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         topBarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var segBorder = new Border
+        _segBorder = new Border
         {
             CornerRadius = new CornerRadius(7),
             Background = new SolidColorBrush(Color.FromRgb(236, 238, 242)),
@@ -467,9 +501,9 @@ public sealed class HistoryStatsWindow : Window
             _tabButtons[i] = btn;
             segPanel.Children.Add(btn);
         }
-        segBorder.Child = segPanel;
-        Grid.SetColumn(segBorder, 0);
-        topBarGrid.Children.Add(segBorder);
+        _segBorder.Child = segPanel;
+        Grid.SetColumn(_segBorder, 0);
+        topBarGrid.Children.Add(_segBorder);
 
         var rightBtns = new StackPanel
         {
@@ -490,9 +524,9 @@ public sealed class HistoryStatsWindow : Window
 
         Grid.SetColumn(rightBtns, 2);
         topBarGrid.Children.Add(rightBtns);
-        topBar.Child = topBarGrid;
-        Grid.SetRow(topBar, 0);
-        rootGrid.Children.Add(topBar);
+        _topBar.Child = topBarGrid;
+        Grid.SetRow(_topBar, 0);
+        rootGrid.Children.Add(_topBar);
 
         // 2. 4 个指标统计卡片
         var cardsGrid = new UniformGrid
@@ -549,6 +583,7 @@ public sealed class HistoryStatsWindow : Window
             cardBorder.Child = stack;
             cardsGrid.Children.Add(cardBorder);
 
+            _cardBorders[i] = cardBorder;
             _cardTitleLabels[i] = titleLbl;
             _cardValueLabels[i] = valLbl;
             _cardSubLabels[i] = subLbl;
@@ -586,7 +621,7 @@ public sealed class HistoryStatsWindow : Window
         rootGrid.Children.Add(_tableTitleLabel);
 
         // 6. 底部明细表格
-        var tableBorder = new Border
+        _tableBorder = new Border
         {
             Margin = new Thickness(20, 0, 20, 18),
             CornerRadius = new CornerRadius(8),
@@ -613,11 +648,19 @@ public sealed class HistoryStatsWindow : Window
             SelectionMode = DataGridSelectionMode.Single,
             FontSize = 11.5
         };
-        tableBorder.Child = _tableView;
-        Grid.SetRow(tableBorder, 5);
-        rootGrid.Children.Add(tableBorder);
+        _tableBorder.Child = _tableView;
+        Grid.SetRow(_tableBorder, 5);
+        rootGrid.Children.Add(_tableBorder);
 
         Content = rootGrid;
+
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        ApplyTheme();
+        ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(() =>
+        {
+            ApplyTheme();
+            ReloadData();
+        });
 
         Closing += (_, e) =>
         {
@@ -631,7 +674,67 @@ public sealed class HistoryStatsWindow : Window
         AppEvents.NetworkDataUpdated += () => AppEvents.InvokeOnUI(ReloadData);
 
         UpdateSegmentButtonStyles();
+        ApplyToolbarButtonTheme(_settingsBtn, isPrimary: false);
+        ApplyToolbarButtonTheme(_ssoBtn, isPrimary: false);
+        ApplyToolbarButtonTheme(_refreshBtn, isPrimary: true);
         ReloadData();
+    }
+
+    private void ApplyTheme()
+    {
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        Background = ThemeManager.Shared.WindowBackground;
+        Foreground = ThemeManager.Shared.TextPrimary;
+
+        if (_topBar != null)
+        {
+            _topBar.Background = ThemeManager.Shared.TopBarBackground;
+            _topBar.BorderBrush = ThemeManager.Shared.CardBorderBrush;
+        }
+
+        if (_segBorder != null)
+        {
+            _segBorder.Background = ThemeManager.Shared.ControlBackground;
+        }
+
+        if (_tableTitleLabel != null)
+        {
+            _tableTitleLabel.Foreground = ThemeManager.Shared.TextPrimary;
+        }
+
+        _quotaCardView?.ApplyTheme();
+
+        for (int i = 0; i < 4; i++)
+        {
+            if (_cardBorders[i] != null)
+            {
+                _cardBorders[i].Background = ThemeManager.Shared.CardBackground;
+                _cardBorders[i].BorderBrush = ThemeManager.Shared.CardBorderBrush;
+                _cardTitleLabels[i].Foreground = ThemeManager.Shared.TextSecondary;
+                _cardSubLabels[i].Foreground = ThemeManager.Shared.TextMuted;
+            }
+        }
+
+        if (_tableBorder != null)
+        {
+            _tableBorder.Background = ThemeManager.Shared.TableBackground;
+            _tableBorder.BorderBrush = ThemeManager.Shared.CardBorderBrush;
+        }
+
+        if (_tableView != null)
+        {
+            ThemeManager.Shared.ApplyDataGridTheme(_tableView);
+            _tableView.Background = ThemeManager.Shared.TableBackground;
+            _tableView.RowBackground = ThemeManager.Shared.TableBackground;
+            _tableView.AlternatingRowBackground = ThemeManager.Shared.TableAlternatingBackground;
+            _tableView.HorizontalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
+            _tableView.Foreground = ThemeManager.Shared.TextPrimary;
+        }
+
+        UpdateSegmentButtonStyles();
+        ApplyToolbarButtonTheme(_settingsBtn, isPrimary: false);
+        ApplyToolbarButtonTheme(_ssoBtn, isPrimary: false);
+        ApplyToolbarButtonTheme(_refreshBtn, isPrimary: true);
     }
 
     private static Button CreateToolbarButton(string title, double width, Action onClick, bool isPrimary = false)
@@ -643,11 +746,9 @@ public sealed class HistoryStatsWindow : Window
             Height = 28,
             FontSize = 12,
             Cursor = Cursors.Hand,
-            Background = isPrimary
-                ? new SolidColorBrush(Color.FromRgb(0, 122, 255))
-                : new SolidColorBrush(Color.FromRgb(242, 244, 247)),
-            Foreground = isPrimary ? Brushes.White : new SolidColorBrush(Color.FromRgb(40, 46, 56)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)),
+            Background = isPrimary ? ThemeManager.Shared.Accent : ThemeManager.Shared.ControlBackground,
+            Foreground = isPrimary ? Brushes.White : ThemeManager.Shared.TextPrimary,
+            BorderBrush = isPrimary ? ThemeManager.Shared.Accent : ThemeManager.Shared.ControlBorderBrush,
             BorderThickness = new Thickness(1)
         };
         btn.Click += (_, _) => onClick();
@@ -660,18 +761,26 @@ public sealed class HistoryStatsWindow : Window
         {
             bool selected = (i == _currentMode);
             _tabButtons[i].Background = selected
-                ? Brushes.White
+                ? ThemeManager.Shared.Accent
                 : Brushes.Transparent;
             _tabButtons[i].Foreground = selected
-                ? new SolidColorBrush(Color.FromRgb(0, 122, 255))
-                : new SolidColorBrush(Color.FromRgb(85, 92, 105));
+                ? Brushes.White
+                : ThemeManager.Shared.TextSecondary;
             _tabButtons[i].FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal;
         }
+    }
+
+    private static void ApplyToolbarButtonTheme(Button button, bool isPrimary)
+    {
+        button.Background = isPrimary ? ThemeManager.Shared.Accent : ThemeManager.Shared.ControlBackground;
+        button.Foreground = isPrimary ? Brushes.White : ThemeManager.Shared.TextPrimary;
+        button.BorderBrush = isPrimary ? ThemeManager.Shared.Accent : ThemeManager.Shared.ControlBorderBrush;
     }
 
     public void ShowWindow(int mode = 0)
     {
         _currentMode = Math.Clamp(mode, 0, 2);
+        ApplyTheme();
         UpdateSegmentButtonStyles();
 
         if (!IsVisible)
@@ -749,7 +858,8 @@ public sealed class HistoryStatsWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.NoResize,
-            Background = Brushes.White
+            Background = ThemeManager.Shared.WindowBackground,
+            Foreground = ThemeManager.Shared.TextPrimary
         };
 
         var root = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
@@ -757,7 +867,7 @@ public sealed class HistoryStatsWindow : Window
         {
             Text = "可自定义单日餐饮/日常消费参考基准（默认 30 元）以及卡内余额不足提醒红线（默认 15 元）：",
             FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(95, 102, 114)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 14)
         });
@@ -845,6 +955,7 @@ public sealed class HistoryStatsWindow : Window
 
         root.Children.Add(btnRow);
         dialog.Content = root;
+        ThemeManager.Shared.ApplyWindowTheme(dialog);
         dialog.ShowDialog();
     }
 
@@ -1137,11 +1248,13 @@ public sealed class HistoryStatsWindow : Window
                 else if (tag.StartsWith("早餐"))
                     tagBrush = new SolidColorBrush(Color.FromRgb(48, 176, 199));
                 else
-                    tagBrush = new SolidColorBrush(Color.FromRgb(110, 116, 128));
+                    tagBrush = ThemeManager.Shared.TextSecondary;
 
                 string sign = tx.IsExpense ? "-" : "+";
                 Brush amtBrush = tx.IsExpense
-                    ? new SolidColorBrush(Color.FromRgb(30, 34, 40))
+                    ? new SolidColorBrush(ThemeManager.Shared.IsDarkTheme
+                        ? Color.FromRgb(255, 105, 97)
+                        : Color.FromRgb(180, 25, 35))
                     : new SolidColorBrush(Color.FromRgb(40, 180, 99));
 
                 return new HistoryTableRow
