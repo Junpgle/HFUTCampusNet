@@ -38,6 +38,7 @@ public static class Program
             {
                 ShutdownMode = ShutdownMode.OnExplicitShutdown
             };
+            ThemeManager.Shared.InitializeApplicationControlStyles();
 
             // Setup global exception handling
             SetupExceptionHandling(app);
@@ -148,6 +149,12 @@ public static class Program
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
             Debug.WriteLine($"[AppDomain Unhandled Exception]: {e.ExceptionObject}");
+        };
+
+        TaskScheduler.UnobservedTaskException += (s, e) =>
+        {
+            Debug.WriteLine($"[TaskScheduler Unobserved Task Exception]: {e.Exception}");
+            e.SetObserved(); // Prevent app crashing from background task network exceptions
         };
     }
 }

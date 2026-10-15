@@ -5,6 +5,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>HFUTCampusNet</RootNamespace>
     <AssemblyName>HFUTCampusNet</AssemblyName>
+    <ApplicationIcon>Assets\HFUTCampusNet.ico</ApplicationIcon>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
@@ -19,6 +20,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Resource Include="Assets\HFUTCampusNet.ico" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
   </ItemGroup>

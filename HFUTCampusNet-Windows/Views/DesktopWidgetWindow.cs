@@ -148,6 +148,7 @@ public sealed class DesktopWidgetWindow : Window
 
     private DesktopWidgetWindow()
     {
+        ThemeManager.Shared.ApplyWindowIcon(this);
         Width = 340;
         Height = 256;
         WindowStyle = WindowStyle.None;
