@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 
 namespace HFUTCampusNet;
@@ -32,21 +33,8 @@ public class CourseScheduleWindow : Window
     private readonly Button _syncBtn;
     private readonly TextBlock _statusLabel;
     private readonly Grid _timetableContainer;
-
-    private static readonly (int Unit, string Start, string End)[] PeriodTimeSlots =
-    {
-        (1,  "08:00", "08:50"),
-        (2,  "09:00", "09:50"),
-        (3,  "10:10", "11:00"),
-        (4,  "11:10", "12:00"),
-        (5,  "14:00", "14:50"),
-        (6,  "15:00", "15:50"),
-        (7,  "16:00", "16:50"),
-        (8,  "17:00", "17:50"),
-        (9,  "19:00", "19:50"),
-        (10, "20:00", "20:50"),
-        (11, "21:00", "21:50")
-    };
+    private Border _topBarBorder = null!;
+    private TextBlock _titleText = null!;
 
     private static readonly (Color Bg, Color Border, Color Title, Color Sub)[] CoursePalette =
     {
@@ -62,12 +50,26 @@ public class CourseScheduleWindow : Window
         (Color.FromRgb(235, 248, 232), Color.FromRgb(112, 198, 68),  Color.FromRgb(42, 108, 18),  Color.FromRgb(68, 138, 42))
     };
 
+    private static readonly (Color Bg, Color Border, Color Title, Color Sub)[] CoursePaletteDark =
+    {
+        (Color.FromRgb(29, 43, 61), Color.FromRgb(64, 140, 255), Color.FromRgb(199, 220, 255), Color.FromRgb(164, 193, 235)),
+        (Color.FromRgb(27, 48, 39), Color.FromRgb(52, 199, 110), Color.FromRgb(194, 240, 211), Color.FromRgb(157, 213, 178)),
+        (Color.FromRgb(54, 39, 27), Color.FromRgb(255, 155, 45), Color.FromRgb(255, 223, 190), Color.FromRgb(232, 190, 145)),
+        (Color.FromRgb(45, 34, 59), Color.FromRgb(162, 98, 248), Color.FromRgb(224, 204, 255), Color.FromRgb(192, 163, 230)),
+        (Color.FromRgb(55, 32, 42), Color.FromRgb(245, 86, 135), Color.FromRgb(255, 203, 221), Color.FromRgb(228, 161, 185)),
+        (Color.FromRgb(27, 47, 51), Color.FromRgb(38, 188, 205), Color.FromRgb(190, 240, 245), Color.FromRgb(151, 207, 214)),
+        (Color.FromRgb(51, 46, 27), Color.FromRgb(235, 185, 28), Color.FromRgb(249, 234, 177), Color.FromRgb(218, 198, 134)),
+        (Color.FromRgb(34, 37, 61), Color.FromRgb(98, 112, 245), Color.FromRgb(204, 209, 255), Color.FromRgb(169, 174, 231)),
+        (Color.FromRgb(56, 37, 31), Color.FromRgb(248, 108, 75), Color.FromRgb(255, 211, 197), Color.FromRgb(229, 176, 157)),
+        (Color.FromRgb(34, 48, 29), Color.FromRgb(112, 198, 68), Color.FromRgb(209, 239, 194), Color.FromRgb(172, 211, 157))
+    };
+
     private CourseScheduleWindow()
     {
         Title = "HFUT 课程表";
-        Width = 1040;
-        Height = 760;
-        MinWidth = 900;
+        Width = 1076;
+        Height = 800;
+        MinWidth = 896;
         MinHeight = 640;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(246, 248, 251));
@@ -84,7 +86,7 @@ public class CourseScheduleWindow : Window
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // 顶部工具栏
-        var topBarBorder = new Border
+        _topBarBorder = new Border
         {
             Background = Brushes.White,
             BorderBrush = new SolidColorBrush(Color.FromRgb(228, 233, 242)),
@@ -103,7 +105,7 @@ public class CourseScheduleWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        var titleText = new TextBlock
+        _titleText = new TextBlock
         {
             Text = "学期课表",
             FontSize = 15,
@@ -112,7 +114,7 @@ public class CourseScheduleWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 10, 0)
         };
-        leftControls.Children.Add(titleText);
+        leftControls.Children.Add(_titleText);
 
         _semesterCombo = new ComboBox
         {
@@ -207,9 +209,9 @@ public class CourseScheduleWindow : Window
         Grid.SetColumn(rightControls, 2);
         topBarGrid.Children.Add(rightControls);
 
-        topBarBorder.Child = topBarGrid;
-        Grid.SetRow(topBarBorder, 0);
-        rootGrid.Children.Add(topBarBorder);
+        _topBarBorder.Child = topBarGrid;
+        Grid.SetRow(_topBarBorder, 0);
+        rootGrid.Children.Add(_topBarBorder);
 
         // 课表主画布
         var scrollViewer = new ScrollViewer
@@ -229,12 +231,47 @@ public class CourseScheduleWindow : Window
 
         Content = rootGrid;
 
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        ApplyTheme();
+        ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(() =>
+        {
+            ApplyTheme();
+            ReloadInterface(false);
+        });
+
         AppEvents.CourseScheduleUpdated += () => AppEvents.InvokeOnUI(() => ReloadInterface(false));
         AppEvents.AcademicDataUpdated += () => AppEvents.InvokeOnUI(UpdatePendingSurveyBadge);
     }
 
+    private void ApplyTheme()
+    {
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        Background = ThemeManager.Shared.WindowBackground;
+        Foreground = ThemeManager.Shared.TextPrimary;
+
+        if (_topBarBorder != null)
+        {
+            _topBarBorder.Background = ThemeManager.Shared.TopBarBackground;
+            _topBarBorder.BorderBrush = ThemeManager.Shared.CardBorderBrush;
+        }
+
+        if (_titleText != null)
+        {
+            _titleText.Foreground = ThemeManager.Shared.TextPrimary;
+        }
+
+        if (_statusLabel != null)
+        {
+            _statusLabel.Foreground = ThemeManager.Shared.TextSecondary;
+        }
+
+        ThemeManager.Shared.ApplyComboBoxTheme(_semesterCombo);
+        ThemeManager.Shared.ApplyComboBoxTheme(_weekCombo);
+    }
+
     public void ShowWindow()
     {
+        ApplyTheme();
         if (!IsVisible)
         {
             Show();
@@ -300,6 +337,11 @@ public class CourseScheduleWindow : Window
     private void ReloadInterface(bool autoPositionWeek)
     {
         var schedule = CourseScheduleService.Shared.CurrentSchedule;
+        if (schedule?.Lessons != null && schedule.Lessons.Count > 0)
+        {
+            CourseLesson.EnrichLessons(schedule.Lessons);
+        }
+
         _suppressComboEvents = true;
         try
         {
@@ -385,30 +427,44 @@ public class CourseScheduleWindow : Window
             return;
         }
 
+        // 与 macOS 版保持一致：以课程数据中的真实时间定位课程，不再按过期的固定节次表排版。
+        var weekCourses = schedule.Courses(forWeek: _selectedWeek)
+            .Where(c => c.Weekday >= 1 && c.Weekday <= 7
+                && c.StartMinutes >= 0 && c.EndMinutes > c.StartMinutes && c.EndMinutes <= 24 * 60)
+            .OrderBy(c => c.Weekday)
+            .ThenBy(c => c.StartMinutes)
+            .ThenBy(c => c.EndMinutes)
+            .ToList();
+
+        int minLessonHour = weekCourses.Count > 0 ? weekCourses.Min(c => c.StartMinutes) / 60 : 8;
+        int maxLessonHour = weekCourses.Count > 0 ? (weekCourses.Max(c => c.EndMinutes) + 59) / 60 : 22;
+        int startHour = Math.Min(8, minLessonHour);
+        int endHour = Math.Min(24, Math.Max(22, maxLessonHour));
+        int totalHours = Math.Max(1, endHour - startHour);
+        const double hourHeight = 54.0;
+        double timelineHeight = totalHours * hourHeight;
+
         // 外层卡片边框
         var outerCard = new Border
         {
-            Background = Brushes.White,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(225, 231, 240)),
+            Background = ThemeManager.Shared.TableBackground,
+            BorderBrush = ThemeManager.Shared.CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             ClipToBounds = true
         };
 
         var tableGrid = new Grid();
-        // 列：第0列为节次时间栏(74px)，第1~7列为周一至周日(1*)
+        // 列：第0列为时间刻度栏(74px)，第1~7列为周一至周日(1*)
         tableGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) });
         for (int d = 1; d <= 7; d++)
         {
             tableGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         }
 
-        // 行：第0行为表头(48px)，第1~11行为11节课(1*)
+        // 行：表头 + 按小时等高的实际时间轴。
         tableGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        for (int u = 1; u <= 11; u++)
-        {
-            tableGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 52 });
-        }
+        tableGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(timelineHeight) });
 
         var weekDates = GetDatesForWeek(schedule, _selectedWeek);
         var today = DateTime.Today;
@@ -417,11 +473,11 @@ public class CourseScheduleWindow : Window
         int currentCalculatedWeek = schedule.CalculatedCurrentWeek();
         bool isViewingCurrentWeek = (_selectedWeek == currentCalculatedWeek);
 
-        // 左上角月份单元格
+        // 左上角时间表头
         var cornerBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(248, 250, 253)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(232, 237, 245)),
+            Background = ThemeManager.Shared.TableHeaderBackground,
+            BorderBrush = ThemeManager.Shared.TableGridLineBrush,
             BorderThickness = new Thickness(0, 0, 1, 1)
         };
         string monthHeader = weekDates.Count > 0 && weekDates[0].HasValue
@@ -432,7 +488,7 @@ public class CourseScheduleWindow : Window
             Text = monthHeader,
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(95, 108, 128)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -451,9 +507,9 @@ public class CourseScheduleWindow : Window
             var headerBorder = new Border
             {
                 Background = isToday
-                    ? new SolidColorBrush(Color.FromRgb(235, 244, 255))
-                    : new SolidColorBrush(Color.FromRgb(248, 250, 253)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(232, 237, 245)),
+                    ? new SolidColorBrush(Color.FromArgb(ThemeManager.Shared.IsDarkTheme ? (byte)36 : (byte)24, 10, 132, 255))
+                    : ThemeManager.Shared.TableHeaderBackground,
+                BorderBrush = ThemeManager.Shared.TableGridLineBrush,
                 BorderThickness = new Thickness(0, 0, d < 7 ? 1 : 0, 1)
             };
 
@@ -469,8 +525,8 @@ public class CourseScheduleWindow : Window
                 FontSize = 12,
                 FontWeight = isToday ? FontWeights.Bold : FontWeights.SemiBold,
                 Foreground = isToday
-                    ? new SolidColorBrush(Color.FromRgb(24, 112, 235))
-                    : new SolidColorBrush(Color.FromRgb(42, 52, 68)),
+                    ? ThemeManager.Shared.Accent
+                    : ThemeManager.Shared.TextPrimary,
                 HorizontalAlignment = HorizontalAlignment.Center
             });
 
@@ -481,8 +537,8 @@ public class CourseScheduleWindow : Window
                     Text = dayDate.Value.ToString("MM/dd"),
                     FontSize = 10.5,
                     Foreground = isToday
-                        ? new SolidColorBrush(Color.FromRgb(45, 128, 240))
-                        : new SolidColorBrush(Color.FromRgb(135, 145, 162)),
+                        ? ThemeManager.Shared.Accent
+                        : ThemeManager.Shared.TextMuted,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     Margin = new Thickness(0, 1, 0, 0)
                 });
@@ -498,131 +554,187 @@ public class CourseScheduleWindow : Window
             {
                 var todayColHighlight = new Border
                 {
-                    Background = new SolidColorBrush(Color.FromArgb(14, 36, 128, 255)),
+                    Background = new SolidColorBrush(Color.FromArgb(ThemeManager.Shared.IsDarkTheme ? (byte)20 : (byte)12, 10, 132, 255)),
                     IsHitTestVisible = false
                 };
                 Grid.SetRow(todayColHighlight, 1);
-                Grid.SetRowSpan(todayColHighlight, 11);
+                Grid.SetRowSpan(todayColHighlight, 1);
                 Grid.SetColumn(todayColHighlight, d);
                 tableGrid.Children.Add(todayColHighlight);
             }
         }
 
-        // 左侧节次栏 + 网格底线
-        for (int u = 1; u <= 11; u++)
+        // 左侧小时刻度；时间轴和课程卡片都使用分钟数换算纵向位置。
+        var timeAxis = new Grid
         {
-            var slot = PeriodTimeSlots[u - 1];
-            int startMin = ParseMinutes(slot.Start);
-            int endMin = ParseMinutes(slot.End);
-            bool isCurrentPeriod = isViewingCurrentWeek && currentMinutes >= startMin && currentMinutes <= endMin;
-
-            var periodCell = new Border
+            Background = ThemeManager.Shared.TableHeaderBackground,
+            ClipToBounds = false,
+            IsHitTestVisible = false
+        };
+        for (int hourIndex = 0; hourIndex < totalHours; hourIndex++)
+        {
+            timeAxis.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hourHeight) });
+            var axisCell = new Border
             {
-                Background = isCurrentPeriod
-                    ? new SolidColorBrush(Color.FromRgb(236, 245, 255))
-                    : new SolidColorBrush(Color.FromRgb(250, 251, 254)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(234, 238, 246)),
-                BorderThickness = new Thickness(0, 0, 1, u < 11 ? 1 : 0)
+                BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+                BorderThickness = new Thickness(0, 0, 1, 1)
             };
-
-            var pStack = new StackPanel
-            {
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            pStack.Children.Add(new TextBlock
-            {
-                Text = $"第{slot.Unit}节",
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = isCurrentPeriod
-                    ? new SolidColorBrush(Color.FromRgb(24, 112, 235))
-                    : new SolidColorBrush(Color.FromRgb(55, 65, 82)),
-                HorizontalAlignment = HorizontalAlignment.Center
-            });
-            pStack.Children.Add(new TextBlock
-            {
-                Text = $"{slot.Start}-{slot.End}",
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(140, 150, 168)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 1, 0, 0)
-            });
-
-            periodCell.Child = pStack;
-            Grid.SetRow(periodCell, u);
-            Grid.SetColumn(periodCell, 0);
-            tableGrid.Children.Add(periodCell);
-
-            // 每一格背景分割线（午休第4节后、晚课第8节后加深分隔线）
-            bool isSectionBreak = (u == 4 || u == 8);
-            Brush bottomBorderBrush = isSectionBreak
-                ? new SolidColorBrush(Color.FromRgb(210, 218, 232))
-                : new SolidColorBrush(Color.FromRgb(238, 242, 248));
-
-            for (int d = 1; d <= 7; d++)
-            {
-                var gridCell = new Border
-                {
-                    BorderBrush = bottomBorderBrush,
-                    BorderThickness = new Thickness(0, 0, d < 7 ? 1 : 0, u < 11 ? (isSectionBreak ? 1.5 : 1) : 0),
-                    IsHitTestVisible = false
-                };
-                Grid.SetRow(gridCell, u);
-                Grid.SetColumn(gridCell, d);
-                tableGrid.Children.Add(gridCell);
-            }
+            Grid.SetRow(axisCell, hourIndex);
+            timeAxis.Children.Add(axisCell);
         }
+        var timeLabels = new Canvas { IsHitTestVisible = false };
+        for (int hour = startHour; hour <= endHour; hour++)
+        {
+            var timeLabel = new TextBlock
+            {
+                Text = $"{hour:D2}:00",
+                Width = 64,
+                Height = 16,
+                TextAlignment = TextAlignment.Right,
+                FontSize = 11,
+                FontWeight = FontWeights.Medium,
+                Foreground = ThemeManager.Shared.TextSecondary
+            };
+            Canvas.SetLeft(timeLabel, 3);
+            Canvas.SetTop(timeLabel, Math.Max(0, (hour - startHour) * hourHeight - 8));
+            timeLabels.Children.Add(timeLabel);
+        }
+        Grid.SetRowSpan(timeLabels, totalHours);
+        timeAxis.Children.Add(timeLabels);
+        Grid.SetRow(timeAxis, 1);
+        Grid.SetColumn(timeAxis, 0);
+        tableGrid.Children.Add(timeAxis);
 
-        // 筛选本周课程并按 (Weekday, StartUnit, EndUnit) 分组处理重课叠加
-        var weekCourses = schedule.Courses(forWeek: _selectedWeek)
-            .Where(c => c.Weekday >= 1 && c.Weekday <= 7 && c.StartUnit >= 1 && c.StartUnit <= 11)
-            .OrderBy(c => c.Weekday)
-            .ThenBy(c => c.StartUnit)
-            .ThenByDescending(c => c.SpanUnits)
-            .ToList();
-
-        // 按天分组，检测时段重叠并渲染卡片
+        // 每日小时网格与精确课程卡片。
         for (int day = 1; day <= 7; day++)
         {
-            var dayList = weekCourses.Where(c => c.Weekday == day).ToList();
-            var usedIndices = new HashSet<int>();
+            DateTime? dayDate = day - 1 < weekDates.Count ? weekDates[day - 1] : null;
+            bool isToday = dayDate.HasValue
+                ? dayDate.Value.Date == today
+                : isViewingCurrentWeek && day == currentWeekday;
 
-            for (int i = 0; i < dayList.Count; i++)
+            var dayGrid = new Grid
             {
-                if (usedIndices.Contains(i)) continue;
-                var primary = dayList[i];
-                var overlapping = new List<CourseScheduleItem> { primary };
-                usedIndices.Add(i);
-
-                int groupStart = Math.Clamp(primary.StartUnit, 1, 11);
-                int groupEnd = Math.Clamp(primary.EndUnit, groupStart, 11);
-
-                for (int j = i + 1; j < dayList.Count; j++)
+                Background = isToday
+                    ? new SolidColorBrush(Color.FromArgb(ThemeManager.Shared.IsDarkTheme ? (byte)20 : (byte)12, 10, 132, 255))
+                    : Brushes.Transparent,
+                ClipToBounds = true
+            };
+            for (int hourIndex = 0; hourIndex < totalHours; hourIndex++)
+            {
+                dayGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hourHeight) });
+                var hourCell = new Border
                 {
-                    if (usedIndices.Contains(j)) continue;
-                    var candidate = dayList[j];
-                    int cStart = Math.Clamp(candidate.StartUnit, 1, 11);
-                    int cEnd = Math.Clamp(candidate.EndUnit, cStart, 11);
-                    if (cStart <= groupEnd && cEnd >= groupStart)
+                    BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+                    BorderThickness = new Thickness(0, 0, day < 7 ? 1 : 0, 1),
+                    IsHitTestVisible = false
+                };
+                Grid.SetRow(hourCell, hourIndex);
+                dayGrid.Children.Add(hourCell);
+            }
+
+            var dayCourses = weekCourses.Where(c => c.Weekday == day).ToList();
+            var overlapGroups = new List<List<CourseScheduleItem>>();
+            foreach (var course in dayCourses)
+            {
+                if (overlapGroups.Count == 0 || course.StartMinutes >= overlapGroups[^1].Max(c => c.EndMinutes))
+                {
+                    overlapGroups.Add(new List<CourseScheduleItem> { course });
+                }
+                else
+                {
+                    overlapGroups[^1].Add(course);
+                }
+            }
+
+            foreach (var group in overlapGroups)
+            {
+                int groupStartMin = group.Min(c => c.StartMinutes);
+                int groupEndMin = group.Max(c => c.EndMinutes);
+                int groupStartHour = groupStartMin / 60;
+                int groupEndHour = (groupEndMin + 59) / 60;
+                int parentStartRow = Math.Clamp(groupStartHour - startHour, 0, totalHours - 1);
+                int parentEndRow = Math.Clamp(groupEndHour - startHour, parentStartRow + 1, totalHours);
+
+                var laneEnds = new List<int>();
+                var assignedLanes = new List<int>();
+                foreach (var course in group)
+                {
+                    int lane = laneEnds.FindIndex(end => end <= course.StartMinutes);
+                    if (lane < 0)
                     {
-                        overlapping.Add(candidate);
-                        usedIndices.Add(j);
-                        groupStart = Math.Min(groupStart, cStart);
-                        groupEnd = Math.Max(groupEnd, cEnd);
+                        lane = laneEnds.Count;
+                        laneEnds.Add(course.EndMinutes);
                     }
+                    else
+                    {
+                        laneEnds[lane] = course.EndMinutes;
+                    }
+                    assignedLanes.Add(lane);
                 }
 
-                bool isOngoingNow = isViewingCurrentWeek
-                    && day == currentWeekday
-                    && IsCourseOngoingNow(groupStart, groupEnd, currentMinutes);
+                var groupGrid = new Grid { ClipToBounds = true };
+                for (int lane = 0; lane < laneEnds.Count; lane++)
+                    groupGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                for (int hour = groupStartHour; hour < groupEndHour; hour++)
+                    groupGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                Grid.SetRow(groupGrid, parentStartRow);
+                Grid.SetRowSpan(groupGrid, parentEndRow - parentStartRow);
+                dayGrid.Children.Add(groupGrid);
 
-                var cardElement = CreateCourseBlockElement(overlapping, isOngoingNow);
-                Grid.SetRow(cardElement, groupStart);
-                Grid.SetRowSpan(cardElement, Math.Max(1, groupEnd - groupStart + 1));
-                Grid.SetColumn(cardElement, day);
-                tableGrid.Children.Add(cardElement);
+                for (int index = 0; index < group.Count; index++)
+                {
+                    var course = group[index];
+                    int courseStartHour = course.StartMinutes / 60;
+                    int courseEndHour = (course.EndMinutes + 59) / 60;
+                    int localStartRow = Math.Clamp(courseStartHour - groupStartHour, 0, groupGrid.RowDefinitions.Count - 1);
+                    int localEndRow = Math.Clamp(courseEndHour - groupStartHour, localStartRow + 1, groupGrid.RowDefinitions.Count);
+                    double topInset = course.StartMinutes % 60 / 60.0 * hourHeight;
+                    int endRemainder = course.EndMinutes % 60;
+                    double bottomInset = endRemainder == 0 ? 0 : (60 - endRemainder) / 60.0 * hourHeight;
+                    bool isOngoingNow = isViewingCurrentWeek && day == currentWeekday
+                        && currentMinutes >= course.StartMinutes && currentMinutes < course.EndMinutes;
+
+                    var card = CreateCourseBlockElement(new List<CourseScheduleItem> { course }, isOngoingNow);
+                    if (card is FrameworkElement cardElement)
+                        cardElement.Margin = new Thickness(3, topInset + 2, 3, bottomInset + 2);
+                    Grid.SetRow(card, localStartRow);
+                    Grid.SetRowSpan(card, localEndRow - localStartRow);
+                    Grid.SetColumn(card, assignedLanes[index]);
+                    groupGrid.Children.Add(card);
+                }
             }
+
+            // 当前时间线按真实时刻落位。
+            if (isViewingCurrentWeek && day == currentWeekday
+                && currentMinutes >= startHour * 60 && currentMinutes < endHour * 60)
+            {
+                int row = Math.Clamp(currentMinutes / 60 - startHour, 0, totalHours - 1);
+                double offset = currentMinutes % 60 / 60.0 * hourHeight;
+                var indicator = new Grid { IsHitTestVisible = false };
+                indicator.Children.Add(new Border
+                {
+                    Height = 2,
+                    Margin = new Thickness(0, offset, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Background = new SolidColorBrush(Color.FromRgb(239, 68, 68))
+                });
+                indicator.Children.Add(new Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Margin = new Thickness(-3, offset - 2, 0, 0),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Fill = new SolidColorBrush(Color.FromRgb(239, 68, 68))
+                });
+                Grid.SetRow(indicator, row);
+                dayGrid.Children.Add(indicator);
+            }
+
+            Grid.SetRow(dayGrid, 1);
+            Grid.SetColumn(dayGrid, day);
+            tableGrid.Children.Add(dayGrid);
         }
 
         outerCard.Child = tableGrid;
@@ -638,7 +750,7 @@ public class CourseScheduleWindow : Window
         {
             Background = new SolidColorBrush(palette.Bg),
             BorderBrush = isOngoingNow
-                ? new SolidColorBrush(Color.FromRgb(22, 110, 245))
+                ? ThemeManager.Shared.Accent
                 : new SolidColorBrush(palette.Border),
             BorderThickness = new Thickness(4, 1, 1, 1),
             CornerRadius = new CornerRadius(6),
@@ -655,7 +767,7 @@ public class CourseScheduleWindow : Window
         {
             var ongoingBadge = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(24, 118, 242)),
+                Background = ThemeManager.Shared.Accent,
                 CornerRadius = new CornerRadius(3),
                 Padding = new Thickness(4, 1, 4, 1),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -748,7 +860,7 @@ public class CourseScheduleWindow : Window
             lines.Add($"课程：{item.CourseName}");
             lines.Add($"教室：{item.RoomText}");
             lines.Add($"教师：{item.TeachersText}");
-            lines.Add($"节次：周{WeekdayName(item.Weekday)} 第{item.StartUnit}-{item.EndUnit}节 ({item.StartTimeText}-{item.EndTimeText})");
+            lines.Add($"上课时间：周{WeekdayName(item.Weekday)} {item.StartTimeText}-{item.EndTimeText}");
             lines.Add($"周次：{item.WeekText}");
             if (!string.IsNullOrWhiteSpace(item.LessonCode))
             {
@@ -768,7 +880,8 @@ public class CourseScheduleWindow : Window
             ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            Background = Brushes.White
+            Background = ThemeManager.Shared.WindowBackground,
+            Foreground = ThemeManager.Shared.TextPrimary
         };
 
         var rootStack = new StackPanel { Margin = new Thickness(20, 18, 20, 18) };
@@ -801,7 +914,7 @@ public class CourseScheduleWindow : Window
 
             AddDetailRow(cStack, "上课地点", item.RoomText);
             AddDetailRow(cStack, "授课教师", item.TeachersText);
-            AddDetailRow(cStack, "上课时间", $"周{WeekdayName(item.Weekday)} 第{item.StartUnit}-{item.EndUnit}节 ({item.StartTimeText} - {item.EndTimeText})");
+            AddDetailRow(cStack, "上课时间", $"周{WeekdayName(item.Weekday)} {item.StartTimeText} - {item.EndTimeText}");
             AddDetailRow(cStack, "上课周次", item.WeekText);
             if (!string.IsNullOrWhiteSpace(item.CreditsText))
             {
@@ -822,6 +935,7 @@ public class CourseScheduleWindow : Window
         rootStack.Children.Add(closeBtn);
 
         dialog.Content = rootStack;
+        ThemeManager.Shared.ApplyWindowTheme(dialog);
         dialog.ShowDialog();
     }
 
@@ -835,14 +949,14 @@ public class CourseScheduleWindow : Window
         {
             Text = label + "：",
             FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromRgb(105, 116, 135))
+            Foreground = ThemeManager.Shared.TextSecondary
         };
         var val = new TextBlock
         {
             Text = string.IsNullOrWhiteSpace(value) ? "—" : value,
             FontSize = 12,
             FontWeight = FontWeights.Medium,
-            Foreground = new SolidColorBrush(Color.FromRgb(32, 42, 58)),
+            Foreground = ThemeManager.Shared.TextPrimary,
             TextWrapping = TextWrapping.Wrap
         };
         Grid.SetColumn(lbl, 0);
@@ -856,8 +970,8 @@ public class CourseScheduleWindow : Window
     {
         var card = new Border
         {
-            Background = Brushes.White,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(225, 231, 240)),
+            Background = ThemeManager.Shared.CardBackground,
+            BorderBrush = ThemeManager.Shared.CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(32)
@@ -874,7 +988,7 @@ public class CourseScheduleWindow : Window
             Text = "📅 暂无课程表数据",
             FontSize = 17,
             FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(Color.FromRgb(45, 55, 72)),
+            Foreground = ThemeManager.Shared.TextPrimary,
             HorizontalAlignment = HorizontalAlignment.Center
         });
 
@@ -882,7 +996,7 @@ public class CourseScheduleWindow : Window
         {
             Text = "点击右上角「同步课表」即可通过统一身份认证拉取本学期完整课表。",
             FontSize = 12.5,
-            Foreground = new SolidColorBrush(Color.FromRgb(115, 126, 145)),
+            Foreground = ThemeManager.Shared.TextSecondary,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 8, 0, 16)
         });
@@ -1030,36 +1144,18 @@ public class CourseScheduleWindow : Window
         return dow == 0 ? 7 : dow;
     }
 
-    private static int ParseMinutes(string hhmm)
-    {
-        var parts = hhmm.Split(':');
-        if (parts.Length == 2 && int.TryParse(parts[0], out int h) && int.TryParse(parts[1], out int m))
-        {
-            return h * 60 + m;
-        }
-        return 0;
-    }
-
-    private static bool IsCourseOngoingNow(int startUnit, int endUnit, int currentMinutes)
-    {
-        int sIdx = Math.Clamp(startUnit - 1, 0, PeriodTimeSlots.Length - 1);
-        int eIdx = Math.Clamp(endUnit - 1, 0, PeriodTimeSlots.Length - 1);
-        int startMin = ParseMinutes(PeriodTimeSlots[sIdx].Start);
-        int endMin = ParseMinutes(PeriodTimeSlots[eIdx].End);
-        return currentMinutes >= startMin && currentMinutes <= endMin;
-    }
-
     private static (Color Bg, Color Border, Color Title, Color Sub) GetPaletteForCourse(string courseName)
     {
+        var palette = ThemeManager.Shared.IsDarkTheme ? CoursePaletteDark : CoursePalette;
         if (string.IsNullOrEmpty(courseName))
-            return CoursePalette[0];
+            return palette[0];
         uint hash = 2166136261;
         foreach (char c in courseName)
         {
             hash ^= c;
             hash *= 16777619;
         }
-        return CoursePalette[hash % (uint)CoursePalette.Length];
+        return palette[hash % (uint)palette.Length];
     }
 
     private static string WeekdayName(int weekday) => weekday switch
@@ -1082,12 +1178,12 @@ public class CourseScheduleWindow : Window
             Height = 28,
             Padding = new Thickness(10, 0, 10, 0),
             FontSize = 12,
-            Background = new SolidColorBrush(Color.FromRgb(242, 245, 250)),
-            Foreground = new SolidColorBrush(Color.FromRgb(42, 52, 68)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(216, 223, 235)),
             BorderThickness = new Thickness(1),
             Cursor = Cursors.Hand
         };
+        btn.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty, "HFUT.ControlBackground");
+        btn.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty, "HFUT.TextPrimary");
+        btn.SetResourceReference(System.Windows.Controls.Control.BorderBrushProperty, "HFUT.ControlBorderBrush");
         btn.Click += onClick;
         return btn;
     }
@@ -1101,11 +1197,12 @@ public class CourseScheduleWindow : Window
             Padding = new Thickness(12, 0, 12, 0),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            Background = new SolidColorBrush(Color.FromRgb(24, 118, 242)),
-            Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
             Cursor = Cursors.Hand
         };
+        btn.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty, "HFUT.Accent");
+        btn.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty, "HFUT.OnAccent");
+        btn.SetResourceReference(System.Windows.Controls.Control.BorderBrushProperty, "HFUT.Accent");
         btn.Click += onClick;
         return btn;
     }
@@ -1128,34 +1225,22 @@ public class ClassroomScheduleWindow : Window
     private readonly Button _queryBtn;
     private readonly TextBlock _statusLabel;
     private readonly Grid _timetableContainer;
+    private Border _topBar = null!;
 
     private bool _suppressSelectionEvents;
     private int _selectedWeek = 1;
+    private int _buildingLoadGeneration;
+    private int _roomLoadGeneration;
     private List<EmptyClassroomRoomItem> _availableRooms = new();
     private ClassroomSemesterScheduleData? _currentScheduleData;
-
-    private static readonly (int Unit, string Start, string End)[] PeriodTimeSlots =
-    {
-        (1,  "08:00", "08:50"),
-        (2,  "09:00", "09:50"),
-        (3,  "10:10", "11:00"),
-        (4,  "11:10", "12:00"),
-        (5,  "14:00", "14:50"),
-        (6,  "15:00", "15:50"),
-        (7,  "16:00", "16:50"),
-        (8,  "17:00", "17:50"),
-        (9,  "19:00", "19:50"),
-        (10, "20:00", "20:50"),
-        (11, "21:00", "21:50")
-    };
 
     private ClassroomScheduleWindow()
     {
         Title = "教室整周课表查询";
-        Width = 980;
-        Height = 720;
-        MinWidth = 860;
-        MinHeight = 600;
+        Width = 1096;
+        Height = 800;
+        MinWidth = 956;
+        MinHeight = 640;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(246, 248, 251));
 
@@ -1169,7 +1254,7 @@ public class ClassroomScheduleWindow : Window
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(56) });
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var topBar = new Border
+        _topBar = new Border
         {
             Background = Brushes.White,
             BorderBrush = new SolidColorBrush(Color.FromRgb(228, 233, 242)),
@@ -1268,9 +1353,9 @@ public class ClassroomScheduleWindow : Window
         Grid.SetColumn(_statusLabel, 2);
         barGrid.Children.Add(_statusLabel);
 
-        topBar.Child = barGrid;
-        Grid.SetRow(topBar, 0);
-        rootGrid.Children.Add(topBar);
+        _topBar.Child = barGrid;
+        Grid.SetRow(_topBar, 0);
+        rootGrid.Children.Add(_topBar);
 
         var scrollViewer = new ScrollViewer
         {
@@ -1283,10 +1368,46 @@ public class ClassroomScheduleWindow : Window
         rootGrid.Children.Add(scrollViewer);
 
         Content = rootGrid;
+
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        ApplyTheme();
+        ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(() =>
+        {
+            ApplyTheme();
+            if (_currentScheduleData != null)
+            {
+                RenderClassroomGrid();
+            }
+        });
+    }
+
+    private void ApplyTheme()
+    {
+        ThemeManager.Shared.ApplyWindowTheme(this);
+        Background = ThemeManager.Shared.WindowBackground;
+        Foreground = ThemeManager.Shared.TextPrimary;
+
+        if (_topBar != null)
+        {
+            _topBar.Background = ThemeManager.Shared.TopBarBackground;
+            _topBar.BorderBrush = ThemeManager.Shared.CardBorderBrush;
+        }
+
+        if (_statusLabel != null)
+        {
+            _statusLabel.Foreground = ThemeManager.Shared.TextSecondary;
+        }
+
+        ThemeManager.Shared.ApplyComboBoxTheme(_campusCombo);
+        ThemeManager.Shared.ApplyComboBoxTheme(_buildingCombo);
+        ThemeManager.Shared.ApplyComboBoxTheme(_roomCombo);
+        ThemeManager.Shared.ApplyComboBoxTheme(_semesterCombo);
+        ThemeManager.Shared.ApplyComboBoxTheme(_weekCombo);
     }
 
     public void ShowWindow()
     {
+        ApplyTheme();
         if (!IsVisible) Show();
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
@@ -1311,27 +1432,60 @@ public class ClassroomScheduleWindow : Window
 
     private void PopulateBuildingsForSelectedCampus()
     {
+        var campus = GetSelectedCampus();
+        var generation = ++_buildingLoadGeneration;
+
         _suppressSelectionEvents = true;
         try
         {
-            var campus = GetSelectedCampus();
-            var buildings = EmptyClassroomService.AllBuildings.Where(b => b.Campus == campus).ToList();
             _buildingCombo.Items.Clear();
-            foreach (var b in buildings)
-            {
-                _buildingCombo.Items.Add(new ComboBoxItem { Content = b.Title, Tag = b });
-            }
-            if (_buildingCombo.Items.Count > 0)
-            {
-                _buildingCombo.SelectedIndex = 0;
-            }
+            _roomCombo.Items.Clear();
+            _availableRooms.Clear();
         }
         finally
         {
             _suppressSelectionEvents = false;
         }
 
-        LoadRoomsForSelectedBuilding();
+        _statusLabel.Text = $"正在加载 {campus.Title()} 教学楼列表...";
+        EmptyClassroomService.Shared.FetchBuildings((buildings, err) =>
+        {
+            AppEvents.InvokeOnUI(() =>
+            {
+                if (generation != _buildingLoadGeneration || campus != GetSelectedCampus()) return;
+
+                var campusBuildings = (buildings ?? EmptyClassroomService.AllBuildings)
+                    .Where(b => b.Campus == campus)
+                    .ToList();
+
+                _suppressSelectionEvents = true;
+                try
+                {
+                    _buildingCombo.Items.Clear();
+                    foreach (var building in campusBuildings)
+                    {
+                        _buildingCombo.Items.Add(new ComboBoxItem { Content = building.Title, Tag = building });
+                    }
+                    if (_buildingCombo.Items.Count > 0)
+                    {
+                        _buildingCombo.SelectedIndex = 0;
+                    }
+                }
+                finally
+                {
+                    _suppressSelectionEvents = false;
+                }
+
+                if (_buildingCombo.Items.Count > 0)
+                {
+                    LoadRoomsForSelectedBuilding();
+                }
+                else
+                {
+                    _statusLabel.Text = err ?? "未找到该校区的教学楼";
+                }
+            });
+        });
     }
 
     private void OnBuildingChanged(object sender, SelectionChangedEventArgs e)
@@ -1345,8 +1499,10 @@ public class ClassroomScheduleWindow : Window
         if (_buildingCombo.SelectedItem is not ComboBoxItem bItem || bItem.Tag is not StudyBuildingOption building)
             return;
 
+        var generation = ++_roomLoadGeneration;
+
         string today = EmptyClassroomService.TodayDateString();
-        var cached = EmptyClassroomService.Shared.CachedBuildingRooms(building.Code, today);
+        var cached = EmptyClassroomService.Shared.CachedBuildingRooms(building, today);
         if (cached != null && cached.Count > 0)
         {
             PopulateRoomCombo(cached);
@@ -1358,13 +1514,22 @@ public class ClassroomScheduleWindow : Window
         {
             AppEvents.InvokeOnUI(() =>
             {
+                if (generation != _roomLoadGeneration
+                    || GetSelectedCampus() != building.Campus
+                    || _buildingCombo.SelectedItem is not ComboBoxItem selectedItem
+                    || selectedItem.Tag is not StudyBuildingOption selectedBuilding
+                    || selectedBuilding.BuildingId != building.BuildingId)
+                {
+                    return;
+                }
+
                 if (rooms != null && rooms.Count > 0)
                 {
                     PopulateRoomCombo(rooms);
                 }
                 else
                 {
-                    _statusLabel.Text = err ?? "未能加载该教学楼教室列表";
+                    _statusLabel.Text = err ?? "该教学楼暂无可用教室";
                 }
             });
         });
@@ -1466,13 +1631,27 @@ public class ClassroomScheduleWindow : Window
             return;
         }
 
-        var activities = _currentScheduleData.Activities(forWeek: _selectedWeek);
+        var activities = _currentScheduleData.Activities(forWeek: _selectedWeek)
+            .Where(a => a.Weekday >= 1 && a.Weekday <= 7
+                && a.StartMinutes >= 0 && a.EndMinutes > a.StartMinutes && a.EndMinutes <= 24 * 60)
+            .OrderBy(a => a.Weekday)
+            .ThenBy(a => a.StartMinutes)
+            .ThenBy(a => a.EndMinutes)
+            .ToList();
         _statusLabel.Text = $"{_currentScheduleData.RoomName} · 第 {_selectedWeek} 周共 {activities.Count} 节排课";
+
+        int minLessonHour = activities.Count > 0 ? activities.Min(a => a.StartMinutes) / 60 : 8;
+        int maxLessonHour = activities.Count > 0 ? (activities.Max(a => a.EndMinutes) + 59) / 60 : 22;
+        int startHour = Math.Min(8, minLessonHour);
+        int endHour = Math.Min(24, Math.Max(22, maxLessonHour));
+        int totalHours = Math.Max(1, endHour - startHour);
+        const double hourHeight = 54.0;
+        double timelineHeight = totalHours * hourHeight;
 
         var outerCard = new Border
         {
-            Background = Brushes.White,
-            BorderBrush = new SolidColorBrush(Color.FromRgb(225, 231, 240)),
+            Background = ThemeManager.Shared.CardBackground,
+            BorderBrush = ThemeManager.Shared.CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             ClipToBounds = true
@@ -1486,18 +1665,33 @@ public class ClassroomScheduleWindow : Window
         }
 
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(42) });
-        for (int u = 1; u <= 11; u++)
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(timelineHeight) });
+
+        var timeHeader = new Border
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 48 });
-        }
+            Background = ThemeManager.Shared.TableHeaderBackground,
+            BorderBrush = ThemeManager.Shared.CardBorderBrush,
+            BorderThickness = new Thickness(0, 0, 1, 1),
+            Child = new TextBlock
+            {
+                Text = "时间",
+                FontSize = 11,
+                Foreground = ThemeManager.Shared.TextSecondary,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        Grid.SetRow(timeHeader, 0);
+        Grid.SetColumn(timeHeader, 0);
+        grid.Children.Add(timeHeader);
 
         string[] weekdayNames = { "周一", "周二", "周三", "周四", "周五", "周六", "周日" };
         for (int d = 1; d <= 7; d++)
         {
             var hdr = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(248, 250, 253)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(232, 237, 245)),
+                Background = ThemeManager.Shared.TableHeaderBackground,
+                BorderBrush = ThemeManager.Shared.CardBorderBrush,
                 BorderThickness = new Thickness(d == 1 ? 1 : 0, 0, 1, 1)
             };
             hdr.Child = new TextBlock
@@ -1505,7 +1699,7 @@ public class ClassroomScheduleWindow : Window
                 Text = weekdayNames[d - 1],
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(42, 52, 68)),
+                Foreground = ThemeManager.Shared.TextPrimary,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -1514,81 +1708,162 @@ public class ClassroomScheduleWindow : Window
             grid.Children.Add(hdr);
         }
 
-        for (int u = 1; u <= 11; u++)
+        var timeAxis = new Grid
         {
-            var slot = PeriodTimeSlots[u - 1];
-            var pCell = new Border
+            Background = ThemeManager.Shared.TableHeaderBackground,
+            ClipToBounds = false,
+            IsHitTestVisible = false
+        };
+        for (int hourIndex = 0; hourIndex < totalHours; hourIndex++)
+        {
+            timeAxis.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hourHeight) });
+            var axisCell = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(250, 251, 254)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(234, 238, 246)),
-                BorderThickness = new Thickness(0, 0, 1, u < 11 ? 1 : 0)
+                BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+                BorderThickness = new Thickness(0, 0, 1, 1)
             };
-            pCell.Child = new TextBlock
+            Grid.SetRow(axisCell, hourIndex);
+            timeAxis.Children.Add(axisCell);
+        }
+        var timeLabels = new Canvas { IsHitTestVisible = false };
+        for (int hour = startHour; hour <= endHour; hour++)
+        {
+            var label = new TextBlock
             {
-                Text = $"第{slot.Unit}节",
-                FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(65, 75, 92)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
+                Text = $"{hour:D2}:00",
+                Width = 64,
+                Height = 16,
+                TextAlignment = TextAlignment.Right,
+                FontSize = 10.5,
+                Foreground = ThemeManager.Shared.TextSecondary,
             };
-            Grid.SetRow(pCell, u);
-            Grid.SetColumn(pCell, 0);
-            grid.Children.Add(pCell);
+            Canvas.SetLeft(label, 3);
+            Canvas.SetTop(label, Math.Max(0, (hour - startHour) * hourHeight - 8));
+            timeLabels.Children.Add(label);
+        }
+        Grid.SetRowSpan(timeLabels, totalHours);
+        timeAxis.Children.Add(timeLabels);
+        Grid.SetRow(timeAxis, 1);
+        Grid.SetColumn(timeAxis, 0);
+        grid.Children.Add(timeAxis);
 
-            for (int d = 1; d <= 7; d++)
+        for (int day = 1; day <= 7; day++)
+        {
+            var dayGrid = new Grid { ClipToBounds = true };
+            for (int hourIndex = 0; hourIndex < totalHours; hourIndex++)
             {
+                dayGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hourHeight) });
                 var cell = new Border
                 {
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(238, 242, 248)),
-                    BorderThickness = new Thickness(0, 0, d < 7 ? 1 : 0, u < 11 ? 1 : 0)
+                    BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+                    BorderThickness = new Thickness(0, 0, day < 7 ? 1 : 0, 1),
+                    IsHitTestVisible = false
                 };
-                Grid.SetRow(cell, u);
-                Grid.SetColumn(cell, d);
-                grid.Children.Add(cell);
+                Grid.SetRow(cell, hourIndex);
+                dayGrid.Children.Add(cell);
             }
-        }
 
-        foreach (var act in activities)
-        {
-            if (act.Weekday < 1 || act.Weekday > 7) continue;
-            int start = Math.Clamp(act.StartUnit, 1, 11);
-            int end = Math.Clamp(act.EndUnit, start, 11);
+            var dayActivities = activities.Where(a => a.Weekday == day).ToList();
+            var overlapGroups = new List<List<CourseLesson>>();
+            foreach (var activity in dayActivities)
+            {
+                if (overlapGroups.Count == 0 || activity.StartMinutes >= overlapGroups[^1].Max(a => a.EndMinutes))
+                    overlapGroups.Add(new List<CourseLesson> { activity });
+                else
+                    overlapGroups[^1].Add(activity);
+            }
 
-            var block = new Border
+            foreach (var group in overlapGroups)
             {
-                Background = new SolidColorBrush(Color.FromRgb(235, 244, 255)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(64, 140, 255)),
-                BorderThickness = new Thickness(3, 1, 1, 1),
-                CornerRadius = new CornerRadius(5),
-                Margin = new Thickness(3, 2, 3, 2),
-                Padding = new Thickness(5, 4, 5, 4)
-            };
-            var st = new StackPanel();
-            st.Children.Add(new TextBlock
-            {
-                Text = act.CourseName,
-                FontSize = 11,
-                FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(20, 72, 155)),
-                TextWrapping = TextWrapping.Wrap
-            });
-            if (!string.IsNullOrWhiteSpace(act.TeacherName))
-            {
-                st.Children.Add(new TextBlock
+                int groupStartHour = group.Min(a => a.StartMinutes) / 60;
+                int groupEndHour = (group.Max(a => a.EndMinutes) + 59) / 60;
+                int parentStartRow = Math.Clamp(groupStartHour - startHour, 0, totalHours - 1);
+                int parentEndRow = Math.Clamp(groupEndHour - startHour, parentStartRow + 1, totalHours);
+
+                var laneEnds = new List<int>();
+                var assignedLanes = new List<int>();
+                foreach (var activity in group)
                 {
-                    Text = act.TeacherName,
-                    FontSize = 10,
-                    Foreground = new SolidColorBrush(Color.FromRgb(52, 102, 182)),
-                    Margin = new Thickness(0, 2, 0, 0)
-                });
-            }
-            block.Child = st;
-            block.ToolTip = $"{act.CourseName}\n教师：{act.TeacherName}\n周次：{act.WeekText}\n班级：{act.AdminClassText}";
+                    int lane = laneEnds.FindIndex(end => end <= activity.StartMinutes);
+                    if (lane < 0)
+                    {
+                        lane = laneEnds.Count;
+                        laneEnds.Add(activity.EndMinutes);
+                    }
+                    else
+                    {
+                        laneEnds[lane] = activity.EndMinutes;
+                    }
+                    assignedLanes.Add(lane);
+                }
 
-            Grid.SetRow(block, start);
-            Grid.SetRowSpan(block, Math.Max(1, end - start + 1));
-            Grid.SetColumn(block, act.Weekday);
-            grid.Children.Add(block);
+                var groupGrid = new Grid { ClipToBounds = true };
+                for (int lane = 0; lane < laneEnds.Count; lane++)
+                    groupGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                for (int hour = groupStartHour; hour < groupEndHour; hour++)
+                    groupGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                Grid.SetRow(groupGrid, parentStartRow);
+                Grid.SetRowSpan(groupGrid, parentEndRow - parentStartRow);
+                dayGrid.Children.Add(groupGrid);
+
+                for (int index = 0; index < group.Count; index++)
+                {
+                    var act = group[index];
+                    int startRow = act.StartMinutes / 60 - groupStartHour;
+                    int endRow = (act.EndMinutes + 59) / 60 - groupStartHour;
+                    int startRemainder = act.StartMinutes % 60;
+                    int endRemainder = act.EndMinutes % 60;
+                    var stack = new StackPanel();
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = act.CourseName,
+                        FontSize = 11,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = new SolidColorBrush(Color.FromRgb(20, 72, 155)),
+                        TextWrapping = TextWrapping.Wrap,
+                        TextTrimming = TextTrimming.CharacterEllipsis
+                    });
+                    if (!string.IsNullOrWhiteSpace(act.TeacherName))
+                    {
+                        stack.Children.Add(new TextBlock
+                        {
+                            Text = act.TeacherName,
+                            FontSize = 10,
+                            Foreground = new SolidColorBrush(Color.FromRgb(52, 102, 182)),
+                            Margin = new Thickness(0, 2, 0, 0),
+                            TextTrimming = TextTrimming.CharacterEllipsis
+                        });
+                    }
+                    stack.Children.Add(new TextBlock
+                    {
+                        Text = $"{act.FormattedStartTime}-{act.FormattedEndTime}",
+                        FontSize = 9.5,
+                        Foreground = new SolidColorBrush(Color.FromRgb(52, 102, 182)),
+                        Margin = new Thickness(0, 2, 0, 0)
+                    });
+
+                    var block = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(235, 244, 255)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(64, 140, 255)),
+                        BorderThickness = new Thickness(3, 1, 1, 1),
+                        CornerRadius = new CornerRadius(5),
+                        Margin = new Thickness(3, startRemainder / 60.0 * hourHeight + 2, 3,
+                            (endRemainder == 0 ? 0 : (60 - endRemainder) / 60.0 * hourHeight) + 2),
+                        Padding = new Thickness(5, 4, 5, 4),
+                        Child = stack,
+                        ToolTip = $"{act.CourseName}\n教师：{act.TeacherName}\n时间：{act.FormattedStartTime}-{act.FormattedEndTime}\n周次：{act.WeekText}\n班级：{act.AdminClassText}"
+                    };
+                    Grid.SetRow(block, Math.Clamp(startRow, 0, groupGrid.RowDefinitions.Count - 1));
+                    Grid.SetRowSpan(block, Math.Clamp(endRow, startRow + 1, groupGrid.RowDefinitions.Count) - Math.Clamp(startRow, 0, groupGrid.RowDefinitions.Count - 1));
+                    Grid.SetColumn(block, assignedLanes[index]);
+                    groupGrid.Children.Add(block);
+                }
+            }
+
+            Grid.SetRow(dayGrid, 1);
+            Grid.SetColumn(dayGrid, day);
+            grid.Children.Add(dayGrid);
         }
 
         outerCard.Child = grid;
