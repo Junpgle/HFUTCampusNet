@@ -121,8 +121,9 @@ public class ElectricityService {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 10.0
-            // Basic mobile_service_platform:mobile_service_platform_secret
-            request.setValue("Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0", forHTTPHeaderField: "Authorization")
+            let oauthClientCredentials = "mobile_service_platform:mobile_service_platform_secret"
+            let basicAuthorization = Data(oauthClientCredentials.utf8).base64EncodedString()
+            request.setValue("Basic \(basicAuthorization)", forHTTPHeaderField: "Authorization")
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
             let encUser = username.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? username

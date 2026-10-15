@@ -215,9 +215,11 @@ public sealed class ElectricityService
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/berserker-auth/oauth/token");
+                var oauthClientCredentials = "mobile_service_platform:mobile_service_platform_secret";
+                var basicAuthorization = Convert.ToBase64String(Encoding.UTF8.GetBytes(oauthClientCredentials));
                 req.Headers.TryAddWithoutValidation(
                     "Authorization",
-                    "Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0");
+                    $"Basic {basicAuthorization}");
                 var body = $"username={EncodeFormField(username)}&password={EncodeFormField(password)}&grant_type=password&logintype=sno";
                 req.Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded");
 
