@@ -1,4 +1,4 @@
-name: Build Cross-Platform Releases (macOS & Windows)
+name: Build macOS Releases
 
 on:
   push:
@@ -12,57 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows Native (WPF x64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Restore Dependencies
-        working-directory: HFUTCampusNet-Windows
-        run: dotnet restore HFUTCampusNet.csproj
-
-      - name: Publish Framework-Dependent Single-File EXE
-        working-directory: HFUTCampusNet-Windows
-        run: |
-          dotnet publish HFUTCampusNet.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o publish/win-x64-lightweight
-
-      - name: Publish Self-Contained Single-File EXE
-        working-directory: HFUTCampusNet-Windows
-        run: |
-          dotnet publish HFUTCampusNet.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish/win-x64-standalone
-
-      - name: Package HFUTCampusNet-Windows-x64.zip
-        working-directory: HFUTCampusNet-Windows
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path publish/package | Out-Null
-          Copy-Item "publish/win-x64-standalone/HFUTCampusNet.exe" "publish/package/HFUTCampusNet.exe"
-          Copy-Item "publish/win-x64-lightweight/HFUTCampusNet.exe" "publish/package/HFUTCampusNet-Lightweight.exe"
-          if (Test-Path "../README.md") {
-            Copy-Item "../README.md" "publish/package/README.md"
-          }
-          if (Test-Path "../LICENSE") {
-            Copy-Item "../LICENSE" "publish/package/LICENSE"
-          }
-          Compress-Archive -Path "publish/package/*" -DestinationPath "../HFUTCampusNet-Windows-x64.zip" -Force
-
-      - name: Upload Windows Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HFUTCampusNet-Windows-x64
-          path: |
-            HFUTCampusNet-Windows-x64.zip
-            HFUTCampusNet-Windows/publish/win-x64-standalone/HFUTCampusNet.exe
-            HFUTCampusNet-Windows/publish/win-x64-lightweight/HFUTCampusNet.exe
-          if-no-files-found: error
-
   build-macos:
     name: Build macOS Universal App (arm64 + x86_64)
     runs-on: macos-latest
@@ -85,17 +34,11 @@ jobs:
           if-no-files-found: error
 
   create-github-release:
-    name: Publish GitHub Release (on Tag)
-    needs: [build-windows, build-macos]
+    name: Publish macOS GitHub Release (on Tag)
+    needs: [build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Download Windows Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: HFUTCampusNet-Windows-x64
-          path: artifacts/windows
-
       - name: Download macOS Artifact
         uses: actions/download-artifact@v4
         with:
@@ -107,5 +50,4 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            artifacts/windows/HFUTCampusNet-Windows-x64.zip
             artifacts/macos/HFUTCampusNet-macOS.zip

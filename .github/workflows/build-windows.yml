@@ -1,0 +1,67 @@
+name: Build Windows Native (WPF x64)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'HFUTCampusNet-Windows/**'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'HFUTCampusNet-Windows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows Native (WPF x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore Dependencies
+        working-directory: HFUTCampusNet-Windows
+        run: dotnet restore HFUTCampusNet.csproj
+
+      - name: Publish Framework-Dependent Single-File EXE
+        working-directory: HFUTCampusNet-Windows
+        run: |
+          dotnet publish HFUTCampusNet.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o publish/win-x64-lightweight
+
+      - name: Publish Self-Contained Single-File EXE
+        working-directory: HFUTCampusNet-Windows
+        run: |
+          dotnet publish HFUTCampusNet.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish/win-x64-standalone
+
+      - name: Package HFUTCampusNet-Windows-x64.zip
+        working-directory: HFUTCampusNet-Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path publish/package | Out-Null
+          Copy-Item "publish/win-x64-standalone/HFUTCampusNet.exe" "publish/package/HFUTCampusNet.exe"
+          Copy-Item "publish/win-x64-lightweight/HFUTCampusNet.exe" "publish/package/HFUTCampusNet-Lightweight.exe"
+          if (Test-Path "../README.md") {
+            Copy-Item "../README.md" "publish/package/README.md"
+          }
+          if (Test-Path "../LICENSE") {
+            Copy-Item "../LICENSE" "publish/package/LICENSE"
+          }
+          Compress-Archive -Path "publish/package/*" -DestinationPath "../HFUTCampusNet-Windows-x64.zip" -Force
+
+      - name: Upload Windows Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HFUTCampusNet-Windows-x64
+          path: |
+            HFUTCampusNet-Windows-x64.zip
+            HFUTCampusNet-Windows/publish/win-x64-standalone/HFUTCampusNet.exe
+            HFUTCampusNet-Windows/publish/win-x64-lightweight/HFUTCampusNet.exe
+          if-no-files-found: error
