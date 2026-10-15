@@ -31,6 +31,7 @@ public static class AppEvents
     public static event Action? CampusCardUpdated;
     public static event Action? AcademicDataUpdated;
     public static event Action? UpdateCheckFinished;
+    public static event Action? AuthStatusUpdated;
 
     public static void RaiseNetworkDataUpdated() => NetworkDataUpdated?.Invoke();
     public static void RaiseSpeedUpdated(string d, string u, string c) => SpeedUpdated?.Invoke(d, u, c);
@@ -41,6 +42,7 @@ public static class AppEvents
     public static void RaiseCampusCardUpdated() => CampusCardUpdated?.Invoke();
     public static void RaiseAcademicDataUpdated() => AcademicDataUpdated?.Invoke();
     public static void RaiseUpdateCheckFinished() => UpdateCheckFinished?.Invoke();
+    public static void RaiseAuthStatusUpdated() => AuthStatusUpdated?.Invoke();
 
     public static void InvokeOnUI(Action action)
     {
@@ -95,6 +97,8 @@ public sealed class SettingsManager
     public string? HuixinAuthToken { get; set; }
     public string? CasTgcCookie { get; set; }
     public string? UniAppJwt { get; set; }
+    public string? JxglstuDefaultPasswordCache { get; set; }
+    public string CasUsername => PortalUsername;
 
     public string DormCampus { get; set; } = "宣城校区";
     public string DormBuilding { get; set; } = string.Empty;
@@ -586,16 +590,18 @@ public sealed class PortalAuthService
     {
         try
         {
-            var res = await _client.GetStringAsync("http://172.18.3.3/");
-            if (res.Contains("v4ip") || res.Contains("ss5"))
+            var resBytes = await _client.GetByteArrayAsync("http://172.18.3.3/");
+            var res = DecodeHtml(resBytes);
+            if (res.Contains("Dr.COMWebLoginID_1.htm") || res.Contains("DispTFM") || res.Contains("v4ip") || res.Contains("ss5"))
             {
-                var uid = ExtractVar("uid", res) ?? "";
+                var uid = ExtractVar("uid", res) ?? "校园网用户";
                 var v4ip = ExtractVar("v4ip", res) ?? "";
                 double.TryParse(ExtractVar("flow", res), NumberStyles.Float, CultureInfo.InvariantCulture, out double flowKB);
-                double.TryParse(ExtractVar("fee", res), NumberStyles.Float, CultureInfo.InvariantCulture, out double feeCent);
+                double.TryParse(ExtractVar("fee", res), NumberStyles.Float, CultureInfo.InvariantCulture, out double feeRaw);
                 int.TryParse(ExtractVar("time", res), out int timeSec);
 
-                return (true, uid, v4ip, flowKB / 1024.0, feeCent / 100.0, timeSec / 60);
+                double feeYuan = feeRaw >= 0 ? feeRaw / 10000.0 : 0;
+                return (true, uid, v4ip, flowKB / 1024.0, feeYuan, timeSec / 60);
             }
             return (false, "", "", 0, 0, 0);
         }
@@ -609,14 +615,39 @@ public sealed class PortalAuthService
     {
         try
         {
-            var url = $"http://172.18.3.3:801/eportal/?c=Portal&a=login&callback=dr1003&login_method=1&user_account={Uri.EscapeDataString(username)}&user_password={Uri.EscapeDataString(password)}";
-            var res = await _client.GetStringAsync(url);
-            if (res.Contains("\"result\":1") || res.Contains("\"result\":\"1\""))
+            var pid = "2";
+            var calg = "12345678";
+            var tmpchar = $"{pid}{password}{calg}";
+            using var md5 = MD5.Create();
+            var hashBytes = md5.ComputeHash(Encoding.UTF8.GetBytes(tmpchar));
+            var md5Hex = Convert.ToHexString(hashBytes).ToLowerInvariant();
+            var upass = $"{md5Hex}{calg}{pid}";
+
+            var body = $"DDDDD={Uri.EscapeDataString(username)}&upass={Uri.EscapeDataString(upass)}&R1=0&R2=1&para=00&0MKKey=123456&v6ip=";
+            using var req = new HttpRequestMessage(HttpMethod.Post, "http://172.18.3.3/");
+            req.Headers.TryAddWithoutValidation("Referer", "http://172.18.3.3/0.htm");
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            req.Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded");
+
+            using var resp = await _client.SendAsync(req);
+            var respBytes = await resp.Content.ReadAsByteArrayAsync();
+            var res = DecodeHtml(respBytes);
+
+            if (res.Contains("Dr.COMWebLoginID_1.htm") || res.Contains("DispTFM"))
             {
                 return (true, "校园网认证成功");
             }
-            var msg = ExtractVar("msg", res) ?? "认证未通过";
-            return (false, msg);
+            if (res.Contains("msga='"))
+            {
+                var rawMsg = ExtractVar("msga", res) ?? "";
+                if (rawMsg.Contains("userid error")) return (false, "学号或密码错误，请核对后重试");
+                if (rawMsg.Contains("ip error")) return (false, "IP 绑定异常或超额在线");
+                if (!string.IsNullOrEmpty(rawMsg)) return (false, rawMsg);
+            }
+
+            var status = await CheckStatusAsync();
+            if (status.Online) return (true, "校园网认证成功");
+            return (false, "认证未通过");
         }
         catch (Exception ex)
         {
@@ -659,6 +690,20 @@ public sealed class PortalAuthService
         });
     }
 
+    private static string DecodeHtml(byte[] bytes)
+    {
+        try
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            var gbk = Encoding.GetEncoding("GB18030");
+            return gbk.GetString(bytes);
+        }
+        catch
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+    }
+
     private static string? ExtractVar(string name, string text)
     {
         var m = Regex.Match(text, $@"""?{Regex.Escape(name)}""?\s*[:=]\s*""?([^"",;\r\n]+)""?");
@@ -674,6 +719,8 @@ public sealed class CampusNetworkClient
 
     private Timer? _syncTimer;
     private readonly HttpClient _client;
+    private readonly HttpClient _selfServiceClient;
+    private int _isFetchingSelfService = 0;
 
     private CampusNetworkClient()
     {
@@ -684,6 +731,14 @@ public sealed class CampusNetworkClient
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+
+        var selfHandler = new HttpClientHandler
+        {
+            UseCookies = false,
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+        };
+        _selfServiceClient = new HttpClient(selfHandler) { Timeout = TimeSpan.FromSeconds(10) };
     }
 
     public void StartMonitoring()
@@ -704,31 +759,122 @@ public sealed class CampusNetworkClient
                 if (online)
                 {
                     LatestData.IsLoggedIn = true;
-                    LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
-                    LatestData.Balance = $"{fee:F2} 元";
-                    LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - flowMB):F0} M";
+                    if (flowMB > 0)
+                    {
+                        var curMB = LatestData.UsedMB ?? 0.0;
+                        if (curMB == 0 || flowMB >= curMB)
+                        {
+                            LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
+                        }
+                    }
+                    // 网关在部分网络状态下会返回 0；不要用它覆盖自服务里的真实余额，
+                    // 也不要在自服务同步前把占位值替换成误导性的 0.00 元。
+                    if (fee > 0 &&
+                        (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
+                    {
+                        LatestData.Balance = $"{fee:F2} 元";
+                    }
+                    if (flowMB > 0)
+                    {
+                        LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - flowMB):F0} M";
+                    }
                     LatestData.LastUpdated = DateTime.Now;
                     LatestData.ErrorMessage = null;
 
-                    CampusHistoryManager.Shared.RecordFlow(flowMB);
-                }
-                else if (SettingsManager.Shared.AutoLoginPortal && !string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername))
-                {
-                    var (ok, _) = await PortalAuthService.Shared.LoginAsync(
-                        SettingsManager.Shared.PortalUsername,
-                        SettingsManager.Shared.PortalPassword);
-                    if (ok)
+                    if (flowMB > 0)
                     {
-                        FetchData();
-                        return;
+                        CampusHistoryManager.Shared.RecordFlow(flowMB);
                     }
-                    LatestData.IsLoggedIn = false;
-                    LatestData.ErrorMessage = "未登录校园网";
+
+                    // 在线状态也要定期刷新自服务仪表盘。以前这里仅更新网关数据，
+                    // 导致自服务的月流量与余额在在线时一直停留在旧值。
+                    bool dashboardRefreshed = false;
+                    bool hasSelfServiceAuth =
+                        !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie) ||
+                        (!string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalUsername) &&
+                         !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword));
+                    if (hasSelfServiceAuth)
+                    {
+                        try { dashboardRefreshed = await FetchDashboardDataAsync(); } catch { }
+                    }
+
+                    // 成功解析仪表盘时 ApplyParsedDashboardHTML 已会刷新设备列表；
+                    // 解析失败但会话仍有效时，仍单独更新在线设备。
+                    if (!dashboardRefreshed && !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie))
+                    {
+                        try { await FetchOnlineDevicesAsync(); } catch { }
+                    }
                 }
                 else
                 {
-                    LatestData.IsLoggedIn = false;
-                    LatestData.ErrorMessage = "未登录校园网";
+                    // 若开启了自动登录网关，尝试自动认证
+                    if (SettingsManager.Shared.AutoLoginPortal && !string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername))
+                    {
+                        var (ok, _) = await PortalAuthService.Shared.LoginAsync(
+                            SettingsManager.Shared.PortalUsername,
+                            SettingsManager.Shared.PortalPassword);
+                        if (ok)
+                        {
+                            FetchData();
+                            return;
+                        }
+                    }
+
+                    // 离线/校外模式下，尝试自服务抓取
+                    bool dashOk = false;
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(SettingsManager.Shared.SessionCookie) ||
+                            (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) && !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword)))
+                        {
+                            dashOk = await FetchDashboardDataAsync();
+                        }
+                    }
+                    catch { }
+
+                    if (!dashOk)
+                    {
+                        // Fallback 慧新易校
+                        try
+                        {
+                            var (hxFlow, hxBalance) = await ElectricityService.Shared.FetchSchoolNetInfoFromHuiXinAsync();
+                            if (!string.IsNullOrEmpty(hxFlow) || !string.IsNullOrEmpty(hxBalance))
+                            {
+                                LatestData.IsLoggedIn = false;
+                                if (!string.IsNullOrEmpty(hxFlow) &&
+                                    (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
+                                {
+                                    LatestData.UsedFlow = hxFlow;
+                                }
+                                if (!string.IsNullOrEmpty(hxBalance) &&
+                                    (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
+                                {
+                                    LatestData.Balance = hxBalance;
+                                }
+                                LatestData.ErrorMessage = "未处于校园网Wi-Fi (已同步慧新易校数据)";
+                                LatestData.LastUpdated = DateTime.Now;
+
+                                if (!string.IsNullOrEmpty(hxFlow))
+                                {
+                                    var cleanMB = Regex.Match(hxFlow, @"[0-9]+(?:\.[0-9]+)?");
+                                    if (cleanMB.Success && double.TryParse(cleanMB.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedMB))
+                                    {
+                                        CampusHistoryManager.Shared.RecordFlow(parsedMB);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                LatestData.IsLoggedIn = false;
+                                LatestData.ErrorMessage = "未登录校园网";
+                            }
+                        }
+                        catch
+                        {
+                            LatestData.IsLoggedIn = false;
+                            LatestData.ErrorMessage = "未登录校园网";
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -742,30 +888,324 @@ public sealed class CampusNetworkClient
         });
     }
 
+    /// <summary>
+    /// 获取当前自服务平台在线设备列表 (dashboard/getOnlineList)
+    /// 独立拉取设备，绝不影响或重置已用流量和余额，绝不抛出异常
+    /// </summary>
+    public void FetchOnlineDevices(Action<bool, string>? callback = null)
+    {
+        Task.Run(async () =>
+        {
+            try
+            {
+                var result = await FetchOnlineDevicesAsync();
+                callback?.Invoke(result.Success, result.Message);
+            }
+            catch (Exception ex)
+            {
+                callback?.Invoke(false, ex.Message);
+            }
+        });
+    }
+
+    public async Task<(bool Success, string Message, List<OnlineDeviceSession> Devices)> FetchOnlineDevicesAsync()
+    {
+        try
+        {
+            var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+            if (string.IsNullOrEmpty(cookie))
+            {
+                if (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) &&
+                    !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword))
+                {
+                    var (loginOk, _) = await SilentLoginSelfServiceAndFetchAsync();
+                    if (loginOk)
+                    {
+                        cookie = SettingsManager.Shared.SessionCookie?.Trim();
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(cookie))
+            {
+                return (false, "自服务会话未就绪", new());
+            }
+
+            string cleanCookie = cookie.Contains("JSESSIONID=") ? cookie : $"JSESSIONID={cookie}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, "https://xywzz.hfut.edu.cn:8443/Self/dashboard/getOnlineList");
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/dashboard");
+            req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
+
+            using var resp = await _selfServiceClient.SendAsync(req);
+            if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
+            {
+                SettingsManager.Shared.SessionCookie = null;
+                SettingsManager.Shared.Save();
+                return (false, "自服务会话已失效", new());
+            }
+
+            var text = await resp.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(text) || text.Contains("欢迎登录用户自助服务系统") || text.TrimStart().StartsWith("<"))
+            {
+                SettingsManager.Shared.SessionCookie = null;
+                SettingsManager.Shared.Save();
+                return (false, "自服务会话已失效", new());
+            }
+
+            var list = new List<OnlineDeviceSession>();
+            using (var doc = JsonDocument.Parse(text))
+            {
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in doc.RootElement.EnumerateArray())
+                    {
+                        var sid = item.TryGetProperty("sessionId", out var sidProp) ? sidProp.GetString() ?? "" : "";
+                        if (string.IsNullOrEmpty(sid)) continue;
+
+                        var ip = item.TryGetProperty("ip", out var ipProp) ? ipProp.GetString() ?? "--" : "--";
+                        var mac = item.TryGetProperty("mac", out var macProp) ? macProp.GetString() ?? "" : "";
+                        var loginTime = item.TryGetProperty("loginTime", out var ltProp) ? ltProp.GetString() ?? "--" : "--";
+
+                        int useTimeSec = 0;
+                        if (item.TryGetProperty("useTime", out var utProp))
+                        {
+                            if (utProp.ValueKind == JsonValueKind.Number) useTimeSec = utProp.GetInt32();
+                            else if (int.TryParse(utProp.GetString(), out int utVal)) useTimeSec = utVal;
+                        }
+                        int useMinutes = Math.Max(0, (int)Math.Round(useTimeSec / 60.0));
+
+                        double downKB = 0, upKB = 0;
+                        if (item.TryGetProperty("downFlow", out var dfProp))
+                        {
+                            if (dfProp.ValueKind == JsonValueKind.Number) downKB = dfProp.GetDouble();
+                            else if (double.TryParse(dfProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double dfVal)) downKB = dfVal;
+                        }
+                        if (item.TryGetProperty("upFlow", out var ufProp))
+                        {
+                            if (ufProp.ValueKind == JsonValueKind.Number) upKB = ufProp.GetDouble();
+                            else if (double.TryParse(ufProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double ufVal)) upKB = ufVal;
+                        }
+                        double usedMB = (downKB + upKB) / 1024.0;
+
+                        var termType = item.TryGetProperty("terminalType", out var ttProp) ? ttProp.GetString() ?? "在线终端" : "在线终端";
+                        if (termType.StartsWith("#")) termType = termType[1..];
+                        if (string.IsNullOrWhiteSpace(termType)) termType = "在线终端";
+
+                        var hostName = item.TryGetProperty("hostName", out var hnProp) ? hnProp.GetString() ?? "" : "";
+
+                        list.Add(new OnlineDeviceSession
+                        {
+                            SessionId = sid,
+                            Ip = ip,
+                            Mac = mac,
+                            LoginTime = loginTime,
+                            UseMinutes = useMinutes,
+                            UsedFlowMB = usedMB,
+                            TerminalType = termType,
+                            HostName = hostName
+                        });
+                    }
+                }
+            }
+
+            LatestData.OnlineDevices = list;
+            AppEvents.RaiseNetworkDataUpdated();
+            return (true, $"已获取 {list.Count} 台在线终端设备", list);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"获取在线设备失败: {ex.Message}", new());
+        }
+    }
+
+    /// <summary>
+    /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取流量
+    /// </summary>
+    public async Task<(bool Success, string Message)> SilentLoginSelfServiceAndFetchAsync()
+    {
+        var username = SettingsManager.Shared.PortalUsername?.Trim();
+        var password = SettingsManager.Shared.PortalPassword?.Trim();
+        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+        {
+            return (false, "请先在偏好设置中配置学号与密码");
+        }
+
+        if (Interlocked.CompareExchange(ref _isFetchingSelfService, 1, 0) != 0)
+        {
+            return (false, "正在进行自服务认证中...");
+        }
+
+        try
+        {
+            // Step 1: GET /Self/login/?302=LI
+            using var step1Req = new HttpRequestMessage(HttpMethod.Get, "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
+            step1Req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            using var step1Resp = await _selfServiceClient.SendAsync(step1Req);
+            var step1Html = await step1Resp.Content.ReadAsStringAsync();
+
+            string? sid = null;
+            if (step1Resp.Headers.TryGetValues("Set-Cookie", out var setCookies))
+            {
+                foreach (var sc in setCookies)
+                {
+                    var m = Regex.Match(sc, @"JSESSIONID=([0-9A-Za-z_]+)", RegexOptions.IgnoreCase);
+                    if (m.Success) { sid = m.Groups[1].Value; break; }
+                }
+            }
+            if (string.IsNullOrEmpty(sid))
+            {
+                var m = Regex.Match(step1Html, @"jsessionid=([0-9A-Za-z_]+)", RegexOptions.IgnoreCase);
+                if (m.Success) sid = m.Groups[1].Value;
+            }
+
+            if (string.IsNullOrEmpty(sid))
+            {
+                return (false, "未能从自服务系统获取会话标识");
+            }
+
+            var checkcodeMatch = Regex.Match(step1Html, @"name=""checkcode""\s+value=""([^""]*)""", RegexOptions.IgnoreCase);
+            var checkcode = checkcodeMatch.Success ? checkcodeMatch.Groups[1].Value : "";
+
+            string cookieHeader = $"JSESSIONID={sid}";
+
+            // Step 2: randomCode 初始化验证码环境
+            var rnd = new Random().NextDouble();
+            using var step2Req = new HttpRequestMessage(HttpMethod.Get, $"https://xywzz.hfut.edu.cn:8443/Self/login/randomCode?t={rnd:F4}");
+            step2Req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            step2Req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
+            step2Req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            using var step2Resp = await _selfServiceClient.SendAsync(step2Req);
+
+            // Step 3: POST verify
+            using var md5 = MD5.Create();
+            var md5Bytes = md5.ComputeHash(Encoding.UTF8.GetBytes(password));
+            var md5Password = Convert.ToHexString(md5Bytes).ToLowerInvariant();
+
+            var formBody = $"foo=&bar=&checkcode={Uri.EscapeDataString(checkcode)}&account={Uri.EscapeDataString(username)}&password={Uri.EscapeDataString(md5Password)}&code=";
+            using var step3Req = new HttpRequestMessage(HttpMethod.Post, "https://xywzz.hfut.edu.cn:8443/Self/login/verify");
+            step3Req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            step3Req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
+            step3Req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            step3Req.Content = new StringContent(formBody, Encoding.UTF8, "application/x-www-form-urlencoded");
+
+            using var step3Resp = await _selfServiceClient.SendAsync(step3Req);
+            var step3Html = await step3Resp.Content.ReadAsStringAsync();
+
+            string finalSid = sid;
+            if (step3Resp.Headers.TryGetValues("Set-Cookie", out var verifyCookies))
+            {
+                foreach (var sc in verifyCookies)
+                {
+                    var m = Regex.Match(sc, @"JSESSIONID=([0-9A-Za-z_]+)", RegexOptions.IgnoreCase);
+                    if (m.Success) { finalSid = m.Groups[1].Value; break; }
+                }
+            }
+
+            SettingsManager.Shared.SessionCookie = $"JSESSIONID={finalSid}";
+            SettingsManager.Shared.Save();
+
+            if (step3Html.Contains("可用流量") || step3Html.Contains("已用流量"))
+            {
+                ApplyParsedDashboardHTML(step3Html);
+                return (true, "自服务系统登录成功");
+            }
+
+            return (false, "自服务登录未返回仪表盘数据");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"自服务登录异常: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _isFetchingSelfService, 0);
+        }
+    }
+
+    /// <summary>
+    /// 抓取自服务仪表盘流量与余额页面（单向拉取，绝不循环递归）
+    /// </summary>
+    public async Task<bool> FetchDashboardDataAsync()
+    {
+        var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+        if (string.IsNullOrEmpty(cookie))
+        {
+            var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
+            return ok;
+        }
+
+        try
+        {
+            string cleanCookie = cookie.Contains("JSESSIONID=") ? cookie : $"JSESSIONID={cookie}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, "https://xywzz.hfut.edu.cn:8443/Self/dashboard");
+            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/dashboard");
+            req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
+
+            using var resp = await _selfServiceClient.SendAsync(req);
+            if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
+            {
+                SettingsManager.Shared.SessionCookie = null;
+                SettingsManager.Shared.Save();
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
+                return ok;
+            }
+
+            var html = await resp.Content.ReadAsStringAsync();
+            if (html.Contains("欢迎登录用户自助服务系统") && !html.Contains("已用流量"))
+            {
+                SettingsManager.Shared.SessionCookie = null;
+                SettingsManager.Shared.Save();
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
+                return ok;
+            }
+
+            return ApplyParsedDashboardHTML(html);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 强制注销指定在线设备 (dashboard/tooffline?sessionid=xxx)
+    /// </summary>
     public void KickDevice(OnlineDeviceSession session, Action<bool, string> callback)
     {
         Task.Run(async () =>
         {
             try
             {
-                // 向 xywzz:8443 发送踢下线指令
-                var url = $"https://xywzz.hfut.edu.cn:8443/Self/dashboard/offline?sessionId={Uri.EscapeDataString(session.SessionId)}";
-                var req = new HttpRequestMessage(HttpMethod.Post, url);
-                req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-                if (!string.IsNullOrEmpty(SettingsManager.Shared.SessionCookie))
+                var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+                if (string.IsNullOrEmpty(cookie))
                 {
-                    req.Headers.Add("Cookie", SettingsManager.Shared.SessionCookie);
+                    callback(false, "自服务会话未就绪，请先登录自服务系统");
+                    return;
                 }
-                var res = await _client.SendAsync(req);
+
+                string cleanCookie = cookie.Contains("JSESSIONID=") ? cookie : $"JSESSIONID={cookie}";
+                var url = $"https://xywzz.hfut.edu.cn:8443/Self/dashboard/tooffline?sessionid={Uri.EscapeDataString(session.SessionId)}";
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+                req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/dashboard");
+                req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
+
+                using var res = await _selfServiceClient.SendAsync(req);
                 var content = await res.Content.ReadAsStringAsync();
-                if (res.IsSuccessStatusCode && content.Contains("success"))
+                bool ok = res.IsSuccessStatusCode && (content.Contains("success") || content.Contains("true") || content.Contains("成功"));
+
+                if (ok)
                 {
-                    callback(true, "设备已强制下线");
-                    FetchData();
+                    LatestData.OnlineDevices.RemoveAll(d => d.SessionId == session.SessionId);
+                    AppEvents.RaiseNetworkDataUpdated();
+                    _ = Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+                    callback(true, "设备已成功强制下线");
                 }
                 else
                 {
-                    callback(false, "下线失败，请重新登录自服务系统后重试");
+                    callback(false, "下线失败，该设备可能已下线或会话已过期");
                 }
             }
             catch (Exception ex)
@@ -781,11 +1221,6 @@ public sealed class CampusNetworkClient
         _syncTimer = null;
     }
 
-    public void FetchOnlineDevices(Action<bool, string>? callback = null)
-    {
-        FetchData();
-    }
-
     public void KickOnlineDevice(string sessionId, Action<bool, string> callback)
     {
         var session = LatestData.OnlineDevices.FirstOrDefault(d => d.SessionId == sessionId) ?? new OnlineDeviceSession { SessionId = sessionId };
@@ -795,8 +1230,199 @@ public sealed class CampusNetworkClient
     public bool IsManualLogout { get; set; }
     public void ClearManualLogout() => IsManualLogout = false;
     public void MarkManualLogout() => IsManualLogout = true;
-    public void UpdateInterval(double sec) => StartMonitoring();
-    public void ApplyParsedDashboardHTML(string html) => FetchData();
+    public void UpdateInterval(double seconds)
+    {
+        var intervalMs = (int)(Math.Max(5, seconds) * 1000);
+        _syncTimer?.Change(intervalMs, intervalMs);
+    }
+
+    public bool ApplyParsedDashboardHTML(string html)
+    {
+        var parsed = ParseDashboardHTML(html);
+        if (parsed == null) return false;
+
+        bool hasRealData = false;
+        if (!string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
+        {
+            LatestData.UsedFlow = parsed.UsedFlow;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
+        {
+            LatestData.AvailableFlow = parsed.AvailableFlow;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrEmpty(parsed.Balance) && parsed.Balance != "-- 元")
+        {
+            LatestData.Balance = parsed.Balance;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrEmpty(parsed.FlowProtection) && parsed.FlowProtection != "--")
+        {
+            LatestData.FlowProtection = parsed.FlowProtection;
+        }
+
+        if (!hasRealData) return false;
+
+        LatestData.IsLoggedIn = true;
+        LatestData.LastUpdated = DateTime.Now;
+        LatestData.ErrorMessage = null;
+        AppEvents.RaiseNetworkDataUpdated();
+
+        // 记录历史流量
+        if (!string.IsNullOrEmpty(parsed.UsedFlow))
+        {
+            var m = Regex.Match(parsed.UsedFlow, @"[0-9]+(?:\.[0-9]+)?");
+            if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
+            {
+                if (parsed.UsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
+                CampusHistoryManager.Shared.RecordFlow(flowVal);
+            }
+        }
+
+        // 提取在线设备
+        Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+        return true;
+    }
+
+    public bool ApplyExplicitDashboardData(string? usedFlow, string? availFlow, string? balance, string? protection)
+    {
+        bool hasRealData = false;
+        if (!string.IsNullOrWhiteSpace(usedFlow) && usedFlow != "-- M")
+        {
+            LatestData.UsedFlow = usedFlow;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrWhiteSpace(availFlow) && availFlow != "-- M")
+        {
+            LatestData.AvailableFlow = availFlow;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrWhiteSpace(balance) && balance != "-- 元")
+        {
+            LatestData.Balance = balance;
+            hasRealData = true;
+        }
+        if (!string.IsNullOrWhiteSpace(protection) && protection != "--")
+        {
+            LatestData.FlowProtection = protection;
+        }
+
+        if (!hasRealData) return false;
+
+        LatestData.IsLoggedIn = true;
+        LatestData.LastUpdated = DateTime.Now;
+        LatestData.ErrorMessage = null;
+        AppEvents.RaiseNetworkDataUpdated();
+
+        if (!string.IsNullOrEmpty(usedFlow))
+        {
+            var m = Regex.Match(usedFlow, @"[0-9]+(?:\.[0-9]+)?");
+            if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
+            {
+                if (usedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
+                CampusHistoryManager.Shared.RecordFlow(flowVal);
+            }
+        }
+
+        // 提取在线设备
+        Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+        return true;
+    }
+
+    public static CampusNetworkData? ParseDashboardHTML(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return null;
+
+        string? usedFlow = null;
+        string? availFlow = null;
+        string? protection = null;
+        string? balance = null;
+
+        var targets = new (string Key, string Label, string FallbackUnit)[]
+        {
+            ("used", "已用流量", "M"),
+            ("avail", "可用流量", "M"),
+            ("prot", "消费保护", "元"),
+            ("bal", "账户余额", "元")
+        };
+
+        foreach (var target in targets)
+        {
+            var label = target.Label;
+            // 1. 优先匹配 <dt>数值</dt><dd>标签</dd> 结构
+            var dlPattern1 = $@"<dt[^>]*>((?:(?!</dt>)[\s\S]){{1,1500}}?)</dt>\s*<dd[^>]*>\s*{Regex.Escape(label)}\s*</dd>";
+            var dlMatch1 = Regex.Match(html, dlPattern1, RegexOptions.IgnoreCase);
+            if (dlMatch1.Success)
+            {
+                var dtClean = Regex.Replace(dlMatch1.Groups[1].Value, "<[^>]+>", " ");
+                dtClean = Regex.Replace(dtClean, @"\s+", " ").Trim();
+
+                var valMatch = Regex.Match(dtClean, @"(-?[0-9]+(?:\.[0-9]+)?)\s*([GMK]B?|M|G|元)?");
+                if (valMatch.Success)
+                {
+                    var num = valMatch.Groups[1].Value;
+                    var unit = valMatch.Groups[2].Success && !string.IsNullOrEmpty(valMatch.Groups[2].Value) ? valMatch.Groups[2].Value : target.FallbackUnit;
+                    AssignValue(target.Key, $"{num} {unit}".Trim(), ref usedFlow, ref availFlow, ref protection, ref balance);
+                    continue;
+                }
+            }
+
+            // 1.2 匹配反向 <dd>标签</dd><dt>数值</dt> 结构
+            var dlPattern2 = $@"<dd[^>]*>\s*{Regex.Escape(label)}\s*</dd>\s*<dt[^>]*>((?:(?!</dt>)[\s\S]){{1,1500}}?)</dt>";
+            var dlMatch2 = Regex.Match(html, dlPattern2, RegexOptions.IgnoreCase);
+            if (dlMatch2.Success)
+            {
+                var dtClean = Regex.Replace(dlMatch2.Groups[1].Value, "<[^>]+>", " ");
+                dtClean = Regex.Replace(dtClean, @"\s+", " ").Trim();
+
+                var valMatch = Regex.Match(dtClean, @"(-?[0-9]+(?:\.[0-9]+)?)\s*([GMK]B?|M|G|元)?");
+                if (valMatch.Success)
+                {
+                    var num = valMatch.Groups[1].Value;
+                    var unit = valMatch.Groups[2].Success && !string.IsNullOrEmpty(valMatch.Groups[2].Value) ? valMatch.Groups[2].Value : target.FallbackUnit;
+                    AssignValue(target.Key, $"{num} {unit}".Trim(), ref usedFlow, ref availFlow, ref protection, ref balance);
+                    continue;
+                }
+            }
+
+            // 2. 标签在前 数字在后 (同级或紧随结构，禁止跨越块级元素以防串位)
+            var postPattern = $@"{Regex.Escape(label)}\s*[:：]?\s*(?:<[^>]+>|\s){{0,100}}?(-?[0-9]+(?:\.[0-9]+)?)\s*([GMK]B?|M|G|元)?";
+            var postMatch = Regex.Match(html, postPattern, RegexOptions.IgnoreCase);
+            if (postMatch.Success)
+            {
+                var num = postMatch.Groups[1].Value;
+                var unit = postMatch.Groups[2].Success && !string.IsNullOrEmpty(postMatch.Groups[2].Value) ? postMatch.Groups[2].Value : target.FallbackUnit;
+                AssignValue(target.Key, $"{num} {unit}".Trim(), ref usedFlow, ref availFlow, ref protection, ref balance);
+                continue;
+            }
+        }
+
+        if (availFlow != null || usedFlow != null || balance != null || protection != null)
+        {
+            return new CampusNetworkData
+            {
+                UsedFlow = usedFlow ?? "-- M",
+                AvailableFlow = availFlow ?? "-- M",
+                FlowProtection = protection ?? "--",
+                Balance = balance ?? "-- 元",
+                LastUpdated = DateTime.Now
+            };
+        }
+
+        return null;
+    }
+
+    private static void AssignValue(string key, string val, ref string? used, ref string? avail, ref string? prot, ref string? bal)
+    {
+        switch (key)
+        {
+            case "used": used = val; break;
+            case "avail": avail = val; break;
+            case "prot": prot = val; break;
+            case "bal": bal = val; break;
+        }
+    }
 }
 
 #endregion

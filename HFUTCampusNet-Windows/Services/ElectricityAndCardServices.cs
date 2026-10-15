@@ -259,7 +259,8 @@ public sealed class ElectricityService
             : $"bearer {token}";
 
         var formParams = new Dictionary<string, string>();
-        if (campus.Contains("宣城"))
+        bool isXuancheng = campus.Contains("宣城") || campus.Equals("xuancheng", StringComparison.OrdinalIgnoreCase);
+        if (isXuancheng)
         {
             formParams["feeitemid"] = "261";
             formParams["type"] = "IEC";
@@ -299,6 +300,7 @@ public sealed class ElectricityService
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData");
             req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+            req.Headers.TryAddWithoutValidation("Authorization", authHeader);
             req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
             req.Content = new StringContent(bodyString, Encoding.UTF8, "application/x-www-form-urlencoded");
 
@@ -848,16 +850,31 @@ public sealed class CampusCardService
 
             using var resp = await _httpClient.SendAsync(req);
             var respText = await resp.Content.ReadAsStringAsync();
-
-            using var doc = JsonDocument.Parse(respText);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
-                !doc.RootElement.TryGetProperty("data", out var dataElem) ||
-                dataElem.ValueKind != JsonValueKind.Object ||
-                !dataElem.TryGetProperty("records", out var recordsElem) ||
-                recordsElem.ValueKind != JsonValueKind.Array)
+            if (string.IsNullOrWhiteSpace(respText) || (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
             {
                 return list;
             }
+
+            JsonDocument? doc = null;
+            try
+            {
+                doc = JsonDocument.Parse(respText);
+            }
+            catch (JsonException)
+            {
+                return list;
+            }
+
+            using (doc)
+            {
+                if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                    !doc.RootElement.TryGetProperty("data", out var dataElem) ||
+                    dataElem.ValueKind != JsonValueKind.Object ||
+                    !dataElem.TryGetProperty("records", out var recordsElem) ||
+                    recordsElem.ValueKind != JsonValueKind.Array)
+                {
+                    return list;
+                }
 
             int idx = 0;
             foreach (var rec in recordsElem.EnumerateArray())
@@ -884,6 +901,7 @@ public sealed class CampusCardService
                     DateTimeString = jnTimeStr
                 });
                 idx++;
+            }
             }
         }
         catch
