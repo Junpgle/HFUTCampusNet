@@ -260,15 +260,119 @@ public sealed class CourseLesson
     public string SimplifiedRoomText => Classroom ?? string.Empty;
     public string RoomText => Classroom ?? string.Empty;
     public string TeachersText => Teacher ?? string.Empty;
-    public int StartUnit { get; set; } = 1;
-    public int EndUnit { get; set; } = 2;
+
+    private int _startUnit = 0;
+    private int _endUnit = 0;
+
+    public int StartUnit
+    {
+        get
+        {
+            if (_startUnit > 0) return _startUnit;
+            return CalculateStartUnit(StartTime);
+        }
+        set => _startUnit = value;
+    }
+
+    public int EndUnit
+    {
+        get
+        {
+            if (_endUnit > 0) return Math.Max(StartUnit, _endUnit);
+            return CalculateEndUnit(EndTime, StartUnit);
+        }
+        set => _endUnit = value;
+    }
+
+    public static int CalculateStartUnit(int startTime)
+    {
+        if (startTime <= 0) return 1;
+        int minutes = (startTime / 100) * 60 + (startTime % 100);
+        if (minutes < 535) return 1;       // 08:00 (480) ~ 08:50 (530)
+        if (minutes < 595) return 2;       // 09:00 (540) ~ 09:50 (590)
+        if (minutes < 655) return 3;       // 10:10 (610) ~ 11:00 (660) (兼容 10:00 填报)
+        if (minutes < 730) return 4;       // 11:10 (670) ~ 12:00 (720)
+        if (minutes < 895) return 5;       // 14:00 (840) ~ 14:50 (890)
+        if (minutes < 955) return 6;       // 15:00 (900) ~ 15:50 (950)
+        if (minutes < 1015) return 7;      // 16:00 (960) ~ 16:50 (1010)
+        if (minutes < 1075) return 8;      // 17:00 (1020) ~ 17:50 (1070)
+        if (minutes < 1195) return 9;      // 19:00 (1140) ~ 19:50 (1190)
+        if (minutes < 1255) return 10;     // 20:00 (1200) ~ 20:50 (1250)
+        return 11;                         // 21:00 (1260) ~ 21:50
+    }
+
+    public static int CalculateEndUnit(int endTime, int startUnit = 1)
+    {
+        if (endTime <= 0) return Math.Min(11, Math.Max(1, startUnit + 1));
+        int minutes = (endTime / 100) * 60 + (endTime % 100);
+        if (minutes <= 540) return 1;      // <= 09:00
+        if (minutes <= 600) return 2;      // <= 10:00 (09:40 / 09:50)
+        if (minutes <= 670) return 3;      // <= 11:10
+        if (minutes <= 750) return 4;      // <= 12:30 (11:40 / 12:00)
+        if (minutes <= 900) return 5;      // <= 15:00
+        if (minutes <= 960) return 6;      // <= 16:00 (15:40 / 15:50)
+        if (minutes <= 1020) return 7;     // <= 17:00
+        if (minutes <= 1080) return 8;     // <= 18:00 (17:40 / 17:50)
+        if (minutes <= 1200) return 9;     // <= 20:00
+        if (minutes <= 1260) return 10;    // <= 21:00 (20:40 / 20:50)
+        return 11;                         // > 21:00
+    }
+
+    public static string FormatWeekRanges(IEnumerable<int> weeks)
+    {
+        var list = weeks.Distinct().OrderBy(w => w).ToList();
+        if (list.Count == 0) return "全学期";
+
+        var segments = new List<string>();
+        int start = list[0];
+        int prev = list[0];
+
+        for (int i = 1; i < list.Count; i++)
+        {
+            int w = list[i];
+            if (w == prev + 1)
+            {
+                prev = w;
+            }
+            else
+            {
+                segments.Add(start == prev ? $"{start}" : $"{start}-{prev}");
+                start = w;
+                prev = w;
+            }
+        }
+        segments.Add(start == prev ? $"{start}" : $"{start}-{prev}");
+        return string.Join(",", segments) + "周";
+    }
+
+    public static void EnrichLessons(List<CourseLesson>? lessons)
+    {
+        if (lessons == null || lessons.Count == 0) return;
+
+        var groups = lessons.GroupBy(l => $"{l.CourseName}_{l.Weekday}_{l.StartTime}");
+        foreach (var g in groups)
+        {
+            var validWeeks = g.Where(l => l.WeekIndex.HasValue && l.WeekIndex > 0)
+                              .Select(l => l.WeekIndex!.Value)
+                              .ToList();
+
+            string weekText = validWeeks.Count > 0 ? FormatWeekRanges(validWeeks) : "全学期";
+            foreach (var lesson in g)
+            {
+                lesson.WeekText = weekText;
+                lesson.StartUnit = CalculateStartUnit(lesson.StartTime);
+                lesson.EndUnit = CalculateEndUnit(lesson.EndTime, lesson.StartUnit);
+            }
+        }
+    }
+
     public string StartTimeText => FormattedStartTime;
     public string EndTimeText => FormattedEndTime;
     public string WeekText { get; set; } = string.Empty;
     public string LessonCode { get => CourseCode ?? string.Empty; set => CourseCode = value; }
     public string CreditsText { get; set; } = string.Empty;
     public string TeacherName => TeachersText;
-    public string AdminClassText => string.Empty;
+    public string AdminClassText { get; set; } = string.Empty;
     public int SpanUnits => Math.Max(1, EndUnit - StartUnit + 1);
     public string Name => CourseName;
     public string Room => Classroom ?? string.Empty;
@@ -1188,15 +1292,94 @@ public sealed class ClassroomProximity
 
 public sealed class ClassroomOccupationItem
 {
+    private int _floor = 0;
+
     public int RoomId { get; set; }
     public int Id { get => RoomId; set => RoomId = value; }
     public string RoomName { get; set; } = string.Empty;
     public string NameZh { get => RoomName; set => RoomName = value; }
     public int CampusId { get; set; }
+    public string CampusName => CampusId switch
+    {
+        6 => "宣城校区",
+        3 => "翡翠湖校区",
+        2 => "屯溪路校区",
+        _ => "合肥工业大学"
+    };
     public string BuildingName { get; set; } = string.Empty;
     public string Building { get => BuildingName; set => BuildingName = value; }
     public string BuildingCode { get; set; } = string.Empty;
-    public int Floor { get; set; } = 1;
+
+    public int Floor
+    {
+        get => InferredFloor;
+        set => _floor = value;
+    }
+
+    public int InferredFloor
+    {
+        get
+        {
+            var meta = ExtractMetadata(RoomName, RoomId, _floor > 0 ? _floor : null);
+            return meta.Floor;
+        }
+    }
+
+    public string CleanBuildingName
+    {
+        get
+        {
+            if (RoomName.Contains("新安学堂")) return "新安学堂";
+            if (RoomName.Contains("敬亭学堂")) return "敬亭学堂";
+
+            // 翡翠湖
+            string[] fcPref = { "翠一教", "翠二教", "翠三教", "翠四教", "翠五教", "翠六教", "翠七教", "翠八教", "翠九教", "翠十教", "翠十一教", "翠十二教", "翡翠科教楼" };
+            foreach (var b in fcPref)
+            {
+                if (RoomName.Contains(b)) return b;
+            }
+
+            // 屯溪路
+            string[] txPref = { "东楼", "西楼", "主楼", "西二", "逸夫楼" };
+            foreach (var b in txPref)
+            {
+                if (RoomName.Contains(b)) return b;
+            }
+
+            if (!string.IsNullOrWhiteSpace(BuildingName) && BuildingName != "教学楼" && !BuildingName.Any(char.IsDigit))
+            {
+                return BuildingName;
+            }
+
+            var meta = ExtractMetadata(RoomName, RoomId, null);
+            if (!string.IsNullOrWhiteSpace(meta.Prefix))
+            {
+                return meta.Prefix;
+            }
+
+            return !string.IsNullOrWhiteSpace(BuildingName) ? BuildingName : "教学楼";
+        }
+    }
+
+    public static (int RoomNum, int Floor, string Prefix, string ShortCode) ExtractMetadata(string nameZh, int fallbackId, int? rawFloor)
+    {
+        if (string.IsNullOrWhiteSpace(nameZh))
+            return (fallbackId, rawFloor is > 0 ? rawFloor.Value : 1, "", "");
+
+        var match = System.Text.RegularExpressions.Regex.Match(nameZh, @"(?:(?<prefix>.*?)\s*(?:[(（])?)?(?<num>\d{3,4})(?:[)）])?(?<suffix>[A-Za-z]?)");
+        if (match.Success && int.TryParse(match.Groups["num"].Value, out int rNum))
+        {
+            int f = (rNum >= 100 && rNum <= 1999) ? (rNum / 100) : (rawFloor is > 0 ? rawFloor.Value : 1);
+            string p = match.Groups["prefix"].Value.Trim();
+            string s = match.Groups["num"].Value + match.Groups["suffix"].Value;
+            if (string.IsNullOrEmpty(p)) p = nameZh;
+            return (rNum, f, p, s);
+        }
+
+        int inferred = rawFloor is > 0 ? rawFloor.Value : 1;
+        return (fallbackId, inferred, nameZh, nameZh);
+    }
+
     public int Seats { get; set; }
     public int? SeatsForSection { get => Seats > 0 ? Seats : null; set => Seats = value ?? 0; }
     public string DateString { get; set; } = string.Empty;
@@ -1281,10 +1464,20 @@ public sealed class StudyRoomSelectionRecord
     public string BuildingCode { get; set; } = string.Empty;
     public string DateString { get; set; } = string.Empty;
 
-    public RoomOccupationSlot? CurrentOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.CurrentOccupation(minute);
-    public RoomOccupationSlot? NextOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.NextOccupation(minute);
-    public int? MinutesUntilNextOccupation(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.MinutesUntilNextOccupation(minute);
-    public StudyRoomStatusInfo StudyStatus(int minute) => EmptyClassroomService.Shared.CurrentStudyRoomItem()?.StudyStatus(minute) ?? new StudyRoomStatusInfo();
+    public ClassroomOccupationItem? LiveRoom
+    {
+        get
+        {
+            var today = EmptyClassroomService.TodayDateString();
+            return EmptyClassroomService.Shared.CachedRooms.FirstOrDefault(r => r.RoomId == RoomId && (r.DateString == today || r.DateString == DateString))
+                ?? EmptyClassroomService.Shared.CachedRooms.FirstOrDefault(r => r.RoomId == RoomId);
+        }
+    }
+
+    public RoomOccupationSlot? CurrentOccupation(int minute) => LiveRoom?.CurrentOccupation(minute);
+    public RoomOccupationSlot? NextOccupation(int minute) => LiveRoom?.NextOccupation(minute);
+    public int? MinutesUntilNextOccupation(int minute) => LiveRoom?.MinutesUntilNextOccupation(minute);
+    public StudyRoomStatusInfo StudyStatus(int minute) => LiveRoom?.StudyStatus(minute) ?? new StudyRoomStatusInfo();
 }
 
 public sealed class EmptyClassroomSnapshot
