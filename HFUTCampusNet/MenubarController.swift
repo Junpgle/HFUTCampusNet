@@ -299,6 +299,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
+        let libraryItem = NSMenuItem(title: "图书馆座位、入馆与借阅服务...", action: #selector(openLibraryAction), keyEquivalent: "")
+        libraryItem.image = symbolImage("books.vertical")
+        libraryItem.target = self
+        menu.addItem(libraryItem)
+
         let unifiedLoginItem = NSMenuItem(title: "统一身份认证同步...", action: #selector(unifiedLoginAction), keyEquivalent: "u")
         unifiedLoginItem.image = symbolImage("person.badge.key")
         unifiedLoginItem.target = self
@@ -399,6 +404,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         checkUpdateMenuItem.image = symbolImage("arrow.triangle.2.circlepath")
         checkUpdateMenuItem.target = self
         menu.addItem(checkUpdateMenuItem)
+
+        let aboutItem = NSMenuItem(title: "关于 HFUTCampusNet...", action: #selector(showAboutAction), keyEquivalent: "")
+        aboutItem.image = symbolImage("info.circle")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -863,6 +873,15 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         milestoneItem.target = self
         submenu.addItem(milestoneItem)
 
+        let calendarSourceItem = NSMenuItem(
+            title: "打开\(milestone.campusName)官方校历...",
+            action: #selector(openOfficialCalendarAction),
+            keyEquivalent: ""
+        )
+        calendarSourceItem.image = statusDotImage(color: .systemBlue)
+        calendarSourceItem.target = self
+        submenu.addItem(calendarSourceItem)
+
         submenu.addItem(NSMenuItem.separator())
 
         // 2. 近期考试安排
@@ -1015,6 +1034,14 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
     @objc private func openHistoryStatsAction() {
         HistoryStatsWindowController.shared.showWindow(mode: 0)
+    }
+
+    @objc private func openLibraryAction() {
+        LibraryWindowController.shared.showWindow(nil)
+    }
+
+    @objc private func openOfficialCalendarAction() {
+        NSWorkspace.shared.open(CampusCalendarService.calendarURL())
     }
 
     @objc private func changeDisplayStyle(_ sender: NSMenuItem) {
@@ -1482,6 +1509,40 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         } else {
             checkUpdateMenuItem?.image = symbolImage("arrow.triangle.2.circlepath")
             checkUpdateMenuItem?.title = "检查软件更新 (v\(UpdateChecker.shared.currentVersion))..."
+        }
+    }
+
+    @objc private func showAboutAction() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "HFUT 校园网与生活助手"
+        alert.informativeText = """
+        版本：v\(UpdateChecker.shared.currentVersion) (macOS 原生 Universal)
+        专为合肥工业大学学子打造的状态栏与桌面效率伴侣。
+
+        【特别鸣谢参考的开源项目】
+        • Chiu-xaH/HFUT-Schedule (聚在工大)
+          提供教务、CAS 统一认证与慧新生活服务协议与业务设计的重要参考
+        • elonzh/hfut
+          提供合工大教务系统 (EAMS) 接口封装与会话维持机制的重要参考
+        • drcom-generic 与校园网自动登录开源实现
+          提供 Dr.COM (172.18.3.3) 网关认证与掉线自动重连的重要思路
+
+        开源协议：MIT License
+        项目主页：https://github.com/Junpgle/HFUTCampusNet
+        """
+        alert.alertStyle = .informational
+        if let icon = NSApp.applicationIconImage {
+            alert.icon = icon
+        }
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "访问 GitHub 仓库")
+
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            if let url = URL(string: "https://github.com/Junpgle/HFUTCampusNet") {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 

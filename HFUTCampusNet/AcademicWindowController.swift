@@ -8,6 +8,7 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
     private var segmentedControl: NSSegmentedControl!
     private var termPopUp: NSPopUpButton!
     private var hideScoreCheckbox: NSButton!
+    private var calendarSourceBtn: NSButton!
     private var syncBtn: NSButton!
     private var statusLabel: NSTextField!
 
@@ -74,10 +75,10 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
             action: #selector(onSegmentChanged(_:))
         )
         segmentedControl.selectedSegment = currentMode
-        segmentedControl.frame = NSRect(x: 20, y: 13, width: 470, height: 30)
+        segmentedControl.frame = NSRect(x: 20, y: 13, width: 390, height: 30)
         topBarView.addSubview(segmentedControl)
 
-        termPopUp = NSPopUpButton(frame: NSRect(x: 500, y: 13, width: 190, height: 28), pullsDown: false)
+        termPopUp = NSPopUpButton(frame: NSRect(x: 420, y: 13, width: 190, height: 28), pullsDown: false)
         termPopUp.target = self
         termPopUp.action = #selector(onTermChanged(_:))
         topBarView.addSubview(termPopUp)
@@ -89,8 +90,14 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
         )
         hideScoreCheckbox.font = NSFont.systemFont(ofSize: 11.5)
         hideScoreCheckbox.state = SettingsManager.shared.hideScoreInNotification ? .on : .off
-        hideScoreCheckbox.frame = NSRect(x: 705, y: 18, width: 135, height: 20)
+        hideScoreCheckbox.frame = NSRect(x: 635, y: 18, width: 135, height: 20)
         topBarView.addSubview(hideScoreCheckbox)
+
+        calendarSourceBtn = NSButton(title: "校历来源", target: self, action: #selector(openOfficialCalendar))
+        calendarSourceBtn.bezelStyle = .rounded
+        calendarSourceBtn.frame = NSRect(x: 780, y: 13, width: 75, height: 30)
+        calendarSourceBtn.autoresizingMask = [.minXMargin]
+        topBarView.addSubview(calendarSourceBtn)
 
         syncBtn = NSButton(title: "立即同步", target: self, action: #selector(onSyncClicked))
         syncBtn.bezelStyle = .rounded
@@ -195,9 +202,14 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
 
         topBarView?.frame = NSRect(x: 0, y: totalH - 56, width: totalW, height: 56)
         syncBtn?.frame = NSRect(x: totalW - sidePad - 95, y: 13, width: 95, height: 30)
-        hideScoreCheckbox?.frame = NSRect(x: totalW - sidePad - 95 - 10 - 135, y: 18, width: 135, height: 20)
-        let termMaxW = max(140, (hideScoreCheckbox?.frame.minX ?? 700) - 508)
-        termPopUp?.frame = NSRect(x: 500, y: 13, width: min(210, termMaxW), height: 28)
+        calendarSourceBtn?.frame = NSRect(x: (syncBtn?.frame.minX ?? totalW - sidePad - 95) - 10 - 75, y: 13, width: 75, height: 30)
+        let checkboxX = (calendarSourceBtn?.frame.minX ?? 780) - 10 - 135
+        hideScoreCheckbox?.frame = NSRect(x: checkboxX, y: 18, width: 135, height: 20)
+        let segmentWidth = min(390, max(300, checkboxX - 10 - 125 - 10 - 20))
+        segmentedControl?.frame = NSRect(x: sidePad, y: 13, width: segmentWidth, height: 30)
+        let termX = sidePad + segmentWidth + 10
+        let termWidth = max(125, min(190, checkboxX - termX - 10))
+        termPopUp?.frame = NSRect(x: termX, y: 13, width: termWidth, height: 28)
 
         let cardH: CGFloat = 76
         let gap: CGFloat = 13
@@ -267,6 +279,10 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 }
             }
         }
+    }
+
+    @objc private func openOfficialCalendar() {
+        NSWorkspace.shared.open(CampusCalendarService.calendarURL())
     }
 
     @objc private func onAcademicDataUpdated() {
@@ -370,11 +386,13 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
             currentExams = upcoming + finished
 
             let milestone = SemesterMilestoneInfo.calculate(at: now)
+            let nextCampusEvent = CampusCalendarService.upcomingEvents(at: now).first
+            let nextEventText = nextCampusEvent.map { " · 下一项：\($0.title) \($0.dateRange)" } ?? ""
 
             if currentExams.isEmpty {
-                sectionTitleLabel.stringValue = "本学期考试安排与校历里程碑（\(milestone.semesterName) · 暂未发布排考）"
+                sectionTitleLabel.stringValue = "\(milestone.campusName) · \(milestone.semesterName)（暂未发布排考）\(nextEventText)"
             } else {
-                sectionTitleLabel.stringValue = "本学期考试安排（共 \(currentExams.count) 场，待考 \(upcoming.count) 场 · \(milestone.semesterName)）"
+                sectionTitleLabel.stringValue = "\(milestone.campusName) · 考试安排（共 \(currentExams.count) 场，待考 \(upcoming.count) 场 · \(milestone.semesterName)）\(nextEventText)"
             }
 
             if let nextExam = upcoming.first {
@@ -383,21 +401,22 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 setCard(index: 1, title: "考试倒计时", value: badge, sub: "考场：\(nextExam.displayLocation)", color: nextExam.daysRemaining(at: now) <= 3 ? .systemRed : .systemBlue)
             } else {
                 setCard(index: 0, title: "最近一场考试", value: "暂无待考科目", sub: allExams.isEmpty ? "教务系统尚未公布本学期排考" : "本学期考试已全部结束", color: .systemGreen)
-                setCard(index: 1, title: "期末考试周倒计时", value: milestone.daysUntilExamWeek > 0 ? "约 \(milestone.daysUntilExamWeek) 天" : "已进入期末阶段", sub: "待考 \(upcoming.count) 场 / 已考 \(finished.count) 场", color: .systemBlue)
+                let examWeek = [milestone.examWeekStartDateString, milestone.examWeekEndDateString].compactMap { $0 }.joined(separator: " 至 ")
+                setCard(index: 1, title: "期末考试周倒计时", value: milestone.daysUntilExamWeek > 0 ? "还有 \(milestone.daysUntilExamWeek) 天" : "已进入期末阶段", sub: examWeek.isEmpty ? "待考 \(upcoming.count) 场 / 已考 \(finished.count) 场" : "官方考试周：\(examWeek)", color: .systemBlue)
             }
 
             setCard(
                 index: 2,
                 title: "本学期校历进度",
                 value: "第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (\(milestone.progressPercentage)%)",
-                sub: "\(milestone.startDateString) ~ \(milestone.endDateString) (已过\(milestone.elapsedDays)天)",
+                sub: "\(milestone.startDateString) ~ \(milestone.endDateString) · 官方校历",
                 color: .systemIndigo
             )
             setCard(
                 index: 3,
                 title: "距离\(milestone.vacationName)放假",
                 value: milestone.remainingDays > 0 ? "还有 \(milestone.remainingDays) 天" : "假期进行中",
-                sub: "学期结束日：\(milestone.endDateString)",
+                sub: "\(milestone.campusName) · 学期结束日：\(milestone.endDateString)",
                 color: .systemTeal
             )
         } else if currentMode == 2 {

@@ -573,9 +573,28 @@ public class SettingsWindow : Window
             LineHeight = 18
         };
 
+        var ackTitle = new TextBlock
+        {
+            Text = "🙏 特别鸣谢参考的开源项目：",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = ThemeManager.Shared.TextPrimary,
+            Margin = new Thickness(0, 12, 0, 4)
+        };
+        var ackDesc = new TextBlock
+        {
+            Text = "• Chiu-xaH/HFUT-Schedule (聚在工大) — 教务系统、统一认证 CAS 与慧新易校生活服务协议参考\n• elonzh/hfut — 合肥工业大学教务系统 (EAMS) 交互开发库参考\n• drcom-generic 与工大校园网认证工具 — Dr.COM 网关协议与断线重连参考",
+            FontSize = 11,
+            Foreground = ThemeManager.Shared.TextSecondary,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 17
+        };
+
         aboutStack.Children.Add(appTitle);
         aboutStack.Children.Add(_versionBlock);
         aboutStack.Children.Add(desc);
+        aboutStack.Children.Add(ackTitle);
+        aboutStack.Children.Add(ackDesc);
         aboutCard.Child = aboutStack;
         stack.Children.Add(aboutCard);
 
@@ -600,7 +619,7 @@ public class SettingsWindow : Window
         {
             try
             {
-                Process.Start(new ProcessStartInfo("https://github.com/hfut-community/HFUTCampusNet") { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo("https://github.com/Junpgle/HFUTCampusNet") { UseShellExecute = true });
             }
             catch { }
         });

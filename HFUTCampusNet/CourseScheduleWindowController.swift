@@ -257,13 +257,14 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         let schedule = CourseScheduleService.shared.currentSchedule
         let milestone = SemesterMilestoneInfo.calculate(schedule: schedule)
         let semTitle = schedule?.semesterName ?? milestone.semesterName
-        semesterLabel?.stringValue = "\(semTitle) · 进度 \(milestone.progressPercentage)% (距\(milestone.vacationName) \(milestone.remainingDays)天)"
+        semesterLabel?.stringValue = "\(milestone.campusName) · \(semTitle) · 进度 \(milestone.progressPercentage)% (距\(milestone.vacationName) \(milestone.remainingDays)天)"
 
         if let syncTime = schedule?.lastSyncTime {
             let f = DateFormatter()
             f.dateFormat = "yyyy-MM-dd HH:mm"
             let count = schedule?.lessons.count ?? 0
-            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共 \(count) 节排课 | 校历: \(milestone.startDateString) ~ \(milestone.endDateString) (第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 · 距期末考试周约 \(milestone.daysUntilExamWeek) 天)"
+            let examWeekText = milestone.examWeekStartDateString.map { " · 考试周 \($0) 至 \(milestone.examWeekEndDateString ?? $0)" } ?? " · 距考试周约 \(milestone.daysUntilExamWeek) 天"
+            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共 \(count) 节排课 | \(milestone.campusName)校历: \(milestone.startDateString) ~ \(milestone.endDateString) (第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周\(examWeekText))"
         } else {
             statusInfoLabel?.stringValue = "尚未同步教务课表，请点击右上角「网页登录同步」"
         }
