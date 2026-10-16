@@ -1,0 +1,370 @@
+import Foundation
+
+/// 馆藏单册物理分布与借阅状态
+public struct CampusBookHolding: Codable, Equatable {
+    public var campus: String        // 校区，如 翡翠湖校区 / 屯溪路校区 / 宣城校区
+    public var location: String      // 馆藏借阅处，如 翡翠湖校区《中图法》自科借阅处（A301-302)
+    public var callNumber: String    // 索书号，如 TP303/205
+    public var status: String        // 状态，如 可借 / 借出 / 阅览
+    public var barcode: String       // 条形码 / 登录号
+
+    public init(campus: String, location: String, callNumber: String, status: String, barcode: String = "") {
+        self.campus = campus
+        self.location = location
+        self.callNumber = callNumber
+        self.status = status
+        self.barcode = barcode
+    }
+
+    public var isAvailable: Bool {
+        return status.contains("可借") || status.contains("在馆")
+    }
+}
+
+/// 检索返回的图书条目
+public struct CampusBookItem: Identifiable, Equatable {
+    public var id: String
+    public var title: String
+    public var authors: String
+    public var publishers: String
+    public var year: String
+    public var isbn: String
+    public var classNo: String
+    public var holdings: [CampusBookHolding]
+    public var rawRow: [String: Any]?
+
+    public init(
+        id: String,
+        title: String,
+        authors: String,
+        publishers: String,
+        year: String,
+        isbn: String,
+        classNo: String,
+        holdings: [CampusBookHolding] = [],
+        rawRow: [String: Any]? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.authors = authors
+        self.publishers = publishers
+        self.year = year
+        self.isbn = isbn
+        self.classNo = classNo
+        self.holdings = holdings
+        self.rawRow = rawRow
+    }
+
+    public static func == (lhs: CampusBookItem, rhs: CampusBookItem) -> Bool {
+        return lhs.id == rhs.id && lhs.title == rhs.title
+    }
+
+    /// 可借册数
+    public var availableCount: Int {
+        return holdings.filter { $0.isAvailable }.count
+    }
+
+    /// 馆藏总结文本
+    public var holdingSummaryText: String {
+        if holdings.isEmpty {
+            return "暂无纸本馆藏或仅有电子资源"
+        }
+        let available = availableCount
+        let total = holdings.count
+        let campuses = Array(Set(holdings.map { $0.campus })).joined(separator: " · ")
+        return "馆藏 \(total) 册 · 可借 \(available) 册 (分布于 \(campuses))"
+    }
+}
+
+/// 图书馆公开统计
+public struct LibraryPublicStats {
+    public var totalSeats: String = "--"
+    public var occupiedSeats: String = "--"
+    public var availableSeats: String = "--"
+    public var visitsToday: String = "--"
+    public var loansToday: String = "--"
+}
+
+/// 校内图书检索服务（直接调用合工大 OPAC 原生 API，返回结构化 JSON，并支持收藏、书架、预约）
+public final class LibrarySearchService: NSObject, URLSessionDelegate {
+    public static let shared = LibrarySearchService()
+
+    private let searchAPI = "https://lib.hfut.edu.cn/svc/circulate/collectionSearch/getCollectionSearch"
+    private var session: URLSession!
+
+    private override init() {
+        super.init()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 10.0
+        config.timeoutIntervalForResource = 15.0
+        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }
+
+    // 允许学校自签或老旧加密套件握手
+    public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+        completionHandler(.performDefaultHandling, nil)
+    }
+
+    /// 执行校内图书检索
+    public func search(keyword: String, page: Int = 1, size: Int = 20, completion: @escaping (Result<[CampusBookItem], Error>) -> Void) {
+        let cleanKw = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanKw.isEmpty else {
+            completion(.success([]))
+            return
+        }
+        guard let url = URL(string: searchAPI) else {
+            completion(.failure(NSError(domain: "LibrarySearch", code: -1, userInfo: [NSLocalizedDescriptionKey: "无效的检索接口地址"])))
+            return
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+
+        let body: [String: Any] = [
+            "page": page,
+            "size": size,
+            "sort": "-11",
+            "key": cleanKw,
+            "stats": true,
+            "unitId": "hfut"
+        ]
+
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        session.dataTask(with: req) { data, _, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            guard let data = data else {
+                DispatchQueue.main.async { completion(.success([])) }
+                return
+            }
+
+            do {
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let dataObj = json["data"] as? [String: Any],
+                      let innerData = dataObj["data"] as? [String: Any],
+                      let rows = innerData["rows"] as? [[String: Any]] else {
+                    DispatchQueue.main.async { completion(.success([])) }
+                    return
+                }
+
+                let items: [CampusBookItem] = rows.compactMap { row in
+                    let rawTitle = (row["title"] as? String ?? "")
+                        .replacingOccurrences(of: "<span class='keywords'>", with: "")
+                        .replacingOccurrences(of: "</span>", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !rawTitle.isEmpty else { return nil }
+
+                    let authors = row["authors"] as? String ?? ""
+                    let publishers = row["publishers"] as? String ?? ""
+                    let yearVal = row["year"]
+                    let yearStr = (yearVal as? Int).map { "\($0)" } ?? (yearVal as? String ?? "")
+                    let isbn = row["isbn"] as? String ?? ""
+                    let classNo = row["classNo"] as? String ?? ""
+                    let id = row["id"] as? String ?? UUID().uuidString
+
+                    // 解析馆藏分布
+                    let rawGc = row["gc"] as? [[String: Any]] ?? []
+                    let holdings: [CampusBookHolding] = rawGc.map { g in
+                        let campus = g["c1"] as? String ?? "合肥校区"
+                        let loc = g["c2"] as? String ?? ""
+                        let call = g["in"] as? String ?? classNo
+                        let status = g["js"] as? String ?? "在馆"
+                        let barcode = g["po"] as? String ?? ""
+                        return CampusBookHolding(campus: campus, location: loc, callNumber: call, status: status, barcode: barcode)
+                    }
+
+                    return CampusBookItem(
+                        id: id,
+                        title: rawTitle,
+                        authors: authors,
+                        publishers: publishers,
+                        year: yearStr,
+                        isbn: isbn,
+                        classNo: classNo,
+                        holdings: holdings,
+                        rawRow: row
+                    )
+                }
+
+                DispatchQueue.main.async {
+                    completion(.success(items))
+                }
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }.resume()
+    }
+
+    // MARK: - 真实读者功能：收藏图书 (POST /svc/circulate/myCollect/insertMyCollect)
+
+    public func collectBook(item: CampusBookItem, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
+            return
+        }
+        guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/myCollect/insertMyCollect") else { return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let authHeader = token.hasPrefix("Bearer ") ? token : "Bearer \(token)"
+        req.setValue(authHeader, forHTTPHeaderField: "authorization")
+
+        let literatureObj: [String: Any] = item.rawRow ?? [
+            "id": item.id,
+            "title": item.title,
+            "authors": item.authors,
+            "publishers": item.publishers,
+            "isbn": item.isbn,
+            "classNo": item.classNo
+        ]
+        let payload: [String: Any] = ["literature": literatureObj]
+
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        session.dataTask(with: req) { data, _, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                return
+            }
+            let success = (json["success"] as? Bool) ?? false
+            if success {
+                DispatchQueue.main.async { completion(.success("已将《\(item.title)》加入您的个人收藏！")) }
+            } else {
+                let msg = (json["message"] as? String) ?? "收藏失败"
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+            }
+        }.resume()
+    }
+
+    // MARK: - 真实读者功能：加入书架 (POST /svc/circulate/readerBook/insert)
+
+    public func addBookToShelf(item: CampusBookItem, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
+            return
+        }
+        guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerBook/insert") else { return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let authHeader = token.hasPrefix("Bearer ") ? token : "Bearer \(token)"
+        req.setValue(authHeader, forHTTPHeaderField: "authorization")
+
+        let bookObj: [String: Any] = item.rawRow ?? [
+            "id": item.id,
+            "title": item.title,
+            "authors": item.authors,
+            "publishers": item.publishers,
+            "isbn": item.isbn,
+            "classNo": item.classNo
+        ]
+        let user = SettingsManager.shared.portalUsername.isEmpty ? "2024218441" : SettingsManager.shared.portalUsername
+        let payload: [String: Any] = [
+            "book": bookObj,
+            "sourceType": "1",
+            "tenantId": "hfut",
+            "tenantName": "合肥工业大学",
+            "userId": user,
+            "userName": SettingsManager.shared.libraryUserName ?? "合工大读者"
+        ]
+
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        session.dataTask(with: req) { data, _, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                return
+            }
+            let code = json["code"] as? String
+            let success = (json["success"] as? Bool) ?? (code == "0")
+            if success {
+                DispatchQueue.main.async { completion(.success("已将《\(item.title)》加入您的图书馆书架！")) }
+            } else {
+                let msg = (json["message"] as? String) ?? "加入书架失败"
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+            }
+        }.resume()
+    }
+
+    // MARK: - 真实读者功能：预约在馆图书 (POST /svc/circulate/readerBooking/insert)
+
+    public func reserveBook(barcode: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
+            return
+        }
+        guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerBooking/insert") else { return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let authHeader = token.hasPrefix("Bearer ") ? token : "Bearer \(token)"
+        req.setValue(authHeader, forHTTPHeaderField: "authorization")
+
+        let payload: [String: Any] = ["barCode": barcode]
+
+        do {
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        session.dataTask(with: req) { data, _, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                return
+            }
+            let success = (json["success"] as? Bool) ?? (json["code"] as? String == "0")
+            if success {
+                DispatchQueue.main.async { completion(.success("图书预约申请已成功提交！到馆后将为您保留。")) }
+            } else {
+                let msg = (json["message"] as? String) ?? "当前图书暂不可预约（可能在架可直接外借或已被他人预约）"
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+            }
+        }.resume()
+    }
+}

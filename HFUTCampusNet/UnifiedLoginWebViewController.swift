@@ -416,6 +416,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         // 2. 同步慧新易校 (宿舍电费与一卡通) 并联动同步校园网流量
         self.syncHuiXinElectricity(cookieHeader: cookieHeader, sessionToken: sessionToken)
+
+        // 3. 同步图书馆借阅中心 (CAS SSO)
+        LibraryBorrowManager.shared.syncWithRemote(forceSSO: true, completion: nil)
     }
 
     // MARK: - 1. 同步教务系统课表

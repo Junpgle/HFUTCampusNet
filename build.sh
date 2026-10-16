@@ -23,6 +23,8 @@ SOURCES=(
     "HFUTCampusNet/CourseModels.swift"
     "HFUTCampusNet/EmptyClassroomModels.swift"
     "HFUTCampusNet/AcademicAndCardModels.swift"
+    "HFUTCampusNet/LibraryBorrowModels.swift"
+    "HFUTCampusNet/LibrarySearchService.swift"
     "HFUTCampusNet/CampusCalendarService.swift"
     "HFUTCampusNet/StudentPortraitEatService.swift"
     "HFUTCampusNet/CampusHistoryManager.swift"
@@ -98,6 +100,22 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>hfut.edu.cn</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSExceptionMinimumTLSVersion</key>
+                <string>TLSv1.0</string>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <false/>
+            </dict>
+        </dict>
     </dict>
 </dict>
 </plist>

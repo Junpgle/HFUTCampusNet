@@ -29,6 +29,9 @@ public class SettingsManager {
         static let huixinAuthToken = "campus_huixin_auth_token"
         static let ehallAuthToken = "campus_ehall_auth_token"
         static let casTgcCookie = "campus_cas_tgc_cookie"
+        static let libraryToken = "campus_library_auth_token"
+        static let libraryUserName = "campus_library_user_name"
+        static let libraryBorrowCount = "campus_library_borrow_count"
         static let dormCampus = "campus_dorm_campus"
         static let dormBuilding = "campus_dorm_building"
         static let dormRoom = "campus_dorm_room"
@@ -305,6 +308,21 @@ public class SettingsManager {
     public var casTgcCookie: String? {
         get { defaults.string(forKey: Keys.casTgcCookie) }
         set { defaults.set(newValue, forKey: Keys.casTgcCookie) }
+    }
+
+    public var libraryToken: String? {
+        get { defaults.string(forKey: Keys.libraryToken) }
+        set { defaults.set(newValue, forKey: Keys.libraryToken) }
+    }
+
+    public var libraryUserName: String? {
+        get { defaults.string(forKey: Keys.libraryUserName) }
+        set { defaults.set(newValue, forKey: Keys.libraryUserName) }
+    }
+
+    public var libraryBorrowCount: Int {
+        get { defaults.integer(forKey: Keys.libraryBorrowCount) }
+        set { defaults.set(newValue, forKey: Keys.libraryBorrowCount) }
     }
 
     public var dormCampus: String {

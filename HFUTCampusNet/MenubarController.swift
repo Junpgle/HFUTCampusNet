@@ -299,7 +299,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
-        let libraryItem = NSMenuItem(title: "图书馆座位、入馆与借阅服务...", action: #selector(openLibraryAction), keyEquivalent: "")
+        let libraryItem = NSMenuItem(title: "图书馆借阅服务...", action: #selector(openLibraryAction), keyEquivalent: "")
         libraryItem.image = symbolImage("books.vertical")
         libraryItem.target = self
         menu.addItem(libraryItem)
