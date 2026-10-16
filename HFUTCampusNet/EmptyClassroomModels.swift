@@ -77,6 +77,11 @@ public struct ClassroomBuilding: Codable, Identifiable, Equatable, Hashable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// 校区中文名
+    public var campusNameZh: String {
+        StudyCampus(rawValue: campusAssoc)?.displayName ?? ""
+    }
+
     /// 是否属于自习主力教学楼（排除操场、各类纯实验室、印刷厂平房等）
     public var isPreferredStudyBuilding: Bool {
         guard let campus = StudyCampus(rawValue: campusAssoc) else { return false }
@@ -163,7 +168,7 @@ public struct ClassroomOccupation: Codable, Equatable, Identifiable {
         let endTime = try c.decodeIfPresent(Int.self, forKey: .endTime)
         let startTimeString = try c.decodeIfPresent(String.self, forKey: .startTimeString) ?? ""
         let endTimeString = try c.decodeIfPresent(String.self, forKey: .endTimeString) ?? ""
-        let activityType = try c.decodeIfPresent(String.self, forKey: .activityType) ?? "Lesson"
+        let activityType = try c.decodeIfPresent(String.self, forKey: .activityType) ?? ""
         let activityName = try c.decodeIfPresent(String.self, forKey: .activityName) ?? ""
         let teacherName = try c.decodeIfPresent(String.self, forKey: .teacherName)
 
@@ -565,5 +570,378 @@ public struct CurrentStudyRoomRecord: Codable, Equatable {
         self.buildingId = buildingId
         self.campusAssoc = campusAssoc
         self.dateString = dateString
+    }
+}
+
+public struct CurrentLessonMetrics: Equatable {
+    public var lessonSessionCount: Int
+    public var occupiedRoomCount: Int
+
+    public static func calculate(in rooms: [EmptyClassroomItem], atMinutes nowMin: Int) -> CurrentLessonMetrics {
+        var sessionKeys = Set<String>()
+        var roomIds = Set<Int>()
+
+        for room in rooms {
+            let ongoingLessons = (room.sortedOccupations).filter {
+                $0.activityType == ClassroomOccupiedCause.lesson.rawValue && $0.isOngoing(atMinutes: nowMin)
+            }
+            guard !ongoingLessons.isEmpty else { continue }
+            roomIds.insert(room.id)
+
+            for lesson in ongoingLessons {
+                let key: String
+                if let activityId = lesson.activityId {
+                    key = "\(activityId)|\(lesson.date)|\(lesson.startMinutes)|\(lesson.endMinutes)"
+                } else {
+                    key = "\(room.id)|\(lesson.date)|\(lesson.startMinutes)|\(lesson.endMinutes)|\(lesson.activityName)|\(lesson.teacherName ?? "")"
+                }
+                sessionKeys.insert(key)
+            }
+        }
+
+        return CurrentLessonMetrics(lessonSessionCount: sessionKeys.count, occupiedRoomCount: roomIds.count)
+    }
+}
+
+public enum DiningCrowdLevel: String {
+    case low
+    case moderate
+    case high
+
+    public var label: String {
+        switch self {
+        case .low: return "空闲"
+        case .moderate: return "适中"
+        case .high: return "挤"
+        }
+    }
+}
+
+public struct MealRushForecast: Equatable {
+    public var lessonReleaseCount: Int
+    public var peakThirtyMinuteCount: Int
+    public var crowdLevel: DiningCrowdLevel?
+    public var crowdPercentage: Int?
+
+    public var crowdLabel: String {
+        guard let pct = crowdPercentage else {
+            return crowdLevel?.label ?? "资料不足"
+        }
+        let desc: String
+        if pct >= 90 {
+            desc = "极挤"
+        } else if pct >= 75 {
+            desc = "挤"
+        } else if pct >= 40 {
+            desc = "适中"
+        } else {
+            desc = "空闲"
+        }
+        return "\(pct)%（\(desc)）"
+    }
+
+    public init(
+        lessonReleaseCount: Int,
+        peakThirtyMinuteCount: Int,
+        crowdLevel: DiningCrowdLevel?,
+        crowdPercentage: Int? = nil
+    ) {
+        self.lessonReleaseCount = lessonReleaseCount
+        self.peakThirtyMinuteCount = peakThirtyMinuteCount
+        self.crowdLevel = crowdLevel
+        self.crowdPercentage = crowdPercentage
+    }
+}
+
+public struct DiningHallEstimate: Equatable {
+    public var hallName: String
+    public var shortName: String
+    public var areaDescription: String
+    public var lunch: MealRushForecast
+    public var dinner: MealRushForecast
+
+    public init(
+        hallName: String,
+        shortName: String,
+        areaDescription: String,
+        lunch: MealRushForecast,
+        dinner: MealRushForecast
+    ) {
+        self.hallName = hallName
+        self.shortName = shortName
+        self.areaDescription = areaDescription
+        self.lunch = lunch
+        self.dinner = dinner
+    }
+}
+
+public struct CampusDiningEstimate: Equatable {
+    public var campus: StudyCampus
+    public var dateString: String
+    public var isComplete: Bool
+    public var lunch: MealRushForecast
+    public var dinner: MealRushForecast
+    public var hallEstimates: [DiningHallEstimate]
+
+    private static var observedPeaks: [String: Int] = [:]
+
+    public struct CampusZoneDefinition {
+        public let id: String
+        public let hallName: String
+        public let shortName: String
+        public let areaDescription: String
+        public let baselinePeak: Int
+        public let matches: (EmptyClassroomItem) -> Bool
+
+        public init(
+            id: String,
+            hallName: String,
+            shortName: String,
+            areaDescription: String,
+            baselinePeak: Int,
+            matches: @escaping (EmptyClassroomItem) -> Bool
+        ) {
+            self.id = id
+            self.hallName = hallName
+            self.shortName = shortName
+            self.areaDescription = areaDescription
+            self.baselinePeak = baselinePeak
+            self.matches = matches
+        }
+    }
+
+    public static func zoneDefinitions(for campus: StudyCampus) -> [CampusZoneDefinition] {
+        switch campus {
+        case .feicuihu:
+            return [
+                CampusZoneDefinition(
+                    id: "feicuihu_north",
+                    hallName: "风华食堂 (北区)",
+                    shortName: "风华食堂(北)",
+                    areaDescription: "翠一～四教、3#/4#实验楼等北侧教学楼",
+                    baselinePeak: 65,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return ["翠一", "翠二", "翠三", "翠四", "3#", "4#", "4＃", "地质"].contains { name.contains($0) }
+                    }
+                ),
+                CampusZoneDefinition(
+                    id: "feicuihu_south",
+                    hallName: "风雅食堂 (南区)",
+                    shortName: "风雅食堂(南)",
+                    areaDescription: "翠五～十二教、科教楼、建艺馆等南侧教学楼",
+                    baselinePeak: 80,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return !["翠一", "翠二", "翠三", "翠四", "3#", "4#", "4＃", "地质"].contains { name.contains($0) }
+                    }
+                )
+            ]
+        case .tunxilu:
+            return [
+                CampusZoneDefinition(
+                    id: "tunxilu_east",
+                    hallName: "德胜食堂 (东区)",
+                    shortName: "德胜食堂(东)",
+                    areaDescription: "东楼、逸夫楼、电机楼、纬地楼、材料/理化楼等",
+                    baselinePeak: 38,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return ["东", "逸夫", "电机", "纬地", "材料", "理化", "升华", "化工", "分析", "三立苑"].contains { name.contains($0) }
+                    }
+                ),
+                CampusZoneDefinition(
+                    id: "tunxilu_west",
+                    hallName: "馨园食堂 (西区)",
+                    shortName: "馨园食堂(西)",
+                    areaDescription: "主楼、西楼、西二、电教楼、管院楼、格物楼等",
+                    baselinePeak: 52,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return !["东", "逸夫", "电机", "纬地", "材料", "理化", "升华", "化工", "分析", "三立苑"].contains { name.contains($0) }
+                    }
+                )
+            ]
+        case .xuancheng:
+            return [
+                CampusZoneDefinition(
+                    id: "xuancheng_jingting",
+                    hallName: "敬亭学堂",
+                    shortName: "敬亭学堂",
+                    areaDescription: "敬亭学堂各教室内所有课程下课放学人流",
+                    baselinePeak: 46,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return name.contains("敬亭")
+                    }
+                ),
+                CampusZoneDefinition(
+                    id: "xuancheng_xinan",
+                    hallName: "新安学堂",
+                    shortName: "新安学堂",
+                    areaDescription: "新安学堂各教室内所有课程下课放学人流",
+                    baselinePeak: 38,
+                    matches: { room in
+                        let name = room.buildingPrefix.isEmpty ? room.nameZh : room.buildingPrefix
+                        return !name.contains("敬亭")
+                    }
+                )
+            ]
+        }
+    }
+
+    public static func baselineSemesterPeak(for campus: StudyCampus) -> Int {
+        switch campus {
+        case .xuancheng: return 82
+        case .feicuihu: return 140
+        case .tunxilu: return 88
+        }
+    }
+
+    public static func semesterPeak(forKey key: String, baseline: Int) -> Int {
+        let observed = observedPeaks[key] ?? 0
+        return max(baseline, observed)
+    }
+
+    public static func recordObservedPeak(_ peak: Int, forKey key: String, baseline: Int) {
+        let current = observedPeaks[key] ?? baseline
+        if peak > current {
+            observedPeaks[key] = peak
+        }
+    }
+
+    public static func semesterPeak(for campus: StudyCampus) -> Int {
+        let base = baselineSemesterPeak(for: campus)
+        return semesterPeak(forKey: "campus_\(campus.rawValue)", baseline: base)
+    }
+
+    public static func recordObservedPeak(_ peak: Int, for campus: StudyCampus) {
+        let base = baselineSemesterPeak(for: campus)
+        recordObservedPeak(peak, forKey: "campus_\(campus.rawValue)", baseline: base)
+    }
+
+    public init(
+        campus: StudyCampus,
+        dateString: String,
+        isComplete: Bool,
+        lunch: MealRushForecast,
+        dinner: MealRushForecast,
+        hallEstimates: [DiningHallEstimate] = []
+    ) {
+        self.campus = campus
+        self.dateString = dateString
+        self.isComplete = isComplete
+        self.lunch = lunch
+        self.dinner = dinner
+        self.hallEstimates = hallEstimates
+    }
+
+    public static func calculate(
+        campus: StudyCampus,
+        dateString: String,
+        rooms: [EmptyClassroomItem],
+        isComplete: Bool
+    ) -> CampusDiningEstimate {
+        func calculateForecast(
+            for roomSubset: [EmptyClassroomItem],
+            zoneKey: String,
+            baseline: Int
+        ) -> (lunch: MealRushForecast, dinner: MealRushForecast) {
+            let lessons = uniqueLessons(in: roomSubset)
+            let releases = lessons.map(\.endMinutes).filter { $0 > 0 }
+
+            func forecast(from start: Int, to end: Int) -> MealRushForecast {
+                let mealReleases = releases.filter { $0 >= start && $0 < end }
+                let peak = peakCount(in: mealReleases, from: start, to: end)
+                guard isComplete else {
+                    return MealRushForecast(
+                        lessonReleaseCount: mealReleases.count,
+                        peakThirtyMinuteCount: peak,
+                        crowdLevel: nil,
+                        crowdPercentage: nil
+                    )
+                }
+                recordObservedPeak(peak, forKey: zoneKey, baseline: baseline)
+                let maxRush = semesterPeak(forKey: zoneKey, baseline: baseline)
+                let pct: Int
+                if mealReleases.isEmpty || peak == 0 {
+                    pct = 0
+                } else if maxRush > 0 {
+                    pct = min(100, max(0, Int(round(Double(peak) / Double(maxRush) * 100.0))))
+                } else {
+                    pct = 0
+                }
+                let level: DiningCrowdLevel = {
+                    if pct >= 75 { return .high }
+                    if pct >= 40 { return .moderate }
+                    return .low
+                }()
+                return MealRushForecast(
+                    lessonReleaseCount: mealReleases.count,
+                    peakThirtyMinuteCount: peak,
+                    crowdLevel: level,
+                    crowdPercentage: pct
+                )
+            }
+
+            return (
+                forecast(from: 11 * 60 + 30, to: 12 * 60 + 30),
+                forecast(from: 17 * 60, to: 18 * 60 + 30)
+            )
+        }
+
+        let campusTotal = calculateForecast(
+            for: rooms,
+            zoneKey: "campus_\(campus.rawValue)",
+            baseline: baselineSemesterPeak(for: campus)
+        )
+
+        let zones = zoneDefinitions(for: campus)
+        var hallEstimates: [DiningHallEstimate] = []
+        for zone in zones {
+            let zoneRooms = rooms.filter(zone.matches)
+            let f = calculateForecast(for: zoneRooms, zoneKey: zone.id, baseline: zone.baselinePeak)
+            hallEstimates.append(
+                DiningHallEstimate(
+                    hallName: zone.hallName,
+                    shortName: zone.shortName,
+                    areaDescription: zone.areaDescription,
+                    lunch: f.lunch,
+                    dinner: f.dinner
+                )
+            )
+        }
+
+        return CampusDiningEstimate(
+            campus: campus,
+            dateString: dateString,
+            isComplete: isComplete,
+            lunch: campusTotal.lunch,
+            dinner: campusTotal.dinner,
+            hallEstimates: hallEstimates
+        )
+    }
+
+    private static func uniqueLessons(in rooms: [EmptyClassroomItem]) -> [ClassroomOccupation] {
+        var unique: [String: ClassroomOccupation] = [:]
+        for room in rooms {
+            for lesson in room.sortedOccupations where lesson.activityType == ClassroomOccupiedCause.lesson.rawValue {
+                let key: String
+                if let activityId = lesson.activityId {
+                    key = "\(activityId)|\(lesson.date)|\(lesson.startMinutes)|\(lesson.endMinutes)"
+                } else {
+                    key = "\(room.id)|\(lesson.date)|\(lesson.startMinutes)|\(lesson.endMinutes)|\(lesson.activityName)|\(lesson.teacherName ?? "")"
+                }
+                unique[key] = lesson
+            }
+        }
+        return Array(unique.values)
+    }
+
+    private static func peakCount(in releases: [Int], from start: Int, to end: Int) -> Int {
+        guard end - start >= 30 else { return releases.count }
+        return stride(from: start, through: end - 30, by: 1).map { windowStart in
+            releases.filter { $0 >= windowStart && $0 < windowStart + 30 }.count
+        }.max() ?? 0
     }
 }

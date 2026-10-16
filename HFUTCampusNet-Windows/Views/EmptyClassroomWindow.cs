@@ -221,7 +221,7 @@ public sealed class EmptyClassroomWindow : Window
     private bool _isViewingTomorrow = false;
     private string _selectedBuilding = "全部";
     private int? _selectedFloor = null; // null 表示全部楼层
-    private int _statusFilterMode = 0;   // 0 全部, 1 全天无课, 2 余下无课/上午空闲, 3 当前空闲/下午空闲
+    private int _statusFilterMode = 0;   // 0 全部, 1 全天无课, 2 余下无课/上午空闲, 3 当前空闲/下午空闲, 4 当前占用
     private string _searchKeyword = string.Empty;
 
     // 控件引用
@@ -248,6 +248,7 @@ public sealed class EmptyClassroomWindow : Window
     private readonly ListView _roomsListView;
     private readonly TextBlock _emptyNoticeTextBlock;
     private readonly TextBlock _bottomStatusTextBlock;
+    private readonly TextBlock _diningEstimateTextBlock;
 
     // Loading 遮罩与反馈浮条
     private readonly Grid _loadingOverlay;
@@ -260,6 +261,7 @@ public sealed class EmptyClassroomWindow : Window
     private readonly DispatcherTimer _feedbackDismissTimer;
 
     private readonly DispatcherTimer _minuteTicker;
+    private int _lastLiveRefreshMinute = -1;
 
     private EmptyClassroomWindow()
     {
@@ -408,6 +410,7 @@ public sealed class EmptyClassroomWindow : Window
             _selectedBuilding = "全部";
             ReloadBuildingOptions();
             FilterAndRefreshList();
+            EnsureSelectedSnapshot();
         };
         leftGroup1.Children.Add(_campusCombo);
 
@@ -425,12 +428,14 @@ public sealed class EmptyClassroomWindow : Window
             _isViewingTomorrow = false;
             UpdateDateTabs();
             FilterAndRefreshList();
+            EnsureSelectedSnapshot();
         });
         _tomorrowTabBtn = CreateCapsuleButton($"明天 ({DateTime.Now.AddDays(1):MM-dd})", isSelected: false, () =>
         {
             _isViewingTomorrow = true;
             UpdateDateTabs();
             FilterAndRefreshList();
+            EnsureSelectedSnapshot();
         });
 
         dateStack.Children.Add(_todayTabBtn);
@@ -645,12 +650,23 @@ public sealed class EmptyClassroomWindow : Window
             Padding = new Thickness(16, 8, 16, 10),
             BorderThickness = new Thickness(0, 1, 0, 0)
         };
+        var bottomStatusStack = new StackPanel();
         _bottomStatusTextBlock = new TextBlock
         {
             Text = "就绪",
             FontSize = 11.5
         };
-        bottomBar.Child = _bottomStatusTextBlock;
+        _diningEstimateTextBlock = new TextBlock
+        {
+            Text = "食堂拥挤估算 · 正在分析全校放学拥挤度……",
+            FontSize = 10.5,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+            ToolTip = "根据全校午间和下午放学时段的课程下课班次数估算，并与当日其它 30 分钟下课峰值比较；不代表实际就餐人数或现场客流"
+        };
+        bottomStatusStack.Children.Add(_bottomStatusTextBlock);
+        bottomStatusStack.Children.Add(_diningEstimateTextBlock);
+        bottomBar.Child = bottomStatusStack;
         Grid.SetRow(bottomBar, 3);
         rootGrid.Children.Add(bottomBar);
 
@@ -678,7 +694,15 @@ public sealed class EmptyClassroomWindow : Window
             {
                 _lastSyncTextBlock.Text = EmptyClassroomService.Shared.FormattedLastSync();
                 UpdateSummaryCard();
-                _roomsListView.Items.Refresh();
+                int minute = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+                if (minute != _lastLiveRefreshMinute)
+                {
+                    FilterAndRefreshList();
+                }
+                else
+                {
+                    _roomsListView.Items.Refresh();
+                }
             }
         };
         _minuteTicker.Start();
@@ -715,13 +739,14 @@ public sealed class EmptyClassroomWindow : Window
         UpdateSummaryCard();
         FilterAndRefreshList();
 
-        // 若本地没有当前校区的教室数据，自动发起无感刷新
+        EnsureSelectedSnapshot();
+    }
+
+    private void EnsureSelectedSnapshot()
+    {
         string targetDate = _isViewingTomorrow ? EmptyClassroomService.TomorrowDateString() : EmptyClassroomService.TodayDateString();
-        var currentCampusRooms = EmptyClassroomService.Shared.CachedRooms.Where(r => r.CampusId == _selectedCampusId && r.DateString == targetDate).ToList();
-        if (currentCampusRooms.Count == 0)
-        {
+        if (!EmptyClassroomService.Shared.IsCampusSnapshotComplete(_selectedCampusId, targetDate))
             TriggerManualRefresh();
-        }
     }
 
     private void TriggerManualRefresh()
@@ -774,6 +799,7 @@ public sealed class EmptyClassroomWindow : Window
 
         _lastSyncTextBlock.Foreground = ThemeManager.Shared.TextSecondary;
         _bottomStatusTextBlock.Foreground = ThemeManager.Shared.TextSecondary;
+        _diningEstimateTextBlock.Foreground = ThemeManager.Shared.TextSecondary;
         _emptyNoticeTextBlock.Foreground = ThemeManager.Shared.TextSecondary;
 
         _roomsListView.Background = ThemeManager.Shared.TableBackground;
@@ -793,6 +819,7 @@ public sealed class EmptyClassroomWindow : Window
     {
         SetCapsuleSelected(_todayTabBtn, !_isViewingTomorrow);
         SetCapsuleSelected(_tomorrowTabBtn, _isViewingTomorrow);
+        if (_isViewingTomorrow && _statusFilterMode == 4) _statusFilterMode = 0;
         BuildStatusButtons(); // 日期切换时更新状态文案（如余下无课/上午空闲）
     }
 
@@ -915,13 +942,14 @@ public sealed class EmptyClassroomWindow : Window
         string label2 = _isViewingTomorrow ? "上午空闲" : "余下全空";
         string label3 = _isViewingTomorrow ? "下午空闲" : "当前空闲";
 
-        var options = new (int Mode, string Text)[]
+        var options = new List<(int Mode, string Text)>
         {
             (0, "全部"),
             (1, "全天无课"),
             (2, label2),
             (3, label3)
         };
+        if (!_isViewingTomorrow) options.Add((4, "当前占用"));
 
         foreach (var (mode, txt) in options)
         {
@@ -1004,6 +1032,7 @@ public sealed class EmptyClassroomWindow : Window
         string targetDate = _isViewingTomorrow
             ? EmptyClassroomService.TomorrowDateString()
             : EmptyClassroomService.TodayDateString();
+        bool isToday = targetDate == EmptyClassroomService.TodayDateString();
 
         var query = EmptyClassroomService.Shared.CachedRooms
             .Where(r => r.DateString == targetDate && r.CampusId == _selectedCampusId);
@@ -1021,29 +1050,7 @@ public sealed class EmptyClassroomWindow : Window
             query = query.Where(r => r.InferredFloor == _selectedFloor.Value);
         }
 
-        int nowMin = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-
-        // 状态过滤
-        if (_statusFilterMode == 1) // 全天无课
-        {
-            query = query.Where(r => r.IsAllDayFree);
-        }
-        else if (_statusFilterMode == 2) // 余下全空 / 上午空闲
-        {
-            if (_isViewingTomorrow)
-                query = query.Where(r => !r.IsOccupiedAtPeriod(1) && !r.IsOccupiedAtPeriod(2) && !r.IsOccupiedAtPeriod(3) && !r.IsOccupiedAtPeriod(4));
-            else
-                query = query.Where(r => r.IsAllDayFree || (r.NextOccupation(nowMin) == null && r.CurrentOccupation(nowMin) == null));
-        }
-        else if (_statusFilterMode == 3) // 当前空闲 / 下午空闲
-        {
-            if (_isViewingTomorrow)
-                query = query.Where(r => !r.IsOccupiedAtPeriod(5) && !r.IsOccupiedAtPeriod(6) && !r.IsOccupiedAtPeriod(7) && !r.IsOccupiedAtPeriod(8));
-            else
-                query = query.Where(r => r.CurrentOccupation(nowMin) == null);
-        }
-
-        // 关键字搜索
+        // 关键词也属于统计范围；状态筛选单独应用，避免选“当前占用”后把统计结果过滤成零。
         if (!string.IsNullOrWhiteSpace(_searchKeyword))
         {
             query = query.Where(r => r.RoomName.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
@@ -1051,7 +1058,38 @@ public sealed class EmptyClassroomWindow : Window
                                      r.BuildingName.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase));
         }
 
-        var results = query
+        var scopedRooms = query.ToList();
+
+        int nowMin = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        _lastLiveRefreshMinute = nowMin;
+        var lessonMetrics = CurrentLessonMetrics.Calculate(scopedRooms, nowMin);
+
+        // 状态过滤
+        IEnumerable<ClassroomOccupationItem> filteredQuery = scopedRooms;
+        if (_statusFilterMode == 1) // 全天无课
+        {
+            filteredQuery = filteredQuery.Where(r => r.IsAllDayFree);
+        }
+        else if (_statusFilterMode == 2) // 余下全空 / 上午空闲
+        {
+            if (_isViewingTomorrow)
+                filteredQuery = filteredQuery.Where(r => !r.IsOccupiedAtPeriod(1) && !r.IsOccupiedAtPeriod(2) && !r.IsOccupiedAtPeriod(3) && !r.IsOccupiedAtPeriod(4));
+            else
+                filteredQuery = filteredQuery.Where(r => r.IsAllDayFree || (r.NextOccupation(nowMin) == null && r.CurrentOccupation(nowMin) == null));
+        }
+        else if (_statusFilterMode == 3) // 当前空闲 / 下午空闲
+        {
+            if (_isViewingTomorrow)
+                filteredQuery = filteredQuery.Where(r => !r.IsOccupiedAtPeriod(5) && !r.IsOccupiedAtPeriod(6) && !r.IsOccupiedAtPeriod(7) && !r.IsOccupiedAtPeriod(8));
+            else
+                filteredQuery = filteredQuery.Where(r => r.CurrentOccupation(nowMin) == null);
+        }
+        else if (_statusFilterMode == 4 && isToday)
+        {
+            filteredQuery = filteredQuery.Where(r => r.CurrentOccupation(nowMin) != null);
+        }
+
+        var results = filteredQuery
             .OrderBy(r => r.CleanBuildingName)
             .ThenBy(r => r.InferredFloor)
             .ThenBy(r => r.RoomName)
@@ -1067,8 +1105,64 @@ public sealed class EmptyClassroomWindow : Window
             _roomsListView.Items.Add(itemControl);
         }
 
+        _emptyNoticeTextBlock.Text = _statusFilterMode == 4 && isToday
+            ? "当前查询范围没有正在占用的教室"
+            : "暂无匹配的空闲教室数据\n可尝试切换教学楼、放宽楼层限制或点击右上角「刷新排课」";
         _emptyNoticeTextBlock.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        _bottomStatusTextBlock.Text = $"共查询到 {results.Count} 间教室 · 筛选日期：{targetDate} · 双击或点击右侧设为自习室";
+
+        string currentLessonText = isToday
+            ? $"当前范围 {lessonMetrics.LessonSessionCount} 班次上课 / 涉及 {lessonMetrics.OccupiedRoomCount} 间教室"
+            : "当前上课统计仅适用于今天";
+        _bottomStatusTextBlock.Text = $"查询 {results.Count} 间 · {currentLessonText} · {EmptyClassroomService.Shared.FormattedLastSync()}";
+        _bottomStatusTextBlock.ToolTip = "班次数按当前校区、教学楼、楼层和搜索范围内的教务排课记录去重统计。双击教室或点击右侧按钮可设为自习室。";
+
+        var service = EmptyClassroomService.Shared;
+        var campusRooms = service.CachedRooms.Where(r => r.CampusId == _selectedCampusId && r.DateString == targetDate).ToList();
+        if (campusRooms.Count == 0)
+        {
+            _diningEstimateTextBlock.Text = "食堂拥挤估算 · 正在分析全校放学拥挤度……";
+            _diningEstimateTextBlock.ToolTip = "正在汇总全校各教学楼排课并测算下课放学峰值，请稍候……";
+        }
+        else
+        {
+            var estimate = CampusDiningEstimate.Calculate(_selectedCampusId, targetDate, campusRooms, service.IsCampusSnapshotComplete(_selectedCampusId, targetDate));
+            if (estimate.HallEstimates != null && estimate.HallEstimates.Count > 0)
+            {
+                var hallsText = string.Join("  ｜  ", estimate.HallEstimates.Select(h => $"{h.ShortName}：午间 {h.Lunch.CrowdLabel}  晚间 {h.Dinner.CrowdLabel}"));
+                _diningEstimateTextBlock.Text = $"食堂拥挤估算 · {_campusCombo.SelectedItem}  ｜  {hallsText}";
+
+                var tipLines = new List<string>
+                {
+                    $"食堂拥挤估算（按片区细分 · {_campusCombo.SelectedItem} {targetDate}）："
+                };
+                foreach (var hall in estimate.HallEstimates)
+                {
+                    tipLines.Add($"• {hall.HallName}：{hall.AreaDescription}");
+                    var lCount = estimate.IsComplete ? $"{hall.Lunch.LessonReleaseCount} 班" : $"至少 {hall.Lunch.LessonReleaseCount} 班";
+                    var dCount = estimate.IsComplete ? $"{hall.Dinner.LessonReleaseCount} 班" : $"至少 {hall.Dinner.LessonReleaseCount} 班";
+                    tipLines.Add($"  - 午间放学 (11:30–12:30)：下课 {lCount} · 30分钟峰值 {hall.Lunch.PeakThirtyMinuteCount} 班 · {hall.Lunch.CrowdLabel}");
+                    tipLines.Add($"  - 下午放学 (17:00–18:30)：下课 {dCount} · 30分钟峰值 {hall.Dinner.PeakThirtyMinuteCount} 班 · {hall.Dinner.CrowdLabel}");
+                }
+                if (_selectedCampusId == 6)
+                {
+                    tipLines.Add("💡 敬亭学堂与新安学堂两楼相邻，可结合两楼放学班次错峰就餐。");
+                }
+                tipLines.Add("以各区域历史最高峰下课班次数为 100% 量化测算拥挤百分比；不代表实际就餐人数或现场客流。" + (estimate.IsComplete ? "" : "（全校教室数据尚未完整）"));
+                _diningEstimateTextBlock.ToolTip = string.Join(Environment.NewLine, tipLines);
+            }
+            else
+            {
+                string MealText(string title, MealRushForecast forecast)
+                {
+                    var count = estimate.IsComplete ? $"{forecast.LessonReleaseCount} 班" : $"已统计 {forecast.LessonReleaseCount} 班";
+                    return $"{title}：{count}下课 · 30 分钟峰值 {forecast.PeakThirtyMinuteCount} 班 · {forecast.CrowdLabel}";
+                }
+                _diningEstimateTextBlock.Text = $"食堂拥挤估算 · {_campusCombo.SelectedItem} {targetDate}  ｜  {MealText("午间放学 11:30–12:30", estimate.Lunch)}  ｜  {MealText("下午放学 17:00–18:30", estimate.Dinner)}";
+                _diningEstimateTextBlock.ToolTip = estimate.IsComplete
+                    ? "以学期最高峰课程下课班次数为 100% 量化测算拥挤百分比；不代表实际就餐人数或现场客流。"
+                    : "当前校区全量教室排课尚未完整，显示的班次数为已获取部分，拥挤度暂不显示。";
+            }
+        }
     }
 
     private Border CreateClassroomRowControl(ClassroomOccupationItem room, bool isCurrentStudy, bool isToday, int nowMin)

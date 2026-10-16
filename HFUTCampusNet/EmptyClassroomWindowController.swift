@@ -376,9 +376,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     private var selectedBuildingId: Int? = nil
     /// nil 表示全部楼层，1...5 表示指定楼层
     private var selectedFloor: Int? = nil
-    /// 0 全部，1 全天无课，2 余下无课，3 当前空闲
+    /// 0 全部，1 全天无课，2 余下无课，3 当前空闲，4 当前占用
     private var statusFilterMode: Int = 0
     private var searchKeyword: String = ""
+    private var currentDiningEstimate: CampusDiningEstimate?
+    private var lastDiningRequestKey: String?
+    private var isDiningEstimateLoading: Bool = false
+    private var diningEstimateLoadError: String? = nil
 
     private var currentRooms: [EmptyClassroomItem] = []
     private var filteredRooms: [EmptyClassroomItem] = []
@@ -412,6 +416,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
     private var tableView: NSTableView!
     private var emptyStateLabel: NSTextField!
     private var bottomStatusLabel: NSTextField!
+    private var diningEstimateLabel: NSTextField!
     private var refreshTimer: Timer?
 
     // 刷新置灰遮罩与完成提示条
@@ -479,6 +484,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             selectedDateString = tomorrowStr
         }
         syncDatePickerAndSegmentWithSelectedDate()
+        loadDiningEstimate(forceRefresh: false)
     }
 
     private func syncDatePickerAndSegmentWithSelectedDate() {
@@ -503,6 +509,13 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             customDateButton?.contentTintColor = .controlAccentColor
             statusFilterSegment?.setLabel("上午空闲", forSegment: 2)
             statusFilterSegment?.setLabel("下午空闲", forSegment: 3)
+        }
+        statusFilterSegment?.setLabel("当前占用", forSegment: 4)
+        statusFilterSegment?.setEnabled(isToday, forSegment: 4)
+        statusFilterSegment?.toolTip = "筛选当前正在占用的教室（包含上课、开会、借用等）；只在今天可用"
+        if !isToday, statusFilterMode == 4 {
+            statusFilterMode = 0
+            statusFilterSegment?.selectedSegment = 0
         }
     }
 
@@ -549,7 +562,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         root.addSubview(topSep)
 
         // 3. 原生虚拟化 NSTableView 列表区（仅渲染屏幕可见行，切换选项零延迟）
-        listScrollView = NSScrollView(frame: NSRect(x: 16, y: 184, width: 948, height: 462))
+        listScrollView = NSScrollView(frame: NSRect(x: 16, y: 184, width: 948, height: 430))
         listScrollView.autoresizingMask = [.width, .height]
         listScrollView.hasVerticalScroller = true
         listScrollView.drawsBackground = false
@@ -600,12 +613,12 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         summaryMaskView.isHidden = true
         root.addSubview(summaryMaskView)
 
-        listLoadingMaskView = BlockingMaskView(frame: NSRect(x: 16, y: 184, width: 948, height: 462))
+        listLoadingMaskView = BlockingMaskView(frame: NSRect(x: 16, y: 184, width: 948, height: 442))
         listLoadingMaskView.autoresizingMask = [.width, .height]
         listLoadingMaskView.maskAlpha = 0.62
         listLoadingMaskView.isHidden = true
 
-        let loadingBox = ThemedCardView(frame: NSRect(x: (948 - 410) / 2, y: (462 - 80) / 2, width: 410, height: 80))
+        let loadingBox = ThemedCardView(frame: NSRect(x: (948 - 410) / 2, y: (442 - 80) / 2, width: 410, height: 80))
         loadingBox.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         loadingBox.fillColor = .windowBackgroundColor
         loadingBox.strokeColor = NSColor.labelColor.withAlphaComponent(0.16)
@@ -654,20 +667,29 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         root.addSubview(feedbackBannerView)
 
         // 4. 底部状态栏
-        let bottomSep = NSBox(frame: NSRect(x: 16, y: 650, width: 948, height: 1))
+        let bottomSep = NSBox(frame: NSRect(x: 16, y: 620, width: 948, height: 1))
         bottomSep.boxType = .separator
         bottomSep.autoresizingMask = [.width, .minYMargin]
         root.addSubview(bottomSep)
 
         bottomStatusLabel = NSTextField(labelWithString: "正在加载空教室数据...")
-        bottomStatusLabel.frame = NSRect(x: 18, y: 656, width: 696, height: 16)
+        bottomStatusLabel.frame = NSRect(x: 18, y: 627, width: 686, height: 18)
         bottomStatusLabel.autoresizingMask = [.width, .minYMargin]
         bottomStatusLabel.font = NSFont.systemFont(ofSize: 11)
         bottomStatusLabel.textColor = .secondaryLabelColor
         bottomStatusLabel.lineBreakMode = .byTruncatingTail
         root.addSubview(bottomStatusLabel)
 
-        let legendView = FlippedTimelineView(frame: NSRect(x: 720, y: 656, width: 244, height: 16))
+        diningEstimateLabel = NSTextField(labelWithString: "食堂拥挤估算 · 正在分析全校放学拥挤度……")
+        diningEstimateLabel.frame = NSRect(x: 18, y: 651, width: 944, height: 18)
+        diningEstimateLabel.autoresizingMask = [.width, .minYMargin]
+        diningEstimateLabel.font = NSFont.systemFont(ofSize: 11)
+        diningEstimateLabel.textColor = .secondaryLabelColor
+        diningEstimateLabel.lineBreakMode = .byTruncatingTail
+        diningEstimateLabel.toolTip = "正在汇总全校各教学楼排课并测算下课放学峰值，请稍候……"
+        root.addSubview(diningEstimateLabel)
+
+        let legendView = FlippedTimelineView(frame: NSRect(x: 712, y: 627, width: 252, height: 18))
         legendView.autoresizingMask = [.minXMargin, .minYMargin]
         let legends: [(String, NSColor)] = [
             ("上课", NSColor.systemBlue.withAlphaComponent(0.75)),
@@ -676,18 +698,18 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         ]
         var lx: CGFloat = 0
         for (name, color) in legends {
-            let dot = ColorDotView(frame: NSRect(x: lx, y: 3, width: 8, height: 8))
+            let dot = ColorDotView(frame: NSRect(x: lx, y: 5, width: 8, height: 8))
             dot.cornerRadius = 2
             dot.dotColor = color
             legendView.addSubview(dot)
 
             let lbl = NSTextField(labelWithString: name)
-            lbl.frame = NSRect(x: lx + 12, y: 0, width: 64, height: 14)
+            lbl.frame = NSRect(x: lx + 12, y: 2, width: 64, height: 14)
             lbl.font = NSFont.systemFont(ofSize: 11)
             lbl.textColor = .secondaryLabelColor
             lbl.sizeToFit()
             legendView.addSubview(lbl)
-            lx += lbl.frame.width + 24
+            lx += lbl.frame.width + 20
         }
         root.addSubview(legendView)
     }
@@ -723,16 +745,17 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         filterBarView.addSubview(customDateButton)
 
         statusFilterSegment = NSSegmentedControl(
-            labels: ["全部", "全天无课", "余下无课", "当前空闲"],
+            labels: ["全部", "全天无课", "余下无课", "当前空闲", "当前占用"],
             trackingMode: .selectOne,
             target: self,
             action: #selector(statusFilterChanged(_:))
         )
-        statusFilterSegment.frame = NSRect(x: 376, y: 3, width: 244, height: 24)
+        statusFilterSegment.frame = NSRect(x: 376, y: 3, width: 288, height: 24)
+        statusFilterSegment.font = NSFont.systemFont(ofSize: 10.5)
         statusFilterSegment.selectedSegment = 0
         filterBarView.addSubview(statusFilterSegment)
 
-        searchField = NSSearchField(frame: NSRect(x: 628, y: 3, width: 142, height: 24))
+        searchField = NSSearchField(frame: NSRect(x: 668, y: 3, width: 116, height: 24))
         searchField.autoresizingMask = [.minXMargin]
         searchField.placeholderString = "搜索教室号 (如 101)"
         searchField.delegate = self
@@ -741,7 +764,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         filterBarView.addSubview(searchField)
 
         lastSyncLabel = NSTextField(labelWithString: "上次刷新：暂未同步")
-        lastSyncLabel.frame = NSRect(x: 774, y: 7, width: 96, height: 16)
+        lastSyncLabel.frame = NSRect(x: 788, y: 7, width: 70, height: 16)
         lastSyncLabel.autoresizingMask = [.minXMargin]
         lastSyncLabel.alignment = .right
         lastSyncLabel.font = NSFont.systemFont(ofSize: 11)
@@ -751,7 +774,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         syncButton = NSButton(title: "刷新", target: self, action: #selector(forceRefreshClicked))
         syncButton.bezelStyle = .rounded
-        syncButton.frame = NSRect(x: 874, y: 1, width: 74, height: 28)
+        syncButton.frame = NSRect(x: 862, y: 1, width: 86, height: 28)
         syncButton.autoresizingMask = [.minXMargin]
         filterBarView.addSubview(syncButton)
 
@@ -819,9 +842,14 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     private func updateLastSyncTimeDisplay() {
         let service = EmptyClassroomService.shared
-        let shortText = service.formattedShortLastSync(for: selectedCampus)
         let fullText = service.formattedFullLastSync(for: selectedCampus)
-        lastSyncLabel?.stringValue = shortText
+        if let date = service.lastSyncDate(for: selectedCampus) {
+            let formatter = DateFormatter()
+            formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM-dd HH:mm"
+            lastSyncLabel?.stringValue = "更新 \(formatter.string(from: date))"
+        } else {
+            lastSyncLabel?.stringValue = "未同步"
+        }
         lastSyncLabel?.toolTip = "\(selectedCampus.displayName) · \(fullText)"
         if #available(macOS 11.0, *) {
             window?.subtitle = "\(selectedCampus.displayName) · \(selectedDateString) · \(fullText)"
@@ -973,6 +1001,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
     private func reloadCurrentCampusAndDate(forceRefresh: Bool, isManual: Bool = false) {
         let service = EmptyClassroomService.shared
+        loadDiningEstimate(forceRefresh: forceRefresh)
         let todayStr = EmptyClassroomService.todayDateString()
         let tomorrowStr = EmptyClassroomService.tomorrowDateString()
         let isCustomDate = (selectedDateString != todayStr && selectedDateString != tomorrowStr)
@@ -1023,6 +1052,114 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                     )
                 }
             }
+        }
+    }
+
+    private func loadDiningEstimate(forceRefresh: Bool) {
+        let service = EmptyClassroomService.shared
+        let campus = selectedCampus
+        let dateString = selectedDateString
+        let requestKey = "\(campus.rawValue)|\(dateString)"
+        if let cached = service.campusDiningEstimateCache[requestKey] {
+            currentDiningEstimate = cached
+            isDiningEstimateLoading = false
+            diningEstimateLoadError = nil
+            updateDiningEstimateLabel()
+            guard forceRefresh else { return }
+        } else {
+            currentDiningEstimate = nil
+            isDiningEstimateLoading = true
+            diningEstimateLoadError = nil
+            updateDiningEstimateLabel()
+        }
+
+        guard forceRefresh || lastDiningRequestKey != requestKey else { return }
+        lastDiningRequestKey = requestKey
+        isDiningEstimateLoading = true
+
+        service.fetchCampusDiningEstimate(campus: campus, dateString: dateString, forceRefresh: forceRefresh) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.selectedCampus == campus, self.selectedDateString == dateString else { return }
+                self.isDiningEstimateLoading = false
+                switch result {
+                case .success(let estimate):
+                    self.currentDiningEstimate = estimate
+                    self.diningEstimateLoadError = nil
+                case .failure(let error):
+                    self.diningEstimateLoadError = error.localizedDescription
+                }
+                self.updateDiningEstimateLabel()
+            }
+        }
+    }
+
+    private func updateDiningEstimateLabel() {
+        let title = (selectedCampus == .xuancheng) ? "放学人流估算" : "食堂拥挤估算"
+        if isDiningEstimateLoading {
+            diningEstimateLabel?.stringValue = "\(title) · 正在分析全校放学拥挤度……"
+            diningEstimateLabel?.toolTip = "正在汇总全校各教学楼排课并测算下课放学峰值，请稍候……"
+            return
+        }
+
+        guard let estimate = currentDiningEstimate else {
+            if let err = diningEstimateLoadError, !err.isEmpty {
+                diningEstimateLabel?.stringValue = "\(title)：数据暂不可用，请点击右上角刷新后重试"
+                diningEstimateLabel?.toolTip = "全校排课拉取失败：\(err)"
+            } else {
+                diningEstimateLabel?.stringValue = "\(title) · 正在分析全校放学拥挤度……"
+                diningEstimateLabel?.toolTip = "正在汇总全校各教学楼排课并测算下课放学峰值，请稍候……"
+            }
+            return
+        }
+
+        if !estimate.hallEstimates.isEmpty {
+            let hallsText = estimate.hallEstimates.map { hall in
+                let lunchLabel = hall.lunch.crowdLabel
+                let dinnerLabel = hall.dinner.crowdLabel
+                return "\(hall.shortName)：午间 \(lunchLabel)  晚间 \(dinnerLabel)"
+            }.joined(separator: "  ｜  ")
+
+            let prefixTitle = (estimate.campus == .xuancheng) ? "放学人流估算" : "食堂拥挤估算"
+            diningEstimateLabel.stringValue = "\(prefixTitle) · \(estimate.campus.displayName)  ｜  \(hallsText)"
+
+            var tipLines: [String] = []
+            let headerTitle = (estimate.campus == .xuancheng)
+                ? "放学人流估算（按教学楼细分 · 宣城校区 \(estimate.dateString)）："
+                : "食堂拥挤估算（按片区细分 · \(estimate.campus.displayName) \(estimate.dateString)）："
+            tipLines.append(headerTitle)
+            for hall in estimate.hallEstimates {
+                tipLines.append("• \(hall.hallName)：\(hall.areaDescription)")
+                let lCount = estimate.isComplete ? "\(hall.lunch.lessonReleaseCount) 班" : "至少 \(hall.lunch.lessonReleaseCount) 班"
+                let dCount = estimate.isComplete ? "\(hall.dinner.lessonReleaseCount) 班" : "至少 \(hall.dinner.lessonReleaseCount) 班"
+                tipLines.append("  - 午间放学 (11:30–12:30)：下课 \(lCount) · 30分钟峰值 \(hall.lunch.peakThirtyMinuteCount) 班 · \(hall.lunch.crowdLabel)")
+                tipLines.append("  - 下午放学 (17:00–18:30)：下课 \(dCount) · 30分钟峰值 \(hall.dinner.peakThirtyMinuteCount) 班 · \(hall.dinner.crowdLabel)")
+            }
+
+            if let bid = selectedBuildingId,
+               let bldg = EmptyClassroomService.shared.allBuildings.first(where: { $0.id == bid }) {
+                let dummyItem = EmptyClassroomItem(id: 0, nameZh: bldg.nameZh, campusNameZh: estimate.campus.displayName)
+                let zones = CampusDiningEstimate.zoneDefinitions(for: estimate.campus)
+                if let matched = zones.first(where: { $0.matches(dummyItem) }) {
+                    if estimate.campus == .xuancheng {
+                        tipLines.append("💡 当前选中的【\(bldg.nameZh)】属于「\(matched.hallName)」。")
+                    } else {
+                        tipLines.append("💡 当前选中的【\(bldg.nameZh)】紧邻「\(matched.hallName)」。")
+                    }
+                }
+            }
+            if estimate.campus == .xuancheng {
+                tipLines.append("💡 敬亭学堂与新安学堂两楼相邻，可结合两楼放学班次错峰安排。")
+            }
+            tipLines.append("以各区域历史最高峰下课班次数为 100% 量化测算拥挤百分比；不代表实际现场客流。\(estimate.isComplete ? "" : "（全校教室数据尚未完整）")")
+            diningEstimateLabel.toolTip = tipLines.joined(separator: "\n")
+        } else {
+            func mealText(_ title: String, forecast: MealRushForecast) -> String {
+                let countText = estimate.isComplete ? "\(forecast.lessonReleaseCount) 班" : "至少 \(forecast.lessonReleaseCount) 班"
+                let level = forecast.crowdLabel
+                return "\(title)：\(countText)下课 · 30 分钟峰值 \(forecast.peakThirtyMinuteCount) 班 · \(level)"
+            }
+            diningEstimateLabel.stringValue = "食堂拥挤估算 · \(estimate.campus.displayName) \(estimate.dateString)  ｜  \(mealText("午间放学 11:30–12:30", forecast: estimate.lunch))  ｜  \(mealText("下午放学 17:00–18:30", forecast: estimate.dinner))"
+            diningEstimateLabel.toolTip = "以学期最高峰课程下课班次数为 100% 量化测算拥挤百分比；不代表实际就餐人数或现场客流。\(estimate.isComplete ? "" : "全校教室数据尚未完整，拥挤度暂不显示。")"
         }
     }
 
@@ -1482,7 +1619,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let currentStudyId = SettingsManager.shared.currentStudyRoom?.roomId
         let kw = searchKeyword.lowercased()
 
-        var filtered = currentRooms.filter { room in
+        let scopedRooms = currentRooms.filter { room in
             if let floor = selectedFloor, room.inferredFloor != floor {
                 return false
             }
@@ -1491,6 +1628,11 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                     return false
                 }
             }
+            return true
+        }
+        let currentLessonMetrics = CurrentLessonMetrics.calculate(in: scopedRooms, atMinutes: nowMin)
+
+        var filtered = scopedRooms.filter { room in
             switch statusFilterMode {
             case 1:
                 return room.isAllDayFree
@@ -1500,6 +1642,8 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             case 3:
                 // 今日：当前空闲；非今日（明天/指定日期）：下午空闲 (14:00-18:00)
                 return isToday ? (room.currentOccupation(atMinutes: nowMin) == nil) : room.isFree(from: 14 * 60, to: 18 * 60)
+            case 4:
+                return isToday && room.currentOccupation(atMinutes: nowMin) != nil
             default:
                 return true
             }
@@ -1535,32 +1679,39 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         tableView.reloadData()
 
         if filtered.isEmpty {
-            let msg = EmptyClassroomService.shared.isSyncing
+            let msg = statusFilterMode == 4 && isToday
+                ? "当前查询范围没有正在占用的教室"
+                : (EmptyClassroomService.shared.isSyncing
                 ? "正在同步教室占用数据..."
-                : (EmptyClassroomService.shared.lastErrorMessage ?? "没有符合当前筛选条件的教室")
+                : (EmptyClassroomService.shared.lastErrorMessage ?? "没有符合当前筛选条件的教室"))
             emptyStateLabel.stringValue = msg
             emptyStateLabel.isHidden = false
         } else {
             emptyStateLabel.isHidden = true
         }
 
-        let allDayCount = filtered.filter { $0.isAllDayFree }.count
         let syncInfo = EmptyClassroomService.shared.formattedFullLastSync(for: selectedCampus)
         updateLastSyncTimeDisplay()
         let isEntireBuildingEmptyOnCustomDate = !isToday
             && !EmptyClassroomService.shared.isSyncing
             && !currentRooms.isEmpty
             && currentRooms.allSatisfy { $0.sortedOccupations.isEmpty }
-        if isEntireBuildingEmptyOnCustomDate {
-            bottomStatusLabel.stringValue = "⚠️ \(selectedDateString) 全楼均无排课记录（处于假期或尚未排课，注：教务当前查不到下学期的课）  ｜  \(syncInfo)"
-        } else if isToday {
+        let allDayCount = filtered.filter { $0.isAllDayFree }.count
+        let currentCountText = isToday
+            ? "当前范围 \(currentLessonMetrics.lessonSessionCount) 班次 / \(currentLessonMetrics.occupiedRoomCount) 间教室"
+            : "当前上课统计仅适用于今天"
+        let warningPrefix = isEntireBuildingEmptyOnCustomDate ? "⚠️ 全楼无排课记录 · " : ""
+        let shortSync = EmptyClassroomService.shared.formattedShortLastSync(for: selectedCampus).replacingOccurrences(of: "上次刷新 ", with: "")
+        if isToday {
             let restFreeCount = filtered.filter { $0.isRestOfDayFree(atMinutes: nowMin) }.count
-            bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  余下无课 \(restFreeCount) 间   ｜   \(syncInfo)"
+            bottomStatusLabel.stringValue = "\(warningPrefix)查询 \(filtered.count) 间 · 全天无课 \(allDayCount) · 余下无课 \(restFreeCount) · \(currentCountText) · 更新 \(shortSync)"
         } else {
             let morningFreeCount = filtered.filter { $0.isFree(from: 8 * 60, to: 12 * 60) }.count
             let afternoonFreeCount = filtered.filter { $0.isFree(from: 14 * 60, to: 18 * 60) }.count
-            bottomStatusLabel.stringValue = "共 \(filtered.count) 间教室  ·  全天无课 \(allDayCount) 间  ·  上午空 \(morningFreeCount) 间 / 下午空 \(afternoonFreeCount) 间   ｜   \(syncInfo)"
+            bottomStatusLabel.stringValue = "\(warningPrefix)查询 \(filtered.count) 间 · 全天无课 \(allDayCount) · 上午空 \(morningFreeCount) / 下午空 \(afternoonFreeCount) · \(currentCountText) · 更新 \(shortSync)"
         }
+        bottomStatusLabel.toolTip = "班次数按当前教室排课记录去重统计；当前上课统计仅适用于今天。\(syncInfo)"
+        updateDiningEstimateLabel()
     }
 
     // MARK: - 交互事件处理
@@ -1594,6 +1745,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             selectedDateString = EmptyClassroomService.todayDateString()
         }
         syncDatePickerAndSegmentWithSelectedDate()
+        loadDiningEstimate(forceRefresh: false)
         updateLastSyncTimeDisplay()
         applyCurrentRoomsFromCacheOrFetch(forceRefresh: false)
     }
@@ -1705,6 +1857,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         customDatePopover?.performClose(nil)
         selectedDateString = pickedStr
         syncDatePickerAndSegmentWithSelectedDate()
+        loadDiningEstimate(forceRefresh: false)
         updateLastSyncTimeDisplay()
         applyCurrentRoomsFromCacheOrFetch(forceRefresh: false)
     }

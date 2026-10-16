@@ -15,6 +15,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     private var roomSemesterScheduleCache: [String: CourseScheduleData] = [:]
     /// 按校区 + 日期汇总的主力教学楼空教室缓存：key 为 "\(campus.rawValue)|\(dateString)"
     public private(set) var studyRoomsByDate: [String: [EmptyClassroomItem]] = [:]
+    /// 校区级统计单独缓存，不混入主力自习楼列表缓存。
+    public private(set) var campusDiningEstimateCache: [String: CampusDiningEstimate] = [:]
 
     public static var availableSemesters: [(id: Int, name: String)] {
         let currentSemId = CourseCalendarHelper.inferSemesterId()
@@ -980,6 +982,118 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         }
     }
 
+    public func fetchCampusDiningEstimate(
+        campus: StudyCampus,
+        dateString: String,
+        forceRefresh: Bool = false,
+        completion: @escaping (Result<CampusDiningEstimate, Error>) -> Void
+    ) {
+        let cacheKey = "\(campus.rawValue)|\(dateString)"
+        if !forceRefresh, let cached = campusDiningEstimateCache[cacheKey] {
+            completion(.success(cached))
+            return
+        }
+
+        fetchBuildings(forceRefresh: forceRefresh) { [weak self] buildingResult in
+            guard let self else { return }
+            switch buildingResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let buildings):
+                let buildingIds = buildings.filter { $0.campusAssoc == campus.rawValue }.map(\.id).sorted()
+                guard !buildingIds.isEmpty else {
+                    completion(.failure(NSError(domain: "EmptyClassroom", code: -2, userInfo: [NSLocalizedDescriptionKey: "没有可用于统计的教学楼数据"])))
+                    return
+                }
+                self.fetchCampusDiningPages(
+                    campus: campus,
+                    dateString: dateString,
+                    buildingIds: buildingIds,
+                    cacheKey: cacheKey,
+                    page: 1,
+                    seenRoomIds: [],
+                    rooms: [],
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func fetchCampusDiningPages(
+        campus: StudyCampus,
+        dateString: String,
+        buildingIds: [Int],
+        cacheKey: String,
+        page: Int,
+        seenRoomIds: Set<Int>,
+        rooms: [EmptyClassroomItem],
+        completion: @escaping (Result<CampusDiningEstimate, Error>) -> Void
+    ) {
+        let cacheKeyForRequest = "\(cacheKey)|campus-dining"
+        ensureValidToken(forceRelogin: false) { [weak self] tokenResult in
+            guard let self else { return }
+            switch tokenResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let token):
+                self.requestRoomsWithToken(
+                    token: token,
+                    dateString: dateString,
+                    campus: campus,
+                    buildingIds: buildingIds,
+                    cacheKey: cacheKeyForRequest,
+                    allowRetry: true,
+                    currentPage: page,
+                    cacheResult: false
+                ) { pageResult in
+                    switch pageResult {
+                    case .failure:
+                        let estimate = CampusDiningEstimate.calculate(campus: campus, dateString: dateString, rooms: rooms, isComplete: false)
+                        completion(.success(estimate))
+                    case .success(let pageRooms):
+                        var accumulated = rooms
+                        var knownIds = seenRoomIds
+                        let freshRooms = pageRooms.filter { knownIds.insert($0.id).inserted }
+                        accumulated.append(contentsOf: freshRooms)
+
+                        guard pageRooms.count == 350 else {
+                            let sortedRooms = accumulated.sorted { a, b in
+                                if a.buildingPrefix != b.buildingPrefix {
+                                    return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
+                                }
+                                if a.inferredFloor != b.inferredFloor {
+                                    return a.inferredFloor < b.inferredFloor
+                                }
+                                return a.inferredRoomNumber < b.inferredRoomNumber
+                            }
+                            let estimate = CampusDiningEstimate.calculate(campus: campus, dateString: dateString, rooms: sortedRooms, isComplete: true)
+                            self.campusDiningEstimateCache[cacheKey] = estimate
+                            completion(.success(estimate))
+                            return
+                        }
+
+                        guard !freshRooms.isEmpty, page < 50 else {
+                            let estimate = CampusDiningEstimate.calculate(campus: campus, dateString: dateString, rooms: accumulated, isComplete: false)
+                            completion(.success(estimate))
+                            return
+                        }
+
+                        self.fetchCampusDiningPages(
+                            campus: campus,
+                            dateString: dateString,
+                            buildingIds: buildingIds,
+                            cacheKey: cacheKey,
+                            page: page + 1,
+                            seenRoomIds: knownIds,
+                            rooms: accumulated,
+                            completion: completion
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private func requestBuildingsWithToken(
         _ token: String,
         allowRetry: Bool,
@@ -1077,6 +1191,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         buildingIds: [Int],
         cacheKey: String,
         allowRetry: Bool,
+        currentPage: Int = 1,
+        cacheResult: Bool = true,
         completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
     ) {
         guard let url = URL(string: "\(Self.uniAppBaseURL)/eams-micro-server/api/v1/room/place/rooms") else {
@@ -1090,7 +1206,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
 
         var bodyDict: [String: Any] = [
-            "currentPage": 1,
+            "currentPage": currentPage,
             "date": dateString,
             "campusAssoc": campus.rawValue,
             "pageSize": 350
@@ -1130,15 +1246,17 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     }
                     return a.inferredRoomNumber < b.inferredRoomNumber
                 }
-                self.roomsCache[cacheKey] = sortedRooms
-                if !buildingIds.isEmpty {
-                    let grouped = Dictionary(grouping: sortedRooms, by: { $0.buildingId })
-                    for bid in buildingIds {
-                        self.roomsCache["\(campus.rawValue)|\(dateString)|\(bid)"] = grouped[bid] ?? []
+                if cacheResult {
+                    self.roomsCache[cacheKey] = sortedRooms
+                    if !buildingIds.isEmpty {
+                        let grouped = Dictionary(grouping: sortedRooms, by: { $0.buildingId })
+                        for bid in buildingIds {
+                            self.roomsCache["\(campus.rawValue)|\(dateString)|\(bid)"] = grouped[bid] ?? []
+                        }
                     }
-                }
-                DispatchQueue.main.async {
-                    self.recordCampusSyncTime(campus)
+                    DispatchQueue.main.async {
+                        self.recordCampusSyncTime(campus)
+                    }
                 }
                 completion(.success(sortedRooms))
                 return
@@ -1155,6 +1273,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                             buildingIds: buildingIds,
                             cacheKey: cacheKey,
                             allowRetry: false,
+                            currentPage: currentPage,
+                            cacheResult: cacheResult,
                             completion: completion
                         )
                     case .failure(let err):

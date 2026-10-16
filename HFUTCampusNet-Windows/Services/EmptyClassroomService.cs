@@ -27,6 +27,7 @@ public sealed class EmptyClassroomService
     private Timer? _timer;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
     private readonly SemaphoreSlim _syncLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, bool> _campusSnapshotCompleteness = new();
     private List<CampusBuildingOption> _buildingCatalog = new();
 
     public List<ClassroomOccupationItem> CachedRooms { get; private set; } = new();
@@ -40,6 +41,9 @@ public sealed class EmptyClassroomService
         if (diff.TotalHours < 1) return $"上次刷新 {LastSyncTime.Value:HH:mm} ({(int)diff.TotalMinutes}分钟前)";
         return $"上次刷新 {LastSyncTime.Value:HH:mm}";
     }
+
+    public bool IsCampusSnapshotComplete(int campusId, string dateString) =>
+        _campusSnapshotCompleteness.TryGetValue($"{campusId}|{dateString}", out var isComplete) && isComplete;
 
     public static List<CampusBuildingOption> AllBuildings =>
         Shared._buildingCatalog.Count > 0 ? Shared._buildingCatalog : DefaultBuildings;
@@ -661,8 +665,8 @@ public sealed class EmptyClassroomService
 
                     await Task.WhenAll(todayTask, tomorrowTask);
 
-                    allResults.AddRange(await todayTask);
-                    allResults.AddRange(await tomorrowTask);
+                    AddSnapshotOrKeepCache(campusId, today, await todayTask, allResults);
+                    AddSnapshotOrKeepCache(campusId, tomorrow, await tomorrowTask, allResults);
                 }
 
                 if (allResults.Count > 0)
@@ -674,7 +678,12 @@ public sealed class EmptyClassroomService
                     LastSyncTime = DateTime.Now;
                     SaveCache();
                     AppEvents.RaiseEmptyClassroomUpdated();
-                    callback?.Invoke(true, $"成功同步 {allResults.Count} 间教室！");
+                    var incompleteCount = campusesToSync.Sum(campusId =>
+                        (IsCampusSnapshotComplete(campusId, today) ? 0 : 1) +
+                        (IsCampusSnapshotComplete(campusId, tomorrow) ? 0 : 1));
+                    callback?.Invoke(true, incompleteCount == 0
+                        ? $"成功同步 {allResults.Count} 间教室！"
+                        : $"已更新 {allResults.Count} 间教室；部分分页数据未完整，食堂拥挤估算暂不可用");
                     return;
                 }
 
@@ -711,29 +720,58 @@ public sealed class EmptyClassroomService
         });
     }
 
-    public async Task<List<ClassroomOccupationItem>> FetchCampusRoomsAsync(int campusId, string dateStr, bool forceRefresh = false)
+    private void AddSnapshotOrKeepCache(int campusId, string dateString, List<ClassroomOccupationItem> fetched, List<ClassroomOccupationItem> destination)
     {
-        var token = await EnsureValidTokenAsync(forceRelogin: false);
-        if (string.IsNullOrEmpty(token))
+        if (IsCampusSnapshotComplete(campusId, dateString) || !CachedRooms.Any(room => room.CampusId == campusId && room.DateString == dateString))
         {
-            return new List<ClassroomOccupationItem>();
+            destination.AddRange(fetched);
+            return;
         }
 
-        var result = await RequestRoomsWithTokenAsync(token, campusId, dateStr);
-        if (result == null)
-        {
-            // 尝试强制刷新 Token 重试一次
-            var newToken = await EnsureValidTokenAsync(forceRelogin: true);
-            if (!string.IsNullOrEmpty(newToken))
-            {
-                result = await RequestRoomsWithTokenAsync(newToken, campusId, dateStr);
-            }
-        }
-
-        return result ?? new List<ClassroomOccupationItem>();
+        destination.AddRange(CachedRooms.Where(room => room.CampusId == campusId && room.DateString == dateString));
     }
 
-    private async Task<List<ClassroomOccupationItem>?> RequestRoomsWithTokenAsync(string token, int campusId, string dateStr)
+    public async Task<List<ClassroomOccupationItem>> FetchCampusRoomsAsync(int campusId, string dateStr, bool forceRefresh = false)
+    {
+        const int pageSize = 350;
+        const int maxPages = 50;
+        var cacheKey = $"{campusId}|{dateStr}";
+        _campusSnapshotCompleteness[cacheKey] = false;
+        var rooms = new List<ClassroomOccupationItem>();
+        var seenRoomIds = new HashSet<int>();
+        var isComplete = false;
+
+        for (var page = 1; page <= maxPages; page++)
+        {
+            var token = await EnsureValidTokenAsync(forceRelogin: false);
+            var pageRooms = string.IsNullOrEmpty(token) ? null : await RequestRoomsWithTokenAsync(token, campusId, dateStr, page);
+            if (pageRooms == null)
+            {
+                var newToken = await EnsureValidTokenAsync(forceRelogin: true);
+                if (!string.IsNullOrEmpty(newToken))
+                    pageRooms = await RequestRoomsWithTokenAsync(newToken, campusId, dateStr, page);
+            }
+
+            if (pageRooms == null) break;
+            var freshRooms = pageRooms.Where(room => seenRoomIds.Add(room.RoomId)).ToList();
+            rooms.AddRange(freshRooms);
+
+            if (pageRooms.Count < pageSize)
+            {
+                isComplete = true;
+                break;
+            }
+            if (freshRooms.Count == 0 || page == maxPages) break;
+        }
+
+        _campusSnapshotCompleteness[cacheKey] = isComplete;
+        return rooms.OrderBy(room => room.CleanBuildingName)
+            .ThenBy(room => room.InferredFloor)
+            .ThenBy(room => room.RoomName)
+            .ToList();
+    }
+
+    private async Task<List<ClassroomOccupationItem>?> RequestRoomsWithTokenAsync(string token, int campusId, string dateStr, int currentPage)
     {
         try
         {
@@ -743,7 +781,7 @@ public sealed class EmptyClassroomService
 
             var bodyObj = new
             {
-                currentPage = 1,
+                currentPage,
                 date = dateStr,
                 campusAssoc = campusId,
                 pageSize = 350
@@ -796,6 +834,9 @@ public sealed class EmptyClassroomService
                         var actType = occ.TryGetProperty("activityType", out var atProp) ? atProp.GetString() ?? "" : "";
                         var actName = occ.TryGetProperty("activityName", out var anProp) ? anProp.GetString() ?? "" : "";
                         var teacher = occ.TryGetProperty("teacherName", out var tnProp) ? tnProp.GetString() ?? "" : "";
+                        int? activityId = occ.TryGetProperty("activityId", out var activityIdProp) && activityIdProp.ValueKind == JsonValueKind.Number
+                            ? activityIdProp.GetInt32()
+                            : null;
 
                         var causeTitle = actType switch
                         {
@@ -812,6 +853,9 @@ public sealed class EmptyClassroomService
                                 CourseName = CleanActivityName(actName, causeTitle),
                                 Teacher = teacher,
                                 CauseTitle = causeTitle,
+                                ActivityId = activityId,
+                                ActivityType = actType,
+                                ActivityName = actName,
                                 StartTimeString = startStr,
                                 EndTimeString = endStr,
                                 TimeString = $"{startStr}~{endStr}",

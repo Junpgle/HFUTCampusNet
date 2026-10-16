@@ -1269,7 +1269,230 @@ public sealed class RoomOccupationSlot
     public string CauseTitle { get; set; } = "课程占用";
     public string StartTimeString { get; set; } = "08:00";
     public string EndTimeString { get; set; } = "09:40";
+    public int? ActivityId { get; set; }
+    public string ActivityType { get; set; } = string.Empty;
+    public string ActivityName { get; set; } = string.Empty;
+    public bool IsLesson => ActivityType == "Lesson" || (string.IsNullOrEmpty(ActivityType) && CauseTitle == "课程占用");
     public string ShortCourseName => string.IsNullOrEmpty(CourseName) ? CauseTitle : CourseName;
+}
+
+public sealed record CurrentLessonMetrics(int LessonSessionCount, int OccupiedRoomCount)
+{
+    public static CurrentLessonMetrics Calculate(IEnumerable<ClassroomOccupationItem> rooms, int currentMinute)
+    {
+        var sessions = new HashSet<string>();
+        var occupiedRoomIds = new HashSet<int>();
+        foreach (var room in rooms)
+        {
+            var currentLessons = room.Occupations.Where(o => o.IsLesson && IsOngoing(o, currentMinute)).ToList();
+            if (currentLessons.Count == 0) continue;
+            occupiedRoomIds.Add(room.RoomId);
+            foreach (var lesson in currentLessons) sessions.Add(SessionKey(room, lesson));
+        }
+        return new CurrentLessonMetrics(sessions.Count, occupiedRoomIds.Count);
+    }
+
+    internal static string SessionKey(ClassroomOccupationItem room, RoomOccupationSlot lesson)
+    {
+        if (lesson.ActivityId.HasValue)
+            return $"{lesson.ActivityId.Value}|{room.DateString}|{Minute(lesson.StartTimeString)}|{Minute(lesson.EndTimeString)}";
+        return $"{room.RoomId}|{room.DateString}|{Minute(lesson.StartTimeString)}|{Minute(lesson.EndTimeString)}|{lesson.ActivityName}|{lesson.Teacher}";
+    }
+
+    internal static bool IsOngoing(RoomOccupationSlot occupation, int minute)
+    {
+        var start = Minute(occupation.StartTimeString, 8 * 60);
+        var end = Minute(occupation.EndTimeString, 21 * 60);
+        return minute >= start && minute < end;
+    }
+
+    internal static int Minute(string value, int fallback = 0)
+    {
+        var parts = value.Split(':');
+        return parts.Length >= 2 && int.TryParse(parts[0], out var hour) && int.TryParse(parts[1], out var minute)
+            ? hour * 60 + minute
+            : fallback;
+    }
+}
+
+public enum DiningCrowdLevel { Low, Moderate, High }
+
+public sealed record MealRushForecast(int LessonReleaseCount, int PeakThirtyMinuteCount, DiningCrowdLevel? CrowdLevel, int? CrowdPercentage = null)
+{
+    public string CrowdLabel
+    {
+        get
+        {
+            if (!CrowdPercentage.HasValue)
+            {
+                return CrowdLevel switch
+                {
+                    DiningCrowdLevel.Low => "空闲",
+                    DiningCrowdLevel.Moderate => "适中",
+                    DiningCrowdLevel.High => "挤",
+                    _ => "资料不足"
+                };
+            }
+            int pct = CrowdPercentage.Value;
+            string desc = pct >= 90 ? "极挤" : pct >= 75 ? "挤" : pct >= 40 ? "适中" : "空闲";
+            return $"{pct}%（{desc}）";
+        }
+    }
+}
+
+public sealed record DiningHallEstimate(
+    string HallName,
+    string ShortName,
+    string AreaDescription,
+    MealRushForecast Lunch,
+    MealRushForecast Dinner
+);
+
+public sealed record CampusDiningEstimate(
+    int CampusId,
+    string DateString,
+    bool IsComplete,
+    MealRushForecast Lunch,
+    MealRushForecast Dinner,
+    IReadOnlyList<DiningHallEstimate>? HallEstimates = null
+)
+{
+    private static readonly Dictionary<string, int> _observedPeaks = new();
+
+    public record CampusZoneDefinition(
+        string Id,
+        string HallName,
+        string ShortName,
+        string AreaDescription,
+        int BaselinePeak,
+        Func<ClassroomOccupationItem, bool> Matches
+    );
+
+    public static IReadOnlyList<CampusZoneDefinition> ZoneDefinitions(int campusId)
+    {
+        return campusId switch
+        {
+            3 => new List<CampusZoneDefinition> // 翡翠湖校区
+            {
+                new("feicuihu_north", "风华食堂 (北区)", "风华食堂(北)", "翠一～四教、3#/4#实验楼等北侧教学楼", 65,
+                    room => new[] { "翠一", "翠二", "翠三", "翠四", "3#", "4#", "4＃", "地质" }.Any(k => (room.BuildingPrefix ?? room.NameZh).Contains(k))),
+                new("feicuihu_south", "风雅食堂 (南区)", "风雅食堂(南)", "翠五～十二教、科教楼、建艺馆等南侧教学楼", 80,
+                    room => !new[] { "翠一", "翠二", "翠三", "翠四", "3#", "4#", "4＃", "地质" }.Any(k => (room.BuildingPrefix ?? room.NameZh).Contains(k)))
+            },
+            2 => new List<CampusZoneDefinition> // 屯溪路校区
+            {
+                new("tunxilu_east", "德胜食堂 (东区)", "德胜食堂(东)", "东楼、逸夫楼、电机楼、纬地楼、材料/理化楼等", 38,
+                    room => new[] { "东", "逸夫", "电机", "纬地", "材料", "理化", "升华", "化工", "分析", "三立苑" }.Any(k => (room.BuildingPrefix ?? room.NameZh).Contains(k))),
+                new("tunxilu_west", "馨园食堂 (西区)", "馨园食堂(西)", "主楼、西楼、西二、电教楼、管院楼、格物楼等", 52,
+                    room => !new[] { "东", "逸夫", "电机", "纬地", "材料", "理化", "升华", "化工", "分析", "三立苑" }.Any(k => (room.BuildingPrefix ?? room.NameZh).Contains(k)))
+            },
+            6 => new List<CampusZoneDefinition> // 宣城校区
+            {
+                new("xuancheng_jingting", "敬亭学堂", "敬亭学堂", "敬亭学堂各教室内所有课程下课放学人流", 46,
+                    room => (room.BuildingPrefix ?? room.NameZh).Contains("敬亭")),
+                new("xuancheng_xinan", "新安学堂", "新安学堂", "新安学堂各教室内所有课程下课放学人流", 38,
+                    room => !(room.BuildingPrefix ?? room.NameZh).Contains("敬亭"))
+            },
+            _ => Array.Empty<CampusZoneDefinition>()
+        };
+    }
+
+    public static int BaselineSemesterPeak(int campusId)
+    {
+        return campusId switch
+        {
+            6 => 82,   // 宣城校区
+            3 => 140,  // 翡翠湖校区
+            2 => 88,   // 屯溪路校区
+            _ => 100
+        };
+    }
+
+    public static int SemesterPeak(string key, int baseline)
+    {
+        return _observedPeaks.TryGetValue(key, out var observed) ? Math.Max(baseline, observed) : baseline;
+    }
+
+    public static void RecordObservedPeak(int peak, string key, int baseline)
+    {
+        var current = SemesterPeak(key, baseline);
+        if (peak > current)
+        {
+            _observedPeaks[key] = peak;
+        }
+    }
+
+    public static int SemesterPeak(int campusId) => SemesterPeak($"campus_{campusId}", BaselineSemesterPeak(campusId));
+    public static void RecordObservedPeak(int peak, int campusId) => RecordObservedPeak(peak, $"campus_{campusId}", BaselineSemesterPeak(campusId));
+
+    public static CampusDiningEstimate Calculate(int campusId, string dateString, IEnumerable<ClassroomOccupationItem> sourceRooms, bool isComplete)
+    {
+        var rooms = sourceRooms.ToList();
+
+        (MealRushForecast Lunch, MealRushForecast Dinner) CalculateForecast(IEnumerable<ClassroomOccupationItem> subset, string zoneKey, int baseline)
+        {
+            var lessons = subset.SelectMany(room => room.Occupations
+                    .Where(occupation => occupation.IsLesson)
+                    .Select(occupation => (Room: room, Occupation: occupation)))
+                .GroupBy(item => CurrentLessonMetrics.SessionKey(item.Room, item.Occupation))
+                .Select(group => group.First().Occupation)
+                .ToList();
+            var releases = lessons.Select(lesson => CurrentLessonMetrics.Minute(lesson.EndTimeString))
+                .Where(minute => minute > 0)
+                .ToList();
+
+            MealRushForecast Forecast(int start, int end)
+            {
+                var mealReleases = releases.Where(minute => minute >= start && minute < end).ToList();
+                var peak = PeakCount(mealReleases, start, end);
+                if (!isComplete)
+                {
+                    return new MealRushForecast(mealReleases.Count, peak, null, null);
+                }
+
+                RecordObservedPeak(peak, zoneKey, baseline);
+                var maxRush = SemesterPeak(zoneKey, baseline);
+                int pct = 0;
+                if (mealReleases.Count == 0 || peak == 0)
+                {
+                    pct = 0;
+                }
+                else if (maxRush > 0)
+                {
+                    pct = Math.Min(100, Math.Max(0, (int)Math.Round((double)peak / maxRush * 100.0)));
+                }
+
+                var level = pct >= 75 ? DiningCrowdLevel.High : pct >= 40 ? DiningCrowdLevel.Moderate : DiningCrowdLevel.Low;
+                return new MealRushForecast(mealReleases.Count, peak, level, pct);
+            }
+
+            return (Forecast(11 * 60 + 30, 12 * 60 + 30), Forecast(17 * 60, 18 * 60 + 30));
+        }
+
+        var total = CalculateForecast(rooms, $"campus_{campusId}", BaselineSemesterPeak(campusId));
+        var zones = ZoneDefinitions(campusId);
+        var hallEstimates = new List<DiningHallEstimate>();
+        foreach (var zone in zones)
+        {
+            var zoneRooms = rooms.Where(zone.Matches).ToList();
+            var zf = CalculateForecast(zoneRooms, zone.Id, zone.BaselinePeak);
+            hallEstimates.Add(new DiningHallEstimate(zone.HallName, zone.ShortName, zone.AreaDescription, zf.Lunch, zf.Dinner));
+        }
+
+        return new CampusDiningEstimate(campusId, dateString, isComplete, total.Lunch, total.Dinner, hallEstimates);
+    }
+
+    private static int PeakCount(IReadOnlyCollection<int> releases, int start, int end)
+    {
+        if (end - start < 30) return releases.Count;
+        var peak = 0;
+        for (var windowStart = start; windowStart <= end - 30; windowStart++)
+        {
+            var count = releases.Count(minute => minute >= windowStart && minute < windowStart + 30);
+            if (count > peak) peak = count;
+        }
+        return peak;
+    }
 }
 
 public sealed class StudyRoomStatusInfo
@@ -1399,7 +1622,7 @@ public sealed class ClassroomOccupationItem
         {
             var s = ParseMinute(o.StartTimeString, 8 * 60);
             var e = ParseMinute(o.EndTimeString, 21 * 60);
-            return currentMinute >= s && currentMinute <= e;
+            return currentMinute >= s && currentMinute < e;
         });
     }
 
@@ -1511,15 +1734,15 @@ public static class PeriodScheduleHelper
     {
         new PeriodTimeSlot { PeriodIndex = 1, StartTime = "08:00", EndTime = "08:45" },
         new PeriodTimeSlot { PeriodIndex = 2, StartTime = "08:55", EndTime = "09:40" },
-        new PeriodTimeSlot { PeriodIndex = 3, StartTime = "10:10", EndTime = "10:55" },
-        new PeriodTimeSlot { PeriodIndex = 4, StartTime = "11:05", EndTime = "11:50" },
+        new PeriodTimeSlot { PeriodIndex = 3, StartTime = "10:00", EndTime = "10:45" },
+        new PeriodTimeSlot { PeriodIndex = 4, StartTime = "10：55", EndTime = "11:40" },
         new PeriodTimeSlot { PeriodIndex = 5, StartTime = "14:00", EndTime = "14:45" },
         new PeriodTimeSlot { PeriodIndex = 6, StartTime = "14:55", EndTime = "15:40" },
-        new PeriodTimeSlot { PeriodIndex = 7, StartTime = "16:00", EndTime = "16:45" },
-        new PeriodTimeSlot { PeriodIndex = 8, StartTime = "16:55", EndTime = "17:40" },
-        new PeriodTimeSlot { PeriodIndex = 9, StartTime = "19:00", EndTime = "19:45" },
-        new PeriodTimeSlot { PeriodIndex = 10, StartTime = "19:55", EndTime = "20:40" },
-        new PeriodTimeSlot { PeriodIndex = 11, StartTime = "20:50", EndTime = "21:35" }
+        new PeriodTimeSlot { PeriodIndex = 7, StartTime = "15：50", EndTime = "16:35" },
+        new PeriodTimeSlot { PeriodIndex = 8, StartTime = "16:45", EndTime = "17:30" },
+        new PeriodTimeSlot { PeriodIndex = 9, StartTime = "19:20", EndTime = "20：05" },
+        new PeriodTimeSlot { PeriodIndex = 10, StartTime = "20：15", EndTime = "21：00" },
+        new PeriodTimeSlot { PeriodIndex = 11, StartTime = "21：10", EndTime = "21:55" }
     };
 }
 
