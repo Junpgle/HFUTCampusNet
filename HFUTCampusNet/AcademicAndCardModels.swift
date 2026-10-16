@@ -426,8 +426,12 @@ public struct LessonSurveyItem: Codable, Identifiable, Equatable {
 /// 校历与学期进度里程碑计算模型
 public struct SemesterMilestoneInfo: Equatable {
     public var semesterName: String
+    public var campusName: String
     public var startDateString: String
     public var endDateString: String
+    public var examWeekStartDateString: String?
+    public var examWeekEndDateString: String?
+    public var calendarSourceURL: String
     public var currentWeek: Int
     public var totalWeeks: Int
     public var elapsedDays: Int
@@ -444,6 +448,7 @@ public struct SemesterMilestoneInfo: Equatable {
     /// 根据当前课表与合工大官方校历推算本学期进度里程碑
     public static func calculate(
         schedule: CourseScheduleData? = CourseScheduleService.shared.currentSchedule,
+        campus: String = SettingsManager.shared.dormCampus,
         at now: Date = Date()
     ) -> SemesterMilestoneInfo {
         let cal = CourseCalendarHelper.beijingCalendar
@@ -460,8 +465,9 @@ public struct SemesterMilestoneInfo: Equatable {
             274: ("2024-09-09", "2025-01-19")  // 2024-2025学年第一学期
         ]
 
-        var startStr = officialDates[semId]?.start ?? "2026-09-07"
-        var endStr = officialDates[semId]?.end ?? "2027-01-17"
+        let campusTerm = CampusCalendarService.term(semesterId: semId, campus: campus)
+        var startStr = campusTerm?.startDate ?? officialDates[semId]?.start ?? "2026-09-07"
+        var endStr = campusTerm?.endDate ?? officialDates[semId]?.end ?? "2027-01-17"
 
         // 若本地课表包含第 1 周的锚点日期，也可用于动态校准非预设学期
         if officialDates[semId] == nil, let sched = schedule {
@@ -488,13 +494,23 @@ public struct SemesterMilestoneInfo: Equatable {
 
         let totalWeeks = max(18, Int(ceil(Double(totalDays) / 7.0)))
         let computedWeek = schedule?.currentWeek(at: now) ?? min(totalWeeks, max(1, (elapsedDays - 1) / 7 + 1))
-        let daysUntilExamWeek = max(0, remainingDays - 14) // 期末考试周通常为最后两周
+        let daysUntilExamWeek: Int
+        if let examStart = campusTerm?.examStartDate,
+           let examStartDate = CourseCalendarHelper.parseDate(examStart, "00:00") {
+            daysUntilExamWeek = max(0, cal.dateComponents([.day], from: todayDate, to: examStartDate).day ?? 0)
+        } else {
+            daysUntilExamWeek = max(0, remainingDays - 14) // 旧版校历未提供考试周细节时沿用估算
+        }
         let isAutumn = semName.contains("第一学期") || semName.contains("第1学期") || startStr.contains("-09-")
 
         return SemesterMilestoneInfo(
             semesterName: semName,
+            campusName: CampusCalendarService.selectedCampusName(campus),
             startDateString: startStr,
             endDateString: endStr,
+            examWeekStartDateString: campusTerm?.examStartDate,
+            examWeekEndDateString: campusTerm?.examEndDate,
+            calendarSourceURL: CampusCalendarService.calendarURL(for: campus).absoluteString,
             currentWeek: computedWeek,
             totalWeeks: totalWeeks,
             elapsedDays: elapsedDays,
@@ -827,6 +843,25 @@ public struct CampusCardData: Codable, Equatable {
             }
         }
         return result
+    }
+
+    /// 按自然月聚合归档流水，供较长周期消费趋势图使用。
+    public func monthlyExpenseSummary(months: Int = 12, at now: Date = Date()) -> [(monthString: String, spentRMB: Double, count: Int)] {
+        guard months > 0 else { return [] }
+        let calendar = CourseCalendarHelper.beijingCalendar
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM"
+
+        return stride(from: months - 1, through: 0, by: -1).compactMap { offset in
+            guard let date = calendar.date(byAdding: .month, value: -offset, to: now) else { return nil }
+            let month = formatter.string(from: date)
+            let expenses = transactions.filter { $0.monthPrefixString == month && $0.isExpense }
+            let total = expenses.reduce(0.0) { $0 + $1.amountRMB }
+            return (month, (total * 100).rounded() / 100.0, expenses.count)
+        }
     }
 }
 

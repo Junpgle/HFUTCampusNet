@@ -411,6 +411,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         // 1. 同步教务系统课表 (EAMS 5.0)
         self.syncCourseTable(cookies: cookies, sessionToken: sessionToken)
 
+        // 使用独立 EHALL audience 取得学生画像授权并同步消费分析。
+        StudentPortraitEatService.shared.sync(completion: nil)
+
         // 2. 同步慧新易校 (宿舍电费与一卡通) 并联动同步校园网流量
         self.syncHuiXinElectricity(cookieHeader: cookieHeader, sessionToken: sessionToken)
     }

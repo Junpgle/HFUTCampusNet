@@ -127,8 +127,12 @@ public class CampusCardService {
             let balanceRMB = Double(dbBalanceFen) / 100.0
             let unsettleRMB = Double(unsettleFen) / 100.0
 
-            // 接着拉取最近 150 笔一卡通消费流水（覆盖月度账单与三餐/商户结构分析）
-            self.fetchTransactions(authHeader: authHeader, size: 150) { transactions in
+            // 分页同步历史流水，并与本地归档合并，避免接口分页上限或短暂失败缩短已有历史。
+            self.fetchTransactions(authHeader: authHeader, page: 1, size: 150, accumulated: []) { fetchedTransactions in
+                let previousTransactions = self.latestData?.cardAccount == account
+                    ? (self.latestData?.transactions ?? [])
+                    : []
+                let transactions = self.mergeTransactions(previousTransactions + fetchedTransactions)
                 let cardData = CampusCardData(
                     cardAccount: account,
                     holderName: holderName,
@@ -152,11 +156,24 @@ public class CampusCardService {
 
     private func fetchTransactions(
         authHeader: String,
+        page: Int,
         size: Int,
+        accumulated: [CampusCardTransaction],
         completion: @escaping ([CampusCardTransaction]) -> Void
     ) {
-        guard let url = URL(string: "http://121.251.19.62/berserker-search/search/personal/turnover?current=1&size=\(size)") else {
-            completion([])
+        // 防止异常分页元数据造成无限请求；正常情况下按接口总页数提前结束。
+        let maximumPages = 100
+        guard page <= maximumPages,
+              var components = URLComponents(string: "http://121.251.19.62/berserker-search/search/personal/turnover") else {
+            completion(accumulated)
+            return
+        }
+        components.queryItems = [
+            URLQueryItem(name: "current", value: String(page)),
+            URLQueryItem(name: "size", value: String(size))
+        ]
+        guard let url = components.url else {
+            completion(accumulated)
             return
         }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10.0)
@@ -165,23 +182,29 @@ public class CampusCardService {
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: req) { data, _, _ in
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+            guard let self = self else { return }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let dataObj = json["data"] as? [String: Any],
                   let records = dataObj["records"] as? [[String: Any]] else {
-                completion([])
+                // 后续页失败时仍保留已取到的记录和旧缓存。
+                _ = response
+                _ = error
+                completion(accumulated)
                 return
             }
 
             var list: [CampusCardTransaction] = []
-            for (idx, rec) in records.enumerated() {
-                let orderId = (rec["orderId"] as? String) ?? "tx-\(idx)"
+            for rec in records {
                 let resume = (rec["resume"] as? String) ?? "校园卡交易"
                 let turnoverType = (rec["turnoverType"] as? String) ?? "消费"
                 let jnTimeStr = (rec["jndatetimeStr"] as? String) ?? (rec["effectdateStr"] as? String) ?? ""
-                let tranAmtFen = (rec["tranamt"] as? Int) ?? Int((rec["tranamt"] as? Double) ?? 0)
-                let cardBalFen = rec["cardBalance"] as? Int
+                let tranAmtFen = Self.integerValue(rec["tranamt"]) ?? 0
+                let cardBalFen = Self.integerValue(rec["cardBalance"])
+                let orderId = (rec["orderId"] as? String)
+                    ?? (rec["orderId"] as? NSNumber)?.stringValue
+                    ?? "tx-\(jnTimeStr)|\(resume)|\(turnoverType)|\(tranAmtFen)|\(cardBalFen ?? -1)"
 
                 let amountRMB = Double(abs(tranAmtFen)) / 100.0
                 let balAfterRMB = cardBalFen.map { Double($0) / 100.0 }
@@ -196,8 +219,49 @@ public class CampusCardService {
                 )
                 list.append(item)
             }
-            completion(list)
+
+            let combined = accumulated + list
+            let total = Self.integerValue(dataObj["total"])
+            let totalPages = Self.integerValue(dataObj["pages"])
+            let reachedTotal = total.map { combined.count >= $0 } ?? false
+            let reachedPageCount = totalPages.map { page >= $0 } ?? false
+            let reachedEnd = records.isEmpty || records.count < size ||
+                reachedTotal || reachedPageCount ||
+                page >= maximumPages
+            if reachedEnd {
+                completion(self.mergeTransactions(combined))
+            } else {
+                self.fetchTransactions(
+                    authHeader: authHeader,
+                    page: page + 1,
+                    size: size,
+                    accumulated: combined,
+                    completion: completion
+                )
+            }
         }.resume()
+    }
+
+    private func mergeTransactions(_ transactions: [CampusCardTransaction]) -> [CampusCardTransaction] {
+        var byID: [String: CampusCardTransaction] = [:]
+        for (index, transaction) in transactions.enumerated() {
+            let stableID = transaction.id.isEmpty
+                ? "\(transaction.dateTimeString)|\(transaction.merchantName)|\(transaction.amountRMB)|\(index)"
+                : transaction.id
+            byID[stableID] = transaction
+        }
+        return byID.values.sorted {
+            if $0.dateTimeString != $1.dateTimeString {
+                return $0.dateTimeString > $1.dateTimeString
+            }
+            return $0.id > $1.id
+        }
+    }
+
+    private static func integerValue(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 
     private func checkLowBalanceWarning(_ data: CampusCardData) {

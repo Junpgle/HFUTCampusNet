@@ -27,6 +27,7 @@ public class SettingsManager {
         static let courseTableEnabled = "campus_course_table_enabled"
         static let courseShowOnWidget = "campus_course_show_on_widget"
         static let huixinAuthToken = "campus_huixin_auth_token"
+        static let ehallAuthToken = "campus_ehall_auth_token"
         static let casTgcCookie = "campus_cas_tgc_cookie"
         static let dormCampus = "campus_dorm_campus"
         static let dormBuilding = "campus_dorm_building"
@@ -293,6 +294,12 @@ public class SettingsManager {
     public var huixinAuthToken: String? {
         get { defaults.string(forKey: Keys.huixinAuthToken) }
         set { defaults.set(newValue, forKey: Keys.huixinAuthToken) }
+    }
+
+    /// EHALL 学生画像独立 OAuth Token，不与信息门户或慧新易校 Token 混用。
+    public var ehallAuthToken: String? {
+        get { defaults.string(forKey: Keys.ehallAuthToken) }
+        set { defaults.set(newValue, forKey: Keys.ehallAuthToken) }
     }
 
     public var casTgcCookie: String? {

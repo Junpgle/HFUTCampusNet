@@ -149,7 +149,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private func setupUI() {
         guard let window = self.window else { return }
-        let contentView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 1060))
+        let contentView = FlippedTimelineView(frame: NSRect(x: 0, y: 0, width: 540, height: 1256))
 
         // 0. 顶部统一身份认证与统计栏
         let ssoBox = makeGroupCard(frame: NSRect(x: 20, y: 16, width: 500, height: 54))
@@ -384,7 +384,10 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         // 4. 应用内省电措施卡片
         buildPowerSaverCard(in: contentView)
 
-        // 5. 主体放入滚动视图，底部保留固定操作栏
+        // 5. 关于 HFUTCampusNet 与开源鸣谢卡片
+        buildAboutCard(in: contentView)
+
+        // 6. 主体放入滚动视图，底部保留固定操作栏
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 540, height: 674))
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -948,6 +951,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         SettingsManager.shared.courseSessionCookie = nil
         SettingsManager.shared.casTgcCookie = nil
         SettingsManager.shared.huixinAuthToken = nil
+        StudentPortraitEatService.shared.clearCache()
         SettingsManager.shared.uniAppJwt = nil
         SettingsManager.shared.jxglstuDefaultPasswordCache = nil
         if SettingsManager.shared.courseStudentId == initialStdId {
@@ -1031,5 +1035,57 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func controlTextDidEndEditing(_ obj: Notification) {
         commitPowerValueField(obj.object as? NSTextField)
         saveCredentials(checkDormInvalidation: true)
+    }
+
+    // MARK: - 关于与开源鸣谢卡片
+
+    private func buildAboutCard(in contentView: NSView) {
+        let cardTop: CGFloat = powerCardTop + powerCardHeight + 16
+        let card = makeGroupCard(frame: NSRect(x: 20, y: cardTop, width: 500, height: 182))
+
+        let title = NSTextField(labelWithString: "关于 HFUTCampusNet 与开源鸣谢")
+        title.frame = NSRect(x: 16, y: 12, width: 320, height: 18)
+        title.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        title.textColor = .labelColor
+        card.addSubview(title)
+
+        let versionLabel = NSTextField(labelWithString: "当前版本：v\(UpdateChecker.shared.currentVersion) (Universal)")
+        versionLabel.frame = NSRect(x: 16, y: 32, width: 280, height: 16)
+        versionLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        versionLabel.textColor = .secondaryLabelColor
+        card.addSubview(versionLabel)
+
+        let descLabel = NSTextField(labelWithString: "专为合肥工业大学（HFUT）打造的原生 macOS 状态栏与桌面效率伴侣。")
+        descLabel.frame = NSRect(x: 16, y: 52, width: 468, height: 16)
+        descLabel.font = NSFont.systemFont(ofSize: 11.5)
+        descLabel.textColor = .labelColor
+        card.addSubview(descLabel)
+
+        let ackTitle = NSTextField(labelWithString: "🙏 特别鸣谢参考的开源项目：")
+        ackTitle.frame = NSRect(x: 16, y: 74, width: 468, height: 16)
+        ackTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        ackTitle.textColor = .labelColor
+        card.addSubview(ackTitle)
+
+        let ackContent = NSTextField(wrappingLabelWithString: "• Chiu-xaH/HFUT-Schedule (聚在工大) — 教务系统、统一认证 CAS 与生活服务协议参考\n• elonzh/hfut — 合工大教务系统 (EAMS) 接口封装与会话处理参考\n• drcom-generic 与工大校园网认证工具 — Dr.COM 网关协议与断线重连参考")
+        ackContent.frame = NSRect(x: 16, y: 94, width: 468, height: 48)
+        ackContent.font = NSFont.systemFont(ofSize: 11)
+        ackContent.textColor = .secondaryLabelColor
+        card.addSubview(ackContent)
+
+        let repoBtn = NSButton(title: "🌐 访问开源项目主页", target: self, action: #selector(openGitHubRepoClicked))
+        repoBtn.bezelStyle = .rounded
+        repoBtn.controlSize = .small
+        repoBtn.font = NSFont.systemFont(ofSize: 11)
+        repoBtn.frame = NSRect(x: 14, y: 148, width: 140, height: 24)
+        card.addSubview(repoBtn)
+
+        contentView.addSubview(card)
+    }
+
+    @objc private func openGitHubRepoClicked() {
+        if let url = URL(string: "https://github.com/Junpgle/HFUTCampusNet") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
