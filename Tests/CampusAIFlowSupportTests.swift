@@ -272,6 +272,10 @@ struct CampusAIFlowSupportTests {
         let extractResponse = Data(#"{"status":1,"data":{"content":"fixture extracted text"}}"#.utf8)
         let content = CampusAIAttachmentProtocol.extractedContent(from: extractResponse)
         expect(content == "fixture extracted text", "extracted text should come from a successful response")
+        expect(CampusAIAttachmentProtocol.businessSucceeded(from: Data(#"{"status":1,"data":true}"#.utf8)),
+               "saveFileList should accept its successful boolean data payload")
+        expect(CampusAIAttachmentProtocol.businessSucceeded(from: Data(#"{"status":1,"data":null}"#.utf8)),
+               "saveFileList should validate business status without requiring an object payload")
         expect(!CampusAIAttachmentProtocol.businessSucceeded(from: Data(#"{"status":0,"data":{}}"#.utf8)),
                "file registration should reject a failed business response")
 

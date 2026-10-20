@@ -1560,8 +1560,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         message = "AI 平台会话无效或已过期，请重新从信息门户进入。"
                     case .network:
                         message = "附件上传或登记失败，请检查网络后重试。"
-                    case .invalidResponse:
-                        message = "AI 平台返回了无法识别的附件或会话响应。"
+                    case .invalidResponse(let stage):
+                        message = stage.userMessage
                     case .cancelled:
                         message = "已取消附件发送。"
                     }

@@ -115,7 +115,10 @@ enum CampusAIAttachmentProtocol {
     }
 
     static func businessSucceeded(from data: Data) -> Bool {
-        successfulPayload(from: data) != nil
+        guard let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = response["status"] as? NSNumber,
+              CFGetTypeID(status) != CFBooleanGetTypeID() else { return false }
+        return status.intValue == 1
     }
 
     static func saveFileListBody(files: [CampusAIUploadedAttachment], groupID: String, chatID: String) -> Data? {
@@ -170,11 +173,37 @@ private extension Optional where Wrapped == String {
 }
 
 final class CampusAIAttachmentClient {
+    enum ResponseStage {
+        case uploadAddress
+        case merge
+        case extract
+        case saveMessage
+        case registerFiles
+        case unknown
+
+        var userMessage: String {
+            switch self {
+            case .uploadAddress:
+                return "AI 平台没有返回可用的附件上传地址。"
+            case .merge:
+                return "附件已上传，但平台没有返回可用的合并结果。"
+            case .extract:
+                return "附件已上传，但平台无法识别或解析该文件。"
+            case .saveMessage:
+                return "附件已解析，但平台没有返回可用的会话消息信息。"
+            case .registerFiles:
+                return "附件已上传，但平台没有确认附件登记。"
+            case .unknown:
+                return "AI 平台返回了空或无法识别的响应。"
+            }
+        }
+    }
+
     enum Failure: Error {
         case invalidFile
         case network
         case platformRejected
-        case invalidResponse
+        case invalidResponse(ResponseStage)
         case cancelled
     }
 
@@ -249,14 +278,14 @@ final class CampusAIAttachmentClient {
             finish(.failure(.invalidFile))
             return
         }
-        performJSON(path: "common/getUploadUrl", body: body) { [weak self] result in
+        performJSON(path: "common/getUploadUrl", stage: .uploadAddress, body: body) { [weak self] result in
             guard let self = self, !self.completed else { return }
             guard case .success(let data) = result else { self.finishWith(result); return }
             guard let plan = CampusAIAttachmentProtocol.uploadPlan(from: data),
                   plan.folder == folder,
                   plan.uploadURLs.count == (draft.data.count + CampusAIAttachmentProtocol.chunkSize - 1)
                     / CampusAIAttachmentProtocol.chunkSize else {
-                self.finish(.failure(.invalidResponse))
+                self.finish(.failure(.invalidResponse(.uploadAddress)))
                 return
             }
             self.upload(plan: plan, draft: draft, part: 0)
@@ -298,15 +327,18 @@ final class CampusAIAttachmentClient {
         guard let body = CampusAIAttachmentProtocol.mergeBody(
             uploadID: plan.uploadID, fileName: plan.fileName, folder: plan.folder
         ) else {
-            finish(.failure(.invalidResponse))
+            finish(.failure(.invalidResponse(.merge)))
             return
         }
-        performJSON(path: "common/merge", body: body) { [weak self] result in
+        performJSON(path: "common/merge", stage: .merge, body: body) { [weak self] result in
             guard let self = self, !self.completed else { return }
             guard case .success(let data) = result else { self.finishWith(result); return }
-            guard let storedFile = CampusAIAttachmentProtocol.storedFile(from: data),
-                  let body = CampusAIAttachmentProtocol.extractBody(file: storedFile, draft: draft) else {
-                self.finish(.failure(.invalidResponse))
+            guard let storedFile = CampusAIAttachmentProtocol.storedFile(from: data) else {
+                self.finish(.failure(.invalidResponse(.merge)))
+                return
+            }
+            guard let body = CampusAIAttachmentProtocol.extractBody(file: storedFile, draft: draft) else {
+                self.finish(.failure(.invalidResponse(.extract)))
                 return
             }
             self.extract(storedFile: storedFile, draft: draft, body: body)
@@ -314,11 +346,11 @@ final class CampusAIAttachmentClient {
     }
 
     private func extract(storedFile: CampusAIStoredFile, draft: CampusAIAttachmentDraft, body: Data) {
-        performJSON(path: "chat/extractFile", body: body) { [weak self] result in
+        performJSON(path: "chat/extractFile", stage: .extract, body: body) { [weak self] result in
             guard let self = self, !self.completed else { return }
             guard case .success(let data) = result else { self.finishWith(result); return }
             guard let content = CampusAIAttachmentProtocol.extractedContent(from: data) else {
-                self.finish(.failure(.invalidResponse))
+                self.finish(.failure(.invalidResponse(.extract)))
                 return
             }
             self.uploadedFiles.append(CampusAIUploadedAttachment(
@@ -339,18 +371,18 @@ final class CampusAIAttachmentClient {
             text: question, agentID: agentID, groupID: existingGroupID,
             title: files.first?.originalFileName
         ) else {
-            finish(.failure(.invalidResponse))
+            finish(.failure(.invalidResponse(.saveMessage)))
             return
         }
         onProgress("附件已上传，正在保存消息信息…")
-        performJSON(path: "chat/save", body: body) { [weak self] result in
+        performJSON(path: "chat/save", stage: .saveMessage, body: body) { [weak self] result in
             guard let self = self, !self.completed else { return }
             guard case .success(let data) = result else { self.finishWith(result); return }
             guard let ids = CampusAIChatSaveResponse.identifiers(from: data, expectedGroupID: self.existingGroupID),
                   let fileListBody = CampusAIAttachmentProtocol.saveFileListBody(
                     files: self.uploadedFiles, groupID: ids.groupID, chatID: ids.chatID
                   ) else {
-                self.finish(.failure(.invalidResponse))
+                self.finish(.failure(.invalidResponse(.saveMessage)))
                 return
             }
             self.saveFileList(body: fileListBody, identifiers: ids)
@@ -358,11 +390,11 @@ final class CampusAIAttachmentClient {
     }
 
     private func saveFileList(body: Data, identifiers: CampusAIChatSaveIdentifiers) {
-        performJSON(path: "chat/saveFileList", body: body) { [weak self] result in
+        performJSON(path: "chat/saveFileList", stage: .registerFiles, body: body) { [weak self] result in
             guard let self = self, !self.completed else { return }
             guard case .success(let data) = result else { self.finishWith(result); return }
             guard CampusAIAttachmentProtocol.businessSucceeded(from: data) else {
-                self.finish(.failure(.invalidResponse))
+                self.finish(.failure(.invalidResponse(.registerFiles)))
                 return
             }
             let text = CampusAIAttachmentProtocol.chatText(question: self.question, files: self.uploadedFiles)
@@ -370,7 +402,7 @@ final class CampusAIAttachmentClient {
         }
     }
 
-    private func performJSON(path: String, body: Data,
+    private func performJSON(path: String, stage: ResponseStage, body: Data,
                              completion: @escaping (Result<Data, Failure>) -> Void) {
         let fullPath = "/api/af-api-agent/\(path)"
         let requestCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: fullPath)
@@ -406,7 +438,7 @@ final class CampusAIAttachmentClient {
                     return
                 }
                 guard let data = data else {
-                    completion(.failure(.invalidResponse))
+                    completion(.failure(.invalidResponse(stage)))
                     return
                 }
                 completion(.success(data))
@@ -419,7 +451,7 @@ final class CampusAIAttachmentClient {
         if case .failure(let failure) = result {
             finish(.failure(failure))
         } else {
-            finish(.failure(.invalidResponse))
+            finish(.failure(.invalidResponse(.unknown)))
         }
     }
 
