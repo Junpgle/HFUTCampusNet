@@ -80,7 +80,6 @@ enum CampusAIEntryNavigation {
         case CampusAIEndpoint.host where components.path == "/index/agent":
             return .clickAIPlaza
         case CampusAIEndpoint.host where components.path == "/index"
-            && components.queryItems?.contains(where: { $0.name == "forceIndex" && $0.value == "1" }) == true
             && agentID == CampusAIEndpoint.defaultAgentID:
             return .clickCampusAdvisor
         default:
@@ -153,7 +152,7 @@ enum CampusAIEntryNavigation {
                   const routeTimer = window.setInterval(() => {
                     routeAttempts += 1;
                     const url = new URL(window.location.href);
-                    if (url.pathname === '/index' && url.searchParams.get('forceIndex') === '1') {
+                    if (url.pathname === '/index') {
                       window.clearInterval(routeTimer);
                       if (__CAMPUS_AI_AUTO_OPEN_ADVISOR__) {
                       report('opened');
@@ -163,6 +162,7 @@ enum CampusAIEntryNavigation {
                         const card = findAdvisorLabel();
                         if (card) {
                           window.clearInterval(cardTimer);
+                          card.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'auto'});
                           if (!window.__campusAIAutoAdvisorClicking) {
                             window.__campusAIAutoAdvisorClicking = true;
                             card.click();
@@ -181,10 +181,20 @@ enum CampusAIEntryNavigation {
                               }
                             }, 400);
                           }
-                        } else if (cardAttempts >= 40) {
+                        } else if (cardAttempts >= 80) {
                           window.clearInterval(cardTimer);
                           const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.campusAIAutoNavigation;
                           if (bridge) bridge.postMessage({event: 'autoNavigation', step: 'advisor', result: 'missing'});
+                        } else {
+                          const roots = [document.scrollingElement, ...document.querySelectorAll('*')];
+                          for (const root of roots) {
+                            if (!root || root.scrollHeight <= root.clientHeight + 24) continue;
+                            const style = getComputedStyle(root);
+                            if (style.overflowY === 'hidden' || style.overflowY === 'clip') continue;
+                            const step = Math.max(240, root.clientHeight * 0.7);
+                            root.scrollTop = Math.min(root.scrollTop + step, root.scrollHeight);
+                          }
+                          window.scrollBy(0, Math.max(240, window.innerHeight * 0.7));
                         }
                       }, 400);
                       } else {
@@ -235,6 +245,7 @@ enum CampusAIEntryNavigation {
                 const card = findAdvisorLabel();
                 if (card) {
                   window.clearInterval(timer);
+                  card.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'auto'});
                   if (!window.__campusAIAutoAdvisorClicking) {
                     window.__campusAIAutoAdvisorClicking = true;
                     card.click();
@@ -252,9 +263,19 @@ enum CampusAIEntryNavigation {
                       }
                     }, 400);
                   }
-                } else if (attempts >= 40) {
+                } else if (attempts >= 80) {
                   window.clearInterval(timer);
                   report('missing');
+                } else {
+                  const roots = [document.scrollingElement, ...document.querySelectorAll('*')];
+                  for (const root of roots) {
+                    if (!root || root.scrollHeight <= root.clientHeight + 24) continue;
+                    const style = getComputedStyle(root);
+                    if (style.overflowY === 'hidden' || style.overflowY === 'clip') continue;
+                    const step = Math.max(240, root.clientHeight * 0.7);
+                    root.scrollTop = Math.min(root.scrollTop + step, root.scrollHeight);
+                  }
+                  window.scrollBy(0, Math.max(240, window.innerHeight * 0.7));
                 }
               }, 400);
               return true;

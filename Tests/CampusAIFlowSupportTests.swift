@@ -332,6 +332,9 @@ struct CampusAIFlowSupportTests {
         expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index?forceIndex=1"), agentID: agentID)
                == .clickCampusAdvisor,
                "the observed AI plaza route should open the configured campus advisor")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index"), agentID: agentID)
+               == .clickCampusAdvisor,
+               "the plaza route should still trigger advisor discovery when forceIndex is stripped")
         expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index?forceIndex=1"), agentID: "3") == nil,
                "a custom agent ID must not open the default campus advisor card")
         expect(CampusAIEntryNavigation.step(for: URL(string: "https://evilhfut.edu.cn/home/index"), agentID: agentID) == nil,
@@ -343,17 +346,21 @@ struct CampusAIFlowSupportTests {
         expect(portalScript.contains("AI中台") && portalScript.contains("label.click()"),
                "portal automation should click the visible official AI platform entry")
         let plazaScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: agentID)
-        expect(plazaScript.contains(".menu-item") && plazaScript.contains("forceIndex")
+        expect(plazaScript.contains(".menu-item") && plazaScript.contains("url.pathname === '/index'")
                && plazaScript.contains("合工大AI辅导员")
                && plazaScript.contains("createTreeWalker")
+               && plazaScript.contains("scrollIntoView")
+               && plazaScript.contains("root.scrollTop")
                && !plazaScript.contains("querySelectorAll('.title')")
                && plazaScript.contains("open-failed"),
-               "plaza automation should follow the observed menu and target card")
+               "plaza automation should tolerate SPA route changes, scroll to lazy cards, and open the target")
         let advisorScript = CampusAIEntryNavigation.script(for: .clickCampusAdvisor, agentID: agentID)
         expect(advisorScript.contains("createTreeWalker")
+               && advisorScript.contains("scrollIntoView")
+               && advisorScript.contains("root.scrollTop")
                && advisorScript.contains("detailURL.searchParams.get('id') === '\(agentID)'")
                && advisorScript.contains("open-failed"),
-               "advisor navigation should match visible text and confirm the target route")
+               "advisor navigation should scroll to the card and confirm the target route")
         let customAgentScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: "3")
         expect(customAgentScript.contains("if (false)"),
                "a custom agent ID should stop at the plaza instead of opening the default advisor")
