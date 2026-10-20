@@ -313,7 +313,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     /// 使用 App 现有 CAS Cookie 进行 AI 服务自己的 SSO 认证，而不是将 CASTGC 当作 AiFlow。
-    private func prepareAIFromCAS() {
+    private func prepareAIFromCAS(forceRefresh: Bool = false) {
         let attempt = UUID()
         ssoAttempt = attempt
         ssoStage = .idle
@@ -322,10 +322,28 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         store.getAllCookies { [weak self] all in
             DispatchQueue.main.async { [weak self] in
             guard let self = self, self.ssoAttempt == attempt else { return }
+            if forceRefresh, let oldAI = all.first(where: { cookie in
+                cookie.name == "AiFlow" && cookie.domain.lowercased().contains("aipt.hfut.edu.cn")
+            }) {
+                store.delete(oldAI) { [weak self] in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self, self.ssoAttempt == attempt else { return }
+                        self.continueCASBootstrap(cookies: all, attempt: attempt, store: store)
+                    }
+                }
+                return
+            }
             if self.hasAISession(all) {
                 self.statusLabel.stringValue = "已发现 AI 平台会话，可直接发送消息。"
                 return
             }
+            self.continueCASBootstrap(cookies: all, attempt: attempt, store: store)
+            }
+        }
+    }
+
+    private func continueCASBootstrap(cookies all: [HTTPCookie], attempt: UUID, store: WKHTTPCookieStore) {
+            guard ssoAttempt == attempt else { return }
             let validCAS = all.contains { cookie in
                 let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
                 return (cookie.name == "CASTGC" || cookie.name == "TGC")
@@ -362,8 +380,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     self.loadAIHomepage()
                 }
             }
-            }
-        }
     }
 
     private func hasAISession(_ cookies: [HTTPCookie]) -> Bool {
@@ -384,7 +400,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     @objc private func reconnectAI() {
-        prepareAIFromCAS()
+        prepareAIFromCAS(forceRefresh: true)
     }
 
     @objc private func showChat() {
