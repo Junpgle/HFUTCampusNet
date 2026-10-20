@@ -7,6 +7,7 @@ struct CampusAIFlowSupportTests {
         testGroupResponseDecoding()
         testCookieScope()
         testNavigationTraceRedaction()
+        testCASNativeLoginSupport()
         try testSanitizedSSEFixture()
         testSSEVariantsAndErrors()
         testIncompleteAndOversizedStreams()
@@ -104,6 +105,54 @@ struct CampusAIFlowSupportTests {
         expect(CampusAIEndpoint.referer(from: URL(string: "https://aipt.hfut.edu.cn/index/agent?token=opaque"),
                                          agentID: "1966078115428446208") == nil,
                "unrelated AI center routes should not be used as API Referer")
+    }
+
+    private static func testCASNativeLoginSupport() {
+        expect(CampusAICasLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Faipt.hfut.edu.cn")),
+               "the current official CAS login page should be recognized")
+        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "http://cas.hfut.edu.cn/cas/login")),
+               "CAS native controls must require HTTPS")
+        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "https://evilcas.hfut.edu.cn/cas/login")),
+               "lookalike CAS hosts must not be trusted")
+        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/logout")),
+               "CAS native controls must only activate on the login path")
+
+        let username = "user\"; alert('username') //"
+        let password = "p\\ass\nword'; alert('password') //"
+        let captcha = "验证码\"; alert('captcha') //"
+        guard let literal = CampusAICasLoginSupport.credentialsLiteral(
+            username: username, password: password, captcha: captcha
+        ), let encodedValues = try? JSONSerialization.jsonObject(with: Data(literal.utf8)) as? [String],
+              let script = CampusAICasLoginSupport.submitScript(
+                username: username, password: password, captcha: captcha
+              ) else {
+            fail("native CAS credentials should serialize into a JavaScript data literal")
+        }
+        expect(encodedValues == [username, password, captcha],
+               "quotes, slashes, newlines, and Chinese text must round-trip as credential data")
+        expect(script.contains("const values = \(literal);"),
+               "the form script must embed credentials only as a JSON array literal")
+        expect(script.contains("controls.submit.click();")
+               && !script.contains("form.submit()"),
+               "native login must click the current official page's submit control")
+
+        let png = "data:image/png;base64,\(Data([0x89, 0x50, 0x4e, 0x47]).base64EncodedString())"
+        expect(CampusAICasLoginSupport.captchaImageData(from: png) == Data([0x89, 0x50, 0x4e, 0x47]),
+               "a bounded CAPTCHA image data URL should be accepted")
+        expect(CampusAICasLoginSupport.captchaImageData(from: "https://cas.hfut.edu.cn/captcha") == nil,
+               "native code must not fetch or accept a guessed CAPTCHA URL")
+        expect(CampusAICasLoginSupport.captchaImageData(from: "data:image/svg+xml;base64,PHN2Zz4=") == nil,
+               "unrecognized image formats should fall back to the CAS page")
+        expect(CampusAICasLoginSupport.captchaImageData(from: "data:image/png;base64,%%%") == nil,
+               "malformed image data must be rejected")
+        let tooLarge = "data:image/png;base64,\(String(repeating: "A", count: 700_001))"
+        expect(CampusAICasLoginSupport.captchaImageData(from: tooLarge) == nil,
+               "oversized CAPTCHA data must be rejected")
+
+        expect(CampusAICasLoginSupport.refreshCaptchaScript.contains("controls.refresh.click()")
+               && !CampusAICasLoginSupport.refreshCaptchaScript.contains("fetch(")
+               && !CampusAICasLoginSupport.refreshCaptchaScript.contains("XMLHttpRequest"),
+               "refresh must use the current CAS page control rather than a guessed endpoint")
     }
 
     private static func testSanitizedSSEFixture() throws {

@@ -123,7 +123,19 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     }
 }
 
-public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
+private final class CampusAIWeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+
+    init(target: WKScriptMessageHandler) {
+        self.target = target
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(userContentController, didReceive: message)
+    }
+}
+
+public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSWindowDelegate {
     public static let shared = CampusAIAssistantWindowController()
 
     private let defaults = UserDefaults.standard
@@ -138,6 +150,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
     private let traceButton = NSButton(title: "复制脱敏轨迹", target: nil, action: nil)
     private let transcriptScroll = NSScrollView()
+    private let scriptController = WKUserContentController()
+    private let casLoginPanel = CampusAICasLoginPanel(frame: NSRect(x: 20, y: 128, width: 940, height: 458))
+    private var chatOnlyViews: [NSView] = []
+    private var captchaMessageProxy: CampusAIWeakScriptMessageHandler!
     private var loginWebView: WKWebView!
     private var portalWebViews: [WKWebView] = []
     private var navigationTrace: [String] = []
@@ -146,6 +162,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var activeLookupSession: URLSession?
     private var sending = false
     private var displayingLogin = false
+    private var nativeCASFormReady = false
+    private var preferWebLoginForCurrentCASPage = false
+    private var casTicketErrorDetected = false
+    private var casProbeToken = UUID()
+    private var captchaRefreshToken: UUID?
     // 完整 SSO 跳转由信息门户及其注册应用发起；本客户端不构造 ST/service。
     private var portalNavigationID = UUID()
 
@@ -205,18 +226,27 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         traceButton.isEnabled = false
         root.addSubview(traceButton)
 
-        root.addSubview(label("智能体 ID", x: 20, y: 611, width: 75))
+        let agentLabel = label("智能体 ID", x: 20, y: 611, width: 75)
+        root.addSubview(agentLabel)
+        chatOnlyViews.append(agentLabel)
         agentField.frame = NSRect(x: 96, y: 608, width: 236, height: 24)
         agentField.stringValue = defaults.string(forKey: "campus_ai_agent_id") ?? CampusAIEndpoint.defaultAgentID
         root.addSubview(agentField)
-        root.addSubview(label("模型 ID", x: 345, y: 611, width: 58))
+        chatOnlyViews.append(agentField)
+        let modelLabel = label("模型 ID", x: 345, y: 611, width: 58)
+        root.addSubview(modelLabel)
+        chatOnlyViews.append(modelLabel)
         modelField.frame = NSRect(x: 402, y: 608, width: 236, height: 24)
         modelField.stringValue = defaults.string(forKey: "campus_ai_model_id") ?? CampusAIEndpoint.defaultModelID
         root.addSubview(modelField)
-        root.addSubview(label("会话 ID", x: 648, y: 611, width: 60))
+        chatOnlyViews.append(modelField)
+        let groupLabel = label("会话 ID", x: 648, y: 611, width: 60)
+        root.addSubview(groupLabel)
+        chatOnlyViews.append(groupLabel)
         groupField.frame = NSRect(x: 706, y: 608, width: 254, height: 24)
         groupField.placeholderString = "留空尝试获取最近会话"
         root.addSubview(groupField)
+        chatOnlyViews.append(groupField)
         for item in [agentField, modelField, groupField] {
             item.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             item.autoresizingMask = [.minYMargin]
@@ -226,6 +256,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default() // 与 App 现有统一登录 WebView 共用 Cookie 存储
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        captchaMessageProxy = CampusAIWeakScriptMessageHandler(target: self)
+        scriptController.add(captchaMessageProxy, name: "campusAICaptcha")
+        config.userContentController = scriptController
         loginWebView = WKWebView(frame: NSRect(x: 20, y: 128, width: 940, height: 458), configuration: config)
         loginWebView.navigationDelegate = self
         loginWebView.uiDelegate = self
@@ -233,6 +266,16 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         loginWebView.isHidden = true
         root.addSubview(loginWebView)
         portalWebViews = [loginWebView]
+
+        casLoginPanel.frame = loginWebView.frame
+        casLoginPanel.autoresizingMask = [.width, .height]
+        casLoginPanel.isHidden = true
+        casLoginPanel.onRefresh = { [weak self] in self?.refreshNativeCaptcha() }
+        casLoginPanel.onSubmit = { [weak self] username, password, captcha in
+            self?.submitNativeCASLogin(username: username, password: password, captcha: captcha)
+        }
+        casLoginPanel.onUseWebLogin = { [weak self] in self?.showCASWebLogin() }
+        root.addSubview(casLoginPanel)
 
         transcriptScroll.frame = loginWebView.frame
         transcriptScroll.autoresizingMask = [.width, .height]
@@ -249,6 +292,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         transcriptView.string = "欢迎使用校园 AI 助手。\n\n本功能复用 App 的 WKWebView 网站登录状态。首次使用请从信息门户中的「AI 应用中台」进入「合工大辅导员」，以便由门户完成学校指定的服务认证。\n聊天记录仅保留在当前窗口内。\n\n"
         transcriptScroll.documentView = transcriptView
         root.addSubview(transcriptScroll)
+        chatOnlyViews.append(transcriptScroll)
 
         promptField.frame = NSRect(x: 20, y: 72, width: 820, height: 32)
         promptField.placeholderString = "输入你想咨询的问题，例如：请查询我本人的课程成绩"
@@ -257,6 +301,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         promptField.target = self
         promptField.action = #selector(sendMessage)
         root.addSubview(promptField)
+        chatOnlyViews.append(promptField)
 
         sendButton.frame = NSRect(x: 851, y: 72, width: 109, height: 32)
         sendButton.autoresizingMask = [.minXMargin, .maxYMargin]
@@ -264,6 +309,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         sendButton.action = #selector(sendMessage)
         sendButton.keyEquivalent = "\r"
         root.addSubview(sendButton)
+        chatOnlyViews.append(sendButton)
 
         statusLabel.frame = NSRect(x: 20, y: 22, width: 940, height: 28)
         statusLabel.font = .systemFont(ofSize: 11)
@@ -294,6 +340,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func displayChat(status: String) {
         displayingLogin = false
+        nativeCASFormReady = false
+        preferWebLoginForCurrentCASPage = false
+        casTicketErrorDetected = false
+        captchaRefreshToken = nil
+        casLoginPanel.isHidden = true
+        casLoginPanel.clearSensitiveFields()
+        for view in chatOnlyViews { view.isHidden = false }
         for webView in portalWebViews { webView.isHidden = true }
         transcriptScroll.isHidden = false
         backButton.isEnabled = false
@@ -306,6 +359,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         navigationTrace.removeAll(keepingCapacity: true)
         traceButton.isEnabled = false
         displayingLogin = true
+        nativeCASFormReady = false
+        preferWebLoginForCurrentCASPage = false
+        casTicketErrorDetected = false
+        captchaRefreshToken = nil
+        casProbeToken = UUID()
+        casLoginPanel.prepare(username: SettingsManager.shared.portalUsername,
+                              password: SettingsManager.shared.casPassword)
+        casLoginPanel.isHidden = true
+        for view in chatOnlyViews { view.isHidden = true }
         for webView in portalWebViews { webView.isHidden = (webView !== loginWebView) }
         loginWebView.isHidden = false
         transcriptScroll.isHidden = true
@@ -352,6 +414,183 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         }
         traceButton.isEnabled = !navigationTrace.isEmpty
         statusLabel.stringValue = "SSO 跳转：\(line)"
+    }
+
+    private func inspectCASLoginPage(_ webView: WKWebView) {
+        guard displayingLogin, webView === loginWebView,
+              CampusAICasLoginSupport.isLoginPage(webView.url) else { return }
+        let token = UUID()
+        casProbeToken = token
+        webView.evaluateJavaScript(CampusAICasLoginSupport.probeScript) { [weak self, weak webView] result, _ in
+            DispatchQueue.main.async {
+                guard let self = self, let webView = webView,
+                      self.displayingLogin, webView === self.loginWebView,
+                      self.casProbeToken == token,
+                      CampusAICasLoginSupport.isLoginPage(webView.url) else { return }
+                self.applyCASLoginProbe(result, in: webView)
+            }
+        }
+    }
+
+    private func applyCASLoginProbe(_ result: Any?, in webView: WKWebView) {
+        guard !casTicketErrorDetected else {
+            nativeCASFormReady = false
+            casLoginPanel.isHidden = true
+            webView.isHidden = false
+            return
+        }
+        guard let descriptor = result as? [String: Any], descriptor["ready"] as? Bool == true else {
+            nativeCASFormReady = false
+            casLoginPanel.isHidden = true
+            webView.isHidden = false
+            if !preferWebLoginForCurrentCASPage && !casTicketErrorDetected {
+                statusLabel.stringValue = "CAS 页面当前未提供可识别的密码与验证码表单。可在网页中选择密码登录或其他方式。"
+            }
+            return
+        }
+
+        if descriptor["captureFailed"] as? Bool == true {
+            showCASWebLoginFallback("验证码无法从当前页面安全读取，已保留学校网页登录方式。")
+            return
+        }
+
+        // A refresh click invalidates the old image immediately. Only accept a new
+        // image after the page's own CAPTCHA image emits its load event.
+        if captchaRefreshToken != nil {
+            casLoginPanel.setStatus("正在等待 CAS 页面加载新的验证码…")
+            if preferWebLoginForCurrentCASPage {
+                casLoginPanel.isHidden = true
+                webView.isHidden = false
+            } else {
+                casLoginPanel.isHidden = false
+                webView.isHidden = true
+            }
+            return
+        }
+
+        let wasReady = nativeCASFormReady
+        nativeCASFormReady = true
+        if !wasReady {
+            casLoginPanel.prepare(username: SettingsManager.shared.portalUsername,
+                                  password: SettingsManager.shared.casPassword)
+        }
+
+        if let dataURL = descriptor["captchaDataURL"] as? String {
+            guard let imageData = CampusAICasLoginSupport.captchaImageData(from: dataURL) else {
+                showCASWebLoginFallback("验证码图片格式不受支持，已保留学校网页登录方式。")
+                return
+            }
+            casLoginPanel.setCaptchaImage(imageData)
+            casLoginPanel.setStatus("验证码已从当前 CAS 页面读取。")
+            captchaRefreshToken = nil
+        } else {
+            casLoginPanel.setStatus("正在读取验证码；若图片未出现，可刷新或切换到网页登录。")
+        }
+
+        if preferWebLoginForCurrentCASPage {
+            casLoginPanel.isHidden = true
+            webView.isHidden = false
+        } else {
+            casLoginPanel.isHidden = false
+            webView.isHidden = true
+            statusLabel.stringValue = "检测到学校 CAS 密码登录表单。"
+        }
+    }
+
+    private func showCASWebLoginFallback(_ message: String) {
+        nativeCASFormReady = false
+        casProbeToken = UUID()
+        captchaRefreshToken = nil
+        casLoginPanel.setSubmitting(false)
+        casLoginPanel.isHidden = true
+        loginWebView.isHidden = false
+        statusLabel.stringValue = message
+    }
+
+    @objc private func showCASWebLogin() {
+        preferWebLoginForCurrentCASPage = true
+        casLoginPanel.isHidden = true
+        loginWebView.isHidden = false
+        statusLabel.stringValue = "已切换到学校网页登录。登录仍由 CAS 页面完成。"
+    }
+
+    private func refreshNativeCaptcha() {
+        guard nativeCASFormReady, CampusAICasLoginSupport.isLoginPage(loginWebView.url) else {
+            showCASWebLoginFallback("当前验证码页面已变化，请在学校网页中继续登录。")
+            return
+        }
+        let token = UUID()
+        captchaRefreshToken = token
+        casLoginPanel.setCaptchaImage(nil)
+        casLoginPanel.clearCaptchaEntry()
+        casLoginPanel.setStatus("正在调用当前 CAS 页面的验证码刷新控件…")
+        loginWebView.evaluateJavaScript(CampusAICasLoginSupport.refreshCaptchaScript) { [weak self] result, _ in
+            guard let self = self, self.captchaRefreshToken == token else { return }
+            guard result as? Bool == true else {
+                self.captchaRefreshToken = nil
+                self.casLoginPanel.setStatus("当前页面没有可识别的刷新控件；可切换到网页登录刷新。")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                guard let self = self, self.captchaRefreshToken == token else { return }
+                self.captchaRefreshToken = nil
+                self.casLoginPanel.setStatus("尚未观察到新验证码；可重试或切换到网页登录。")
+            }
+        }
+    }
+
+    private func submitNativeCASLogin(username: String, password: String, captcha: String) {
+        guard nativeCASFormReady, CampusAICasLoginSupport.isLoginPage(loginWebView.url),
+              casLoginPanel.hasCaptchaImage else {
+            showCASWebLoginFallback("当前 CAS 表单已变化，请在学校网页中继续登录。")
+            return
+        }
+        guard let script = CampusAICasLoginSupport.submitScript(
+            username: username, password: password, captcha: captcha
+        ) else {
+            casLoginPanel.setStatus("无法准备原始 CAS 表单提交，请切换到网页登录。")
+            return
+        }
+
+        // Match the existing unified-login behavior by updating its existing credential fields.
+        SettingsManager.shared.portalUsername = username
+        SettingsManager.shared.casPassword = password
+        nativeCASFormReady = false
+        preferWebLoginForCurrentCASPage = false
+        casProbeToken = UUID()
+        casLoginPanel.setSubmitting(true)
+        casLoginPanel.setStatus("正在提交到学校 CAS 页面并等待门户回跳…")
+        casLoginPanel.isHidden = true
+        loginWebView.isHidden = false
+        loginWebView.evaluateJavaScript(script) { [weak self] result, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.displayingLogin else { return }
+                if result as? Bool == true {
+                    self.statusLabel.stringValue = "已通过 CAS 页面提交登录，正在等待学校认证结果…"
+                } else if CampusAICasLoginSupport.isLoginPage(self.loginWebView.url) {
+                    self.nativeCASFormReady = true
+                    self.casLoginPanel.isHidden = false
+                    self.loginWebView.isHidden = true
+                    self.casLoginPanel.setSubmitting(false)
+                    self.casLoginPanel.setStatus("未能提交当前 CAS 表单；请检查页面或切换到网页登录。")
+                }
+            }
+        }
+    }
+
+    public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "campusAICaptcha",
+              let webView = message.webView, webView === loginWebView,
+              message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host.lowercased() == "cas.hfut.edu.cn",
+              displayingLogin,
+              let body = message.body as? [String: String],
+              ["formChanged", "captchaChanged"].contains(body["event"] ?? "") else { return }
+        if body["event"] == "captchaChanged" {
+            captchaRefreshToken = nil
+        }
+        inspectCASLoginPage(webView)
     }
 
     @objc private func sendMessage() {
@@ -538,6 +777,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         guard let parent = loginWebView.superview else { return nil }
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.userContentController = scriptController
         let popup = WKWebView(frame: loginWebView.frame, configuration: configuration)
         popup.navigationDelegate = self
         popup.uiDelegate = self
@@ -560,6 +800,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         recordNavigation("start", url: webView.url)
+        guard displayingLogin, webView === loginWebView else { return }
+        casProbeToken = UUID()
+        captchaRefreshToken = nil
+        nativeCASFormReady = false
+        preferWebLoginForCurrentCASPage = false
+        casTicketErrorDetected = false
+        casLoginPanel.setSubmitting(false)
+        casLoginPanel.isHidden = true
+        webView.isHidden = false
     }
 
     public func webView(_ webView: WKWebView,
@@ -579,6 +828,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         guard webView === loginWebView, displayingLogin else { return }
         let host = current.host?.lowercased() ?? ""
 
+        if CampusAICasLoginSupport.isLoginPage(current) {
+            inspectCASLoginPage(webView)
+        } else {
+            nativeCASFormReady = false
+            casLoginPanel.isHidden = true
+            webView.isHidden = false
+        }
+
         if host == "cas.hfut.edu.cn" || host == "one.hfut.edu.cn" || host == CampusAIEndpoint.host {
             // 只读取页面可见报错文字以便提示；绝不采集 ST 值或密码。
             let navigationID = portalNavigationID
@@ -586,8 +843,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 guard let self = self, self.displayingLogin,
                       self.portalNavigationID == navigationID,
                       webView === self.loginWebView,
+                      webView.url == current,
                       let body = result as? String else { return }
                 if body.contains("不符合目标服务") || body.contains("INVALID_SERVICE") {
+                    self.casTicketErrorDetected = true
+                    self.nativeCASFormReady = false
+                    self.casProbeToken = UUID()
+                    self.captchaRefreshToken = nil
+                    self.casLoginPanel.isHidden = true
+                    webView.isHidden = false
                     self.statusLabel.stringValue = "CAS 服务票据校验失败。请确认通过信息门户的 AI 应用中台进入；复制脱敏跳转轨迹可帮助定位具体一跳。"
                 }
             }
