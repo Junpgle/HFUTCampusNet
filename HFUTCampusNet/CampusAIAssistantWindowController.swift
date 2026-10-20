@@ -186,6 +186,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
     private let transcriptScroll = NSScrollView()
     private var loginWebView: WKWebView!
+    private var portalWebViews: [WKWebView] = []
     private var activeClient: CampusAIStreamClient?
     private var sending = false
     private var displayingLogin = false
@@ -267,6 +268,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         loginWebView.autoresizingMask = [.width, .height]
         loginWebView.isHidden = true
         root.addSubview(loginWebView)
+        portalWebViews = [loginWebView]
 
         transcriptScroll.frame = loginWebView.frame
         transcriptScroll.autoresizingMask = [.width, .height]
@@ -329,7 +331,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func displayChat(status: String) {
         displayingLogin = false
-        loginWebView.isHidden = true
+        for webView in portalWebViews { webView.isHidden = true }
         transcriptScroll.isHidden = false
         backButton.isEnabled = false
         statusLabel.stringValue = status
@@ -339,6 +341,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private func openInformationPortal() {
         portalNavigationID = UUID()
         displayingLogin = true
+        for webView in portalWebViews { webView.isHidden = (webView !== loginWebView) }
         loginWebView.isHidden = false
         transcriptScroll.isHidden = true
         backButton.isEnabled = true
@@ -495,18 +498,28 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         createWebViewWith configuration: WKWebViewConfiguration,
                         for navigationAction: WKNavigationAction,
                         windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // 信息门户「AI 应用中台」常用新窗口打开应用，复用当前 WebView
-        // 和现有 WKWebsiteDataStore，而不是跳入外部浏览器失去 Cookie。
-        guard navigationAction.targetFrame == nil,
-              let url = navigationAction.request.url else { return nil }
-        let host = url.host?.lowercased() ?? ""
-        if url.scheme == "https" && (host == "hfut.edu.cn" || host.hasSuffix(".hfut.edu.cn")) {
-            webView.load(navigationAction.request)
-            statusLabel.stringValue = "正在从信息门户打开目标应用…"
-        } else {
-            statusLabel.stringValue = "目标窗口不是学校 HTTPS 域名，已停止自动跳转，请在浏览器核对。"
+        // 门户有时使用 window.open() 或 target=_blank，然后继续更新窗口 location。
+        // 返回真实的弹出 WKWebView 才能让后续浏览器导航和 CAS 回跳正常执行。
+        guard navigationAction.targetFrame == nil else { return nil }
+        if let url = navigationAction.request.url, url.scheme != "about" {
+            let host = url.host?.lowercased() ?? ""
+            guard url.scheme == "https",
+                  (host == "hfut.edu.cn" || host.hasSuffix(".hfut.edu.cn")) else {
+                statusLabel.stringValue = "已拦截非学校 HTTPS 域名的弹出窗口，请在官方门户确认应用入口。"
+                return nil
+            }
         }
-        return nil
+        guard let parent = loginWebView.superview else { return nil }
+        let popup = WKWebView(frame: loginWebView.frame, configuration: configuration)
+        popup.navigationDelegate = self
+        popup.uiDelegate = self
+        popup.autoresizingMask = [.width, .height]
+        for existing in portalWebViews { existing.isHidden = true }
+        parent.addSubview(popup)
+        portalWebViews.append(popup)
+        loginWebView = popup
+        statusLabel.stringValue = "信息门户正在新窗口中启动学校 AI 应用…"
+        return popup
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
