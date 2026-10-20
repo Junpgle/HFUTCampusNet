@@ -17,7 +17,7 @@
 - 请求：从 WebKit 的 cookie store 读取当前有效、属于 aipt.hfut.edu.cn 或 hfut.edu.cn 的 Cookie；使用内存中的临时 URLSession 向 https://aipt.hfut.edu.cn/api/af-api-agent/chat/send 发送 POST 请求。
 - 请求体：text、groupId、aiLargeModelId、thinkingMode=balanced、debug=false、traceId。64 位整数以原始 JSON 数字传输，避免 JavaScript Number 精度问题。
 - 响应：增量解析 text/event-stream；根据 type=text 追加文本；显示 tool_call_start/tool_call_result 的简化状态，不解析敏感工具输出。
-- 会话：优先查询本人当前登录身份的最近会话，失败时由用户手动指定 groupId。模型和智能体 ID 存在 UserDefaults 中，登录 Cookie 和对话原文不持久化。
+- 会话：优先查询本人当前登录身份的最近会话，失败时由用户手动指定 groupId。模型和智能体 ID 存在 UserDefaults 中，聊天内容不另行持久化。App 不在配置文件中单独存储 Cookie，但 WebKit 默认网站数据存储可能按服务器设置持久保存学校登录 Cookie；可从学校网页退出账号或清理 App 网站数据。
 
 ## 风险与限制
 
