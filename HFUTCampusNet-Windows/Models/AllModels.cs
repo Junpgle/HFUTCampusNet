@@ -666,6 +666,94 @@ public sealed class ExamItem
     }
 }
 
+public sealed record CourseExamForecast(
+    int LessonId,
+    string CourseName,
+    string? CourseCode,
+    string LastLessonDateString,
+    string PredictedDateString)
+{
+    public string PredictedDateDisplayText => $"{PredictedDateString}（预计）";
+    public string BasisDisplayText => $"最后一次课 {LastLessonDateString} · 按所在周取次次周周一";
+}
+
+public static class CourseExamForecastService
+{
+    /// <summary>Estimates the Monday of the second week after each teaching group's final lesson week.</summary>
+    public static List<CourseExamForecast> Upcoming(
+        CourseScheduleData? schedule,
+        IEnumerable<ExamItem>? officialExams = null,
+        DateTime? now = null)
+    {
+        if (schedule?.Lessons == null || schedule.Lessons.Count == 0) return new List<CourseExamForecast>();
+
+        var dt = now ?? DateTime.Now;
+        var today = CourseCalendarHelper.ParseDate(CourseCalendarHelper.DateString(dt), "00:00") ?? dt.Date;
+        var finalExams = (officialExams ?? Enumerable.Empty<ExamItem>())
+            .Where(exam => string.IsNullOrWhiteSpace(exam.ExamType) || !exam.ExamType!.Contains("期中", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var forecasts = new List<CourseExamForecast>();
+
+        foreach (var group in schedule.Lessons.GroupBy(lesson => lesson.LessonId))
+        {
+            if (group.Key <= 0) continue;
+            var lastLesson = group
+                .Select(lesson => new
+                {
+                    Lesson = lesson,
+                    Date = CourseCalendarHelper.ParseDate(lesson.DateString, "00:00")
+                })
+                .Where(item => item.Date.HasValue)
+                .OrderByDescending(item => item.Date)
+                .FirstOrDefault();
+
+            if (lastLesson?.Date is not DateTime lastDate) continue;
+            var daysUntilSecondNextMonday = 15 - CourseCalendarHelper.Weekday(lastDate);
+            var predictedDate = lastDate.Date.AddDays(daysUntilSecondNextMonday);
+            if (predictedDate < today) continue;
+
+            bool hasPublishedFinalExam = finalExams.Any(exam => MatchesCourse(
+                lastLesson.Lesson.CourseName,
+                lastLesson.Lesson.CourseCode,
+                exam.CourseName,
+                exam.CourseCode));
+            if (hasPublishedFinalExam) continue;
+
+            forecasts.Add(new CourseExamForecast(
+                group.Key,
+                lastLesson.Lesson.CourseName,
+                lastLesson.Lesson.CourseCode,
+                CourseCalendarHelper.DateString(lastDate),
+                CourseCalendarHelper.DateString(predictedDate)));
+        }
+
+        return forecasts
+            .OrderBy(item => item.PredictedDateString, StringComparer.Ordinal)
+            .ThenBy(item => item.CourseName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool MatchesCourse(string courseName, string? courseCode, string examName, string? examCode)
+    {
+        var normalizedCourseCode = Normalize(courseCode);
+        var normalizedExamCode = Normalize(examCode);
+        if (normalizedCourseCode != null && normalizedExamCode != null)
+            return string.Equals(normalizedCourseCode, normalizedExamCode, StringComparison.OrdinalIgnoreCase);
+
+        var normalizedCourseName = Normalize(courseName);
+        var normalizedExamName = Normalize(examName);
+        return normalizedCourseName != null && normalizedExamName != null
+            && string.Equals(normalizedCourseName, normalizedExamName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = new string(value.Where(character => !char.IsWhiteSpace(character)).ToArray()).ToUpperInvariant();
+        return normalized.Length == 0 ? null : normalized;
+    }
+}
+
 public sealed class GradeItem
 {
     public string Id { get; set; } = string.Empty;

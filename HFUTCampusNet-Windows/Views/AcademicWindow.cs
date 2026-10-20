@@ -34,6 +34,10 @@ public sealed class AcademicWindow : Window
     private readonly TextBlock[] _cardSubs = new TextBlock[4];
 
     private readonly DataGrid _dataGrid;
+    private readonly Grid _examListsGrid;
+    private readonly Grid _forecastPanel;
+    private readonly TextBlock _forecastSectionTitle;
+    private readonly DataGrid _forecastDataGrid;
 
     private AcademicWindow()
     {
@@ -212,7 +216,7 @@ public sealed class AcademicWindow : Window
         Grid.SetRow(sectionHeader, 2);
         root.Children.Add(sectionHeader);
 
-        // DataGrid
+        // Exam list area: official schedule above, estimate below. Other modes use the full area.
         _dataGrid = new DataGrid
         {
             AutoGenerateColumns = false,
@@ -225,8 +229,50 @@ public sealed class AcademicWindow : Window
             BorderBrush = ThemeManager.Shared.TableGridLineBrush,
             BorderThickness = new Thickness(1)
         };
-        Grid.SetRow(_dataGrid, 3);
-        root.Children.Add(_dataGrid);
+
+        _examListsGrid = new Grid();
+        _examListsGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
+        _examListsGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(_dataGrid, 0);
+        Grid.SetRowSpan(_dataGrid, 2);
+        _examListsGrid.Children.Add(_dataGrid);
+
+        _forecastPanel = new Grid { Visibility = Visibility.Collapsed };
+        _forecastPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _forecastPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _forecastSectionTitle = new TextBlock
+        {
+            Text = "期末考试预测",
+            FontSize = 11.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = ThemeManager.Shared.TextSecondary,
+            Margin = new Thickness(0, 2, 0, 5)
+        };
+        Grid.SetRow(_forecastSectionTitle, 0);
+        _forecastPanel.Children.Add(_forecastSectionTitle);
+
+        _forecastDataGrid = new DataGrid
+        {
+            AutoGenerateColumns = false,
+            IsReadOnly = true,
+            GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
+            HeadersVisibility = DataGridHeadersVisibility.Column,
+            RowHeaderWidth = 0,
+            FontSize = 12,
+            RowHeight = 25,
+            BorderBrush = ThemeManager.Shared.TableGridLineBrush,
+            BorderThickness = new Thickness(1)
+        };
+        _forecastDataGrid.Columns.Add(new DataGridTextColumn { Header = "课程", Binding = new System.Windows.Data.Binding("CourseName"), Width = 240 });
+        _forecastDataGrid.Columns.Add(new DataGridTextColumn { Header = "预计日期", Binding = new System.Windows.Data.Binding("PredictedDateDisplayText"), Width = 190 });
+        _forecastDataGrid.Columns.Add(new DataGridTextColumn { Header = "推算依据", Binding = new System.Windows.Data.Binding("BasisDisplayText"), Width = new DataGridLength(1, GridUnitType.Star) });
+        Grid.SetRow(_forecastDataGrid, 1);
+        _forecastPanel.Children.Add(_forecastDataGrid);
+        Grid.SetRow(_forecastPanel, 1);
+        _examListsGrid.Children.Add(_forecastPanel);
+
+        Grid.SetRow(_examListsGrid, 3);
+        root.Children.Add(_examListsGrid);
 
         Content = root;
 
@@ -241,6 +287,7 @@ public sealed class AcademicWindow : Window
         ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(ApplyTheme);
 
         AppEvents.AcademicDataUpdated += () => AppEvents.InvokeOnUI(ReloadUI);
+        AppEvents.CourseScheduleUpdated += () => AppEvents.InvokeOnUI(ReloadUI);
         ReloadUI();
     }
 
@@ -360,7 +407,18 @@ public sealed class AcademicWindow : Window
             _dataGrid.VerticalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
             _dataGrid.Foreground = ThemeManager.Shared.TextPrimary;
             _dataGrid.BorderBrush = ThemeManager.Shared.TableGridLineBrush;
-
+        }
+        if (_forecastDataGrid != null)
+        {
+            ThemeManager.Shared.ApplyDataGridTheme(_forecastDataGrid);
+            _forecastDataGrid.Background = ThemeManager.Shared.TableBackground;
+            _forecastDataGrid.RowBackground = ThemeManager.Shared.TableBackground;
+            _forecastDataGrid.AlternatingRowBackground = ThemeManager.Shared.TableAlternatingBackground;
+            _forecastDataGrid.HorizontalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
+            _forecastDataGrid.VerticalGridLinesBrush = ThemeManager.Shared.TableGridLineBrush;
+            _forecastDataGrid.Foreground = ThemeManager.Shared.TextPrimary;
+            _forecastDataGrid.BorderBrush = ThemeManager.Shared.TableGridLineBrush;
+            _forecastSectionTitle.Foreground = ThemeManager.Shared.TextSecondary;
         }
     }
 
@@ -409,6 +467,10 @@ public sealed class AcademicWindow : Window
         }
         UpdateSyncStatus(snap);
         _dataGrid.Columns.Clear();
+        bool showForecasts = _currentMode == 1;
+        _forecastPanel.Visibility = showForecasts ? Visibility.Visible : Visibility.Collapsed;
+        Grid.SetRow(_dataGrid, 0);
+        Grid.SetRowSpan(_dataGrid, showForecasts ? 1 : 2);
 
         switch (_currentMode)
         {
@@ -470,9 +532,14 @@ public sealed class AcademicWindow : Window
                 var now = DateTime.Now;
                 var upcoming = allExams.Where(e => !e.IsFinished(now)).OrderBy(e => e.ExamStartDate ?? DateTime.MaxValue).ToList();
                 var finished = allExams.Where(e => e.IsFinished(now)).OrderByDescending(e => e.ExamStartDate ?? DateTime.MinValue).ToList();
+                var forecasts = CourseExamForecastService.Upcoming(CourseScheduleService.Shared.CurrentSchedule, allExams, now);
                 _sectionTitleLabel.Text = allExams.Count == 0
-                    ? $"本学期考试安排与校历里程碑（{milestone.SemesterName} · 暂未发布排考）"
-                    : $"本学期考试安排（共 {allExams.Count} 场，待考 {upcoming.Count} 场 · {milestone.SemesterName}）";
+                    ? $"教务正式考试安排与校历里程碑（{milestone.SemesterName} · 暂未发布排考）"
+                    : $"教务正式考试安排（共 {allExams.Count} 场，待考 {upcoming.Count} 场 · {milestone.SemesterName}）";
+                _forecastSectionTitle.Text = forecasts.Count == 0
+                    ? "期末考试预测 · 当前无可展示项目（按最后一课所在周暂定次次周周一）"
+                    : $"期末考试预测（{forecasts.Count} 个教学班 · 按最后一课所在周暂定次次周周一，最终以教务安排为准）";
+                _forecastDataGrid.ItemsSource = forecasts;
 
                 var nextExam = upcoming.FirstOrDefault();
                 if (nextExam != null)
@@ -482,7 +549,7 @@ public sealed class AcademicWindow : Window
                 }
                 else
                 {
-                    SetCard(0, "最近一场考试", "暂无待考科目", allExams.Count == 0 ? "教务系统尚未公布本学期排考" : "本学期考试已全部结束", Brushes.SeaGreen);
+                    SetCard(0, "正式考试安排", "暂无待考科目", allExams.Count == 0 ? "教务系统尚未公布；预测日期见下方" : "本学期正式考试已全部结束", Brushes.SeaGreen);
                     SetCard(1, "期末考试周倒计时", milestone.DaysUntilExamWeek > 0 ? $"约 {milestone.DaysUntilExamWeek} 天" : "已进入期末阶段", $"待考 {upcoming.Count} 场 / 已考 {finished.Count} 场", Brushes.DodgerBlue);
                 }
                 SetCard(2, "本学期校历进度", $"第 {milestone.CurrentWeek}/{milestone.TotalWeeks} 周 ({milestone.ProgressPercentage:F0}%)", $"{milestone.StartDateString} ~ {milestone.EndDateString}", Brushes.Teal);

@@ -949,7 +949,7 @@ public sealed class EmptyClassroomWindow : Window
             (2, label2),
             (3, label3)
         };
-        if (!_isViewingTomorrow) options.Add((4, "当前占用"));
+        if (!_isViewingTomorrow) options.Add((4, "当前有课"));
 
         foreach (var (mode, txt) in options)
         {
@@ -1086,7 +1086,7 @@ public sealed class EmptyClassroomWindow : Window
         }
         else if (_statusFilterMode == 4 && isToday)
         {
-            filteredQuery = filteredQuery.Where(r => r.CurrentOccupation(nowMin) != null);
+            filteredQuery = filteredQuery.Where(r => r.Occupations.Any(o => o.IsLesson && CurrentLessonMetrics.IsOngoing(o, nowMin)));
         }
 
         var results = filteredQuery
@@ -1106,7 +1106,7 @@ public sealed class EmptyClassroomWindow : Window
         }
 
         _emptyNoticeTextBlock.Text = _statusFilterMode == 4 && isToday
-            ? "当前查询范围没有正在占用的教室"
+            ? "当前查询范围没有正在上课的教室"
             : "暂无匹配的空闲教室数据\n可尝试切换教学楼、放宽楼层限制或点击右上角「刷新排课」";
         _emptyNoticeTextBlock.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 

@@ -104,6 +104,11 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
         <true/>
         <key>NSExceptionDomains</key>
         <dict>
+            <key>121.251.19.62</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
             <key>hfut.edu.cn</key>
             <dict>
                 <key>NSIncludesSubdomains</key>

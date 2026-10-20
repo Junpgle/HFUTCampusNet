@@ -88,6 +88,28 @@ public struct CampusHistoryStore: Codable {
     public var flowRecords: [DailyFlowRecord] = []
     public var electricityRecords: [DailyElectricityRecord] = []
     public var electricityDormKey: String? = nil
+    /// 非当前宿舍的电费历史；旧版的 electricityRecords/electricityDormKey 仍表示当前分区。
+    public var archivedElectricityRecords: [String: [DailyElectricityRecord]]? = nil
+
+    @discardableResult
+    public mutating func activateElectricityHistory(for dormKey: String) -> Bool {
+        guard electricityDormKey != dormKey else { return false }
+
+        var archived = archivedElectricityRecords ?? [:]
+        if let previousKey = electricityDormKey {
+            if !electricityRecords.isEmpty {
+                archived[previousKey] = electricityRecords
+            }
+        } else if !electricityRecords.isEmpty {
+            // 老数据缺少宿舍标识时仍保留原记录，但不将其误并入当前宿舍。
+            archived["__legacy_unassigned__"] = electricityRecords
+        }
+
+        electricityRecords = archived.removeValue(forKey: dormKey) ?? []
+        electricityDormKey = dormKey
+        archivedElectricityRecords = archived.isEmpty ? nil : archived
+        return true
+    }
 }
 
 /// 校园网与电费历史统计管理器
@@ -109,13 +131,47 @@ public class CampusHistoryManager {
     }
 
     private func loadStore() {
-        guard let data = try? Data(contentsOf: storeURL),
-              let loaded = try? JSONDecoder().decode(CampusHistoryStore.self, from: data) else {
-            return
+        let loaded: CampusHistoryStore? = {
+            guard let data = try? Data(contentsOf: storeURL) else { return nil }
+            return try? JSONDecoder().decode(CampusHistoryStore.self, from: data)
+        }()
+        if let loaded {
+            self.store = loaded
         }
-        self.store = loaded
-        if reconcileContinuity() {
+
+        let continuityBeforeSelection = reconcileContinuity()
+        let currentDormKey = Self.electricityDormKey(
+            campus: SettingsManager.shared.dormCampus,
+            building: SettingsManager.shared.dormBuilding,
+            room: SettingsManager.shared.dormRoom,
+            endNumber: SettingsManager.shared.dormEndNumber
+        )
+        let selectedCurrentHistory = store.activateElectricityHistory(for: currentDormKey)
+        let continuityAfterSelection = selectedCurrentHistory ? reconcileContinuity() : false
+
+        if loaded != nil && (continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
             saveStore()
+        }
+    }
+
+    private static func electricityDormKey(campus: String, building: String, room: String, endNumber: String) -> String {
+        "\(campus)|\(building)|\(room)|\(endNumber)"
+    }
+
+    /// 切换当前宿舍对应的电费历史分区，历史记录按身份保留。
+    public func activateElectricityHistory(campus: String, building: String, room: String, endNumber: String) {
+        let dormKey = Self.electricityDormKey(campus: campus, building: building, room: room, endNumber: endNumber)
+        let didChange = queue.sync {
+            guard self.store.activateElectricityHistory(for: dormKey) else { return false }
+            self.reconcileContinuity()
+            self.saveStore()
+            return true
+        }
+
+        if didChange {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
+            }
         }
     }
 
@@ -283,7 +339,7 @@ public class CampusHistoryManager {
 
     private func saveStore() {
         if let data = try? JSONEncoder().encode(store) {
-            try? data.write(to: storeURL)
+            try? data.write(to: storeURL, options: .atomic)
         }
     }
 
@@ -432,26 +488,16 @@ public class CampusHistoryManager {
 
     // MARK: - 记录宿舍电费
 
-    public func clearElectricityHistory() {
-        queue.async {
-            self.store.electricityRecords.removeAll()
-            self.store.electricityDormKey = nil
-            self.saveStore()
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
-            }
-        }
-    }
-
     public func recordElectricity(_ data: ElectricityData) {
         queue.async {
             guard let bal = data.balanceRMB else { return }
-            let dormKey = "\(data.campus)|\(data.building)|\(data.room)|\(data.endNumber)"
-            if let prevKey = self.store.electricityDormKey, prevKey != dormKey {
-                // 宿舍房间或端口已变更，清空旧宿舍电费历史，避免两个不同房间的余额相减产生虚假巨额消费
-                self.store.electricityRecords.removeAll()
-            }
-            self.store.electricityDormKey = dormKey
+            let dormKey = Self.electricityDormKey(
+                campus: data.campus,
+                building: data.building,
+                room: data.room,
+                endNumber: data.endNumber
+            )
+            self.store.activateElectricityHistory(for: dormKey)
 
             let today = self.todayString()
             let kwh = data.remainingKWh

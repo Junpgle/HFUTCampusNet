@@ -14,6 +14,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     private var isSyncingAll: Bool = false
     private var syncCompletedCount: Int = 0
     private var syncSessionToken: UUID = UUID()
+    private var electricitySyncFailure: String?
 
     private init() {
         let window = NSWindow(
@@ -147,6 +148,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         isSyncingAll = false
         syncCompletedCount = 0
         syncSessionToken = UUID()
+        electricitySyncFailure = nil
         updateStep(index: 0, text: "1. 统一身份认证", status: .waiting)
         updateStep(index: 1, text: "2. 教务课表同步", status: .waiting)
         updateStep(index: 2, text: "3. 宿舍电费查询", status: .waiting)
@@ -468,7 +470,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         // 立即发起校园网网关/自服务拉取
         CampusNetworkClient.shared.fetchData()
 
-        let oauthURLStr = "https://cas.hfut.edu.cn/cas/oauth2.0/authorize?client_id=Hfut2023Ydfwpt&redirect_uri=http%3A%2F%2F121.251.19.62%2Fberserker-auth%2Fcas%2Foauth2url%3Foauth2url%3Dhttp%3A%2F%2F121.251.19.62%2Fberserker-base%2Fredirect&response_type=code"
+        let oauthURLStr = "https://cas.hfut.edu.cn/cas/oauth2.0/authorize?client_id=Hfut2023Ydfwpt&redirect_uri=http%3A%2F%2F121.251.19.62%2Fberserker-auth%2Fcas%2Foauth2url%3Foauth2url%3Dhttp%3A%2F%2F121.251.19.62%2Fberserker-base%2Fredirect%3FappId%3D24%26type%3Dapp&response_type=code"
         guard let oauthURL = URL(string: oauthURLStr) else {
             self.syncCampusNetwork(sessionToken: sessionToken)
             self.checkAllSyncFinished(sessionToken: sessionToken)
@@ -493,13 +495,13 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     case .success(let elec):
                         let balStr = elec.displayBalance
                         self.updateStep(index: 2, text: "3. 电费 (\(balStr))", status: .success)
-                    case .failure:
+                    case .failure(let error):
                         if !SettingsManager.shared.isDormConfigured {
                             self.updateStep(index: 2, text: "3. 电费 (未填宿舍)", status: .success)
-                        } else if capturedToken != nil {
-                            self.updateStep(index: 2, text: "3. 电费已授权", status: .success)
                         } else {
+                            self.electricitySyncFailure = error.localizedDescription
                             self.updateStep(index: 2, text: "3. 电费查询失败", status: .failure)
+                            self.statusDetailLabel.stringValue = "电费查询失败：\(error.localizedDescription)"
                         }
                     }
                     self.checkAllSyncFinished(sessionToken: sessionToken)
@@ -535,14 +537,20 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         syncCompletedCount += 1
         if syncCompletedCount >= 3 {
             progressIndicator.stopAnimation(nil)
-            statusTitleLabel.stringValue = "全部校园服务已同步完成"
-            statusTitleLabel.textColor = NSColor.systemGreen
-            statusDetailLabel.stringValue = "课表排课、宿舍电费、校园网流量及历史统计均已同步就绪。"
+            if let electricitySyncFailure {
+                statusTitleLabel.stringValue = "校园服务已同步，电费查询失败"
+                statusTitleLabel.textColor = NSColor.systemRed
+                statusDetailLabel.stringValue = "电费查询失败：\(electricitySyncFailure)"
+            } else {
+                statusTitleLabel.stringValue = "全部校园服务已同步完成"
+                statusTitleLabel.textColor = NSColor.systemGreen
+                statusDetailLabel.stringValue = "课表排课、宿舍电费、校园网流量及历史统计均已同步就绪。"
+            }
 
             NotificationHelper.showNotification(
-                title: "统一身份认证全量同步完成",
-                subtitle: "课表、宿舍电费、校园网与历史统计已自动刷新",
-                body: "可在顶部状态栏、桌面组件及历史分析窗口中查看全部数据。"
+                title: electricitySyncFailure == nil ? "统一身份认证全量同步完成" : "统一身份认证同步完成，电费查询失败",
+                subtitle: electricitySyncFailure == nil ? "课表、宿舍电费、校园网与历史统计已自动刷新" : (electricitySyncFailure ?? "电费查询失败"),
+                body: electricitySyncFailure == nil ? "可在顶部状态栏、桌面组件及历史分析窗口中查看全部数据。" : "请在设置中检查校区、楼栋、房间号与端口；错误：\(electricitySyncFailure ?? "未知错误")"
             )
 
             // 3 秒后自动关闭并打开桌面组件
