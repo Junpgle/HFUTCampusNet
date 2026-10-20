@@ -3,7 +3,8 @@ import AppKit
 import WebKit
 
 // HFUT AI-Flow 官方聊天入口。仅使用当前用户登录后获得的 AiFlow 会话，
-// 不在本地保存 Cookie、账号密码或数据库 SQL。
+// 不在 App 配置文件/源码中另存 Cookie、账号密码或数据库 SQL；
+// WKWebView 默认网站数据存储按学校 Cookie 自身有效期维护会话。
 private enum CampusAIEndpoint {
     static let host = "aipt.hfut.edu.cn"
     static let api = URL(string: "https://aipt.hfut.edu.cn/api/af-api-agent/")!
