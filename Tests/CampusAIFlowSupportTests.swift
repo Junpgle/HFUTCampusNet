@@ -8,7 +8,7 @@ struct CampusAIFlowSupportTests {
         testChatSaveRequestAndResponse()
         testChatAbortRequest()
         testCookieScope()
-        testNavigationTraceRedaction()
+        testRefererValidation()
         testCASNativeLoginSupport()
         testChatWindowInputActionPolicy()
         testTranscriptStyleAdaptsToAppearance()
@@ -176,16 +176,7 @@ struct CampusAIFlowSupportTests {
                "session creation must use the same narrowly scoped AI session cookies")
     }
 
-    private static func testNavigationTraceRedaction() {
-        let url = URL(string: "https://cas.hfut.edu.cn/cas/login/ST-hidden-ticket/opaque-callback-state?service=https%3A%2F%2Faipt.hfut.edu.cn%2Findex%2Fagent&ticket=ST-secret&state=secret-state")!
-        let line = CampusAISafeNavigationTrace.line(event: "redirect", url: url, target: "main")
-        expect(line.contains("host=cas.hfut.edu.cn"), "trace should retain the host")
-        expect(line.contains("path=/cas/login/<redacted>/<redacted>"), "ticket-like and opaque path segments should be redacted")
-        expect(line.contains("queryKeys=service,state,ticket"), "trace should retain query parameter names")
-        expect(!line.contains("ST-hidden-ticket") && !line.contains("ST-secret")
-               && !line.contains("aipt.hfut.edu.cn") && !line.contains("secret-state"),
-               "trace must not retain URL parameter values or path tickets")
-
+    private static func testRefererValidation() {
         let referer = CampusAIEndpoint.referer(
             from: URL(string: "https://aipt.hfut.edu.cn/agent-detail?id=1966078115428446208&after=opaque-state"),
             agentID: "1966078115428446208"

@@ -205,7 +205,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let newSessionButton = NSButton(title: "新建会话", target: nil, action: nil)
     private let loginButton = NSButton(title: "信息门户", target: nil, action: nil)
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
-    private let traceButton = NSButton(title: "复制脱敏轨迹", target: nil, action: nil)
     private let transcriptScroll = NSScrollView()
     private let scriptController = WKUserContentController()
     private let casLoginPanel = HFUTCASLoginPanel(frame: NSRect(x: 20, y: 128, width: 940, height: 458))
@@ -213,7 +212,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var captchaMessageProxy: CampusAIWeakScriptMessageHandler!
     private var loginWebView: WKWebView!
     private var portalWebViews: [WKWebView] = []
-    private var navigationTrace: [String] = []
     private var activeClient: CampusAIStreamClient?
     private var activeLookupTask: URLSessionDataTask?
     private var activeLookupSession: URLSession?
@@ -282,13 +280,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         backButton.action = #selector(showChat)
         backButton.isEnabled = false
         root.addSubview(backButton)
-
-        traceButton.frame = NSRect(x: 610, y: 650, width: 135, height: 30)
-        traceButton.autoresizingMask = [.minXMargin, .minYMargin]
-        traceButton.target = self
-        traceButton.action = #selector(copyNavigationTrace)
-        traceButton.isEnabled = false
-        root.addSubview(traceButton)
 
         newSessionButton.frame = NSRect(x: 500, y: 650, width: 104, height: 30)
         newSessionButton.autoresizingMask = [.minXMargin, .minYMargin]
@@ -457,8 +448,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         groupField.stringValue = ""
         portalNavigationID = UUID()
         automaticNavigationAttempts.removeAll(keepingCapacity: true)
-        navigationTrace.removeAll(keepingCapacity: true)
-        traceButton.isEnabled = false
         displayingLogin = true
         nativeCASFormReady = false
         preferWebLoginForCurrentCASPage = false
@@ -500,27 +489,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 }
             }
         }
-    }
-
-    @objc private func copyNavigationTrace() {
-        guard !navigationTrace.isEmpty else {
-            statusLabel.stringValue = "当前没有可复制的跳转记录。"
-            return
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(navigationTrace.joined(separator: "\n"), forType: .string)
-        statusLabel.stringValue = "已复制 \(navigationTrace.count) 条脱敏记录，仅含事件、host、path 和 query 参数名。"
-    }
-
-    private func recordNavigation(_ event: String, url: URL?, target: String = "main") {
-        guard displayingLogin, let url = url else { return }
-        let line = CampusAISafeNavigationTrace.line(event: event, url: url, target: target)
-        if navigationTrace.last != line {
-            navigationTrace.append(line)
-            if navigationTrace.count > 100 { navigationTrace.removeFirst(navigationTrace.count - 100) }
-        }
-        traceButton.isEnabled = !navigationTrace.isEmpty
-        statusLabel.stringValue = "SSO 跳转：\(line)"
     }
 
     private func inspectCASLoginPage(_ webView: WKWebView) {
@@ -1196,7 +1164,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         windowFeatures: WKWindowFeatures) -> WKWebView? {
         // 门户有时使用 window.open() 或 target=_blank，然后继续更新窗口 location。
         // 返回真实的弹出 WKWebView 才能让后续浏览器导航和 CAS 回跳正常执行。
-        recordNavigation("popup-request", url: navigationAction.request.url, target: "popup")
         guard navigationAction.targetFrame == nil else { return nil }
         if let url = navigationAction.request.url, url.scheme != "about" {
             let host = url.host?.lowercased() ?? ""
@@ -1225,13 +1192,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     public func webView(_ webView: WKWebView,
                         decidePolicyFor navigationAction: WKNavigationAction,
                         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        let target = navigationAction.targetFrame?.isMainFrame == false ? "frame" : "main"
-        recordNavigation("navigate", url: navigationAction.request.url, target: target)
         decisionHandler(.allow)
     }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        recordNavigation("start", url: webView.url)
         guard displayingLogin, webView === loginWebView else { return }
         automaticNavigationAttempts.removeAll(keepingCapacity: true)
         emptyHistoryAgentID = nil
@@ -1246,20 +1210,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         webView.isHidden = false
     }
 
-    public func webView(_ webView: WKWebView,
-                        didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        recordNavigation("redirect", url: webView.url)
-    }
-
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard (error as NSError).code != NSURLErrorCancelled else { return }
-        recordNavigation("provisional-failure", url: webView.url)
-        statusLabel.stringValue = "学校登录页面连接失败。可复制脱敏跳转轨迹用于排查。"
+        statusLabel.stringValue = "学校登录页面连接失败，请检查网络后重试。"
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let current = webView.url else { return }
-        recordNavigation("finish", url: current)
         guard webView === loginWebView, displayingLogin else { return }
         let host = current.host?.lowercased() ?? ""
         captureSharedCASTGC()
@@ -1288,7 +1245,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     self.captchaRefreshToken = nil
                     self.casLoginPanel.isHidden = true
                     webView.isHidden = false
-                    self.statusLabel.stringValue = "CAS 服务票据校验失败。请确认通过信息门户的 AI 应用中台进入；复制脱敏跳转轨迹可帮助定位具体一跳。"
+                    self.statusLabel.stringValue = "CAS 服务票据校验失败。请确认通过信息门户的 AI 应用中台进入后重试。"
                 }
             }
         }
@@ -1379,9 +1336,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
-        recordNavigation("failure", url: webView.url)
         guard webView === loginWebView else { return }
-        statusLabel.stringValue = "学校页面加载失败。可复制脱敏跳转轨迹用于排查。"
+        statusLabel.stringValue = "学校页面加载失败，请检查网络后重试。"
     }
 
     public func webViewDidClose(_ webView: WKWebView) {

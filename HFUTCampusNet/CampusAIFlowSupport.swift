@@ -347,29 +347,3 @@ struct CampusAISSEParser {
         return true
     }
 }
-
-enum CampusAISafeNavigationTrace {
-    static func line(event: String, url: URL, target: String) -> String {
-        let host = url.host?.lowercased() ?? "<unknown>"
-        let path = safePath(url.path)
-        let keys = Set(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name) ?? [])
-        let query = keys.isEmpty ? "none" : keys.sorted().joined(separator: ",")
-        return "\(event) target=\(target) host=\(host) path=\(path) queryKeys=\(query)"
-    }
-
-    private static func safePath(_ path: String) -> String {
-        let segments = path.split(separator: "/", omittingEmptySubsequences: false).map { raw -> String in
-            let segment = String(raw)
-            let decoded = segment.removingPercentEncoding ?? segment
-            let lower = decoded.lowercased()
-            let looksLikeSecret = decoded.hasPrefix("ST-")
-                || lower.contains("ticket=")
-                || lower.contains("token=")
-                || decoded.range(of: "^[0-9]{15,}$", options: .regularExpression) != nil
-                || decoded.range(of: "^[A-Za-z0-9_-]{16,}$", options: .regularExpression) != nil
-            return looksLikeSecret ? "<redacted>" : segment
-        }
-        let value = segments.joined(separator: "/")
-        return value.isEmpty ? "/" : value
-    }
-}
