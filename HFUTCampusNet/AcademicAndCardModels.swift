@@ -107,6 +107,99 @@ public struct ExamItem: Codable, Identifiable, Equatable {
     }
 }
 
+/// Approximate final-exam date inferred from the last scheduled lesson.
+/// It deliberately has no time or location because neither is available from the course schedule.
+public struct CourseExamForecast: Equatable, Identifiable {
+    public var id: String { "\(lessonId)|\(predictedDateString)" }
+    public var lessonId: Int
+    public var courseName: String
+    public var courseCode: String?
+    public var lastLessonDateString: String
+    public var predictedDateString: String
+
+    public var predictedDateDisplayText: String { "\(predictedDateString)（预计）" }
+    public var basisDisplayText: String { "最后一次课 \(lastLessonDateString) · 按所在周取次次周周一" }
+}
+
+public enum CourseExamForecastService {
+    /// Estimates each teaching group's final-exam day as the Monday of the second week after its final lesson's week.
+    /// A published final-exam record takes precedence; midterm records do not suppress the estimate.
+    public static func upcoming(
+        schedule: CourseScheduleData? = CourseScheduleService.shared.currentSchedule,
+        officialExams: [ExamItem] = [],
+        at now: Date = Date()
+    ) -> [CourseExamForecast] {
+        guard let schedule, !schedule.lessons.isEmpty else { return [] }
+
+        let calendar = CourseCalendarHelper.beijingCalendar
+        let todayString = CourseCalendarHelper.dateString(from: now)
+        let today = CourseCalendarHelper.parseDate(todayString, "00:00") ?? now
+        let publishedFinalExams = officialExams.filter { exam in
+            guard let type = exam.examType?.trimmingCharacters(in: .whitespacesAndNewlines), !type.isEmpty else {
+                return true
+            }
+            return !type.localizedCaseInsensitiveContains("期中")
+        }
+
+        return Dictionary(grouping: schedule.lessons, by: \.lessonId)
+            .compactMap { lessonId, lessons -> CourseExamForecast? in
+                guard lessonId > 0 else { return nil }
+                let datedLessons = lessons.compactMap { lesson -> (CourseLesson, Date)? in
+                    guard let date = CourseCalendarHelper.parseDate(lesson.dateString, "00:00") else { return nil }
+                    return (lesson, date)
+                }
+                guard let lastLesson = datedLessons.max(by: { $0.1 < $1.1 }) else { return nil }
+                let daysUntilSecondNextMonday = 15 - CourseCalendarHelper.weekday(from: lastLesson.1)
+                guard let predictedDate = calendar.date(byAdding: .day, value: daysUntilSecondNextMonday, to: lastLesson.1),
+                      predictedDate >= today else {
+                    return nil
+                }
+
+                let course = lastLesson.0
+                guard !publishedFinalExams.contains(where: {
+                    Self.matches(courseName: course.courseName, courseCode: course.courseCode,
+                                 examName: $0.courseName, examCode: $0.courseCode)
+                }) else {
+                    return nil
+                }
+
+                return CourseExamForecast(
+                    lessonId: lessonId,
+                    courseName: course.courseName,
+                    courseCode: course.courseCode,
+                    lastLessonDateString: CourseCalendarHelper.dateString(from: lastLesson.1),
+                    predictedDateString: CourseCalendarHelper.dateString(from: predictedDate)
+                )
+            }
+            .sorted {
+                if $0.predictedDateString != $1.predictedDateString {
+                    return $0.predictedDateString < $1.predictedDateString
+                }
+                return $0.courseName.localizedCaseInsensitiveCompare($1.courseName) == .orderedAscending
+            }
+    }
+
+    private static func matches(courseName: String, courseCode: String?, examName: String, examCode: String?) -> Bool {
+        if let courseCode = normalized(courseCode), let examCode = normalized(examCode) {
+            return courseCode == examCode
+        }
+        guard let normalizedCourseName = normalized(courseName),
+              let normalizedExamName = normalized(examName) else {
+            return false
+        }
+        return normalizedCourseName == normalizedExamName
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined()
+            .uppercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+}
+
 /// 单门课程成绩项
 public struct GradeItem: Codable, Identifiable, Equatable {
     public var id: String               // "\(termName)|\(lessonCode.isEmpty ? courseName : lessonCode)"

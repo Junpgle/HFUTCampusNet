@@ -281,10 +281,12 @@ public sealed class ElectricityService
                 string bStr = bNum.ToString("D2", CultureInfo.InvariantCulture);
                 int rNum = int.TryParse(cleanRoom, out var rParsed) ? rParsed : 0;
                 string rStr = cleanRoom.Length >= 3 ? cleanRoom : rNum.ToString("D3", CultureInfo.InvariantCulture);
+                // 宣城房间编码使用设置页中的端口值 (11/12/21/22) 作为末两位。
                 string suffix = string.IsNullOrEmpty(cleanEnd) ? "11" : cleanEnd;
                 roomCode = $"30{bStr}{rStr}{suffix}";
             }
-            formParams["room"] = roomCode;
+            // 宣城慧新易校接口使用 rooms 查询参数。
+            formParams["rooms"] = roomCode;
         }
         else
         {
@@ -296,16 +298,14 @@ public sealed class ElectricityService
             formParams["room"] = room;
         }
 
-        var bodyString = string.Join("&", formParams.Select(kv => $"{kv.Key}={EncodeFormField(kv.Value)}"));
+        var queryString = string.Join("&", formParams.Select(kv => $"{EncodeFormField(kv.Key)}={EncodeFormField(kv.Value)}"));
 
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData");
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"http://121.251.19.62/charge/feeitem/getThirdData?{queryString}");
             req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
             req.Headers.TryAddWithoutValidation("Authorization", authHeader);
             req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
-            req.Content = new StringContent(bodyString, Encoding.UTF8, "application/x-www-form-urlencoded");
-
             using var resp = await _httpClient.SendAsync(req);
             int statusCode = (int)resp.StatusCode;
             if (statusCode == 401 || statusCode == 403)
@@ -327,7 +327,7 @@ public sealed class ElectricityService
             if (root.TryGetProperty("code", out var codeElem) &&
                 codeElem.ValueKind == JsonValueKind.Number &&
                 codeElem.TryGetInt32(out int jsonCode) &&
-                jsonCode == 401)
+                (jsonCode == 401 || jsonCode == 403))
             {
                 SettingsManager.Shared.HuixinAuthToken = null;
                 return (null, "登录凭据已过期", false);
@@ -337,10 +337,25 @@ public sealed class ElectricityService
                 ? msgElem.GetString()
                 : null;
 
-            if (!root.TryGetProperty("map", out var mapElem) ||
-                mapElem.ValueKind != JsonValueKind.Object ||
-                !mapElem.TryGetProperty("showData", out var showDataElem) ||
-                showDataElem.ValueKind != JsonValueKind.Object)
+            JsonElement showDataElem = default;
+            bool hasShowData = root.TryGetProperty("map", out var mapElem) &&
+                mapElem.ValueKind == JsonValueKind.Object &&
+                mapElem.TryGetProperty("showData", out showDataElem) &&
+                showDataElem.ValueKind == JsonValueKind.Object;
+            if (!hasShowData && root.TryGetProperty("data", out var dataElem) && dataElem.ValueKind == JsonValueKind.Object)
+            {
+                if (dataElem.TryGetProperty("showData", out var nestedShowData) && nestedShowData.ValueKind == JsonValueKind.Object)
+                {
+                    showDataElem = nestedShowData;
+                    hasShowData = true;
+                }
+                else
+                {
+                    showDataElem = dataElem;
+                    hasShowData = true;
+                }
+            }
+            if (!hasShowData)
             {
                 return (null, defaultMsg ?? "未能获取到电费详情，请核对楼栋与寝室号配置", true);
             }
@@ -493,7 +508,7 @@ public sealed class ElectricityService
                 ? token
                 : $"bearer {token}";
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData");
+            using var req = new HttpRequestMessage(HttpMethod.Post, "http://121.251.19.62/charge/feeitem/getThirdData?feeitemid=281&type=IEC&level=0");
             req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
             req.Content = new StringContent("feeitemid=281&type=IEC&level=0", Encoding.UTF8, "application/x-www-form-urlencoded");
 
@@ -518,7 +533,7 @@ public sealed class ElectricityService
 
             using (doc)
             {
-                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401)
+                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
                     SettingsManager.Shared.HuixinAuthToken = null;
                     if (allowRetry)
@@ -530,15 +545,32 @@ public sealed class ElectricityService
                     return (null, null);
                 }
 
-                if (doc == null ||
-                    doc.RootElement.ValueKind != JsonValueKind.Object ||
-                    !doc.RootElement.TryGetProperty("map", out var mapElem) ||
-                    mapElem.ValueKind != JsonValueKind.Object ||
-                    !mapElem.TryGetProperty("showData", out var showDataElem) ||
-                    showDataElem.ValueKind != JsonValueKind.Object)
+                if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
                 {
                     return (null, null);
                 }
+
+                var root = doc.RootElement;
+                JsonElement showDataElem = default;
+                bool hasShowData = root.TryGetProperty("map", out var mapElem) &&
+                    mapElem.ValueKind == JsonValueKind.Object &&
+                    mapElem.TryGetProperty("showData", out showDataElem) &&
+                    showDataElem.ValueKind == JsonValueKind.Object;
+                if (!hasShowData && root.TryGetProperty("data", out var dataElem) && dataElem.ValueKind == JsonValueKind.Object)
+                {
+                    if (dataElem.TryGetProperty("showData", out var nestedShowData) && nestedShowData.ValueKind == JsonValueKind.Object)
+                    {
+                        showDataElem = nestedShowData;
+                        hasShowData = true;
+                    }
+                    else
+                    {
+                        showDataElem = dataElem;
+                        hasShowData = true;
+                    }
+                }
+                if (!hasShowData)
+                    return (null, null);
 
                 string? rawFlow = TryGetShowDataString(showDataElem, "本期已使用流量")
                     ?? TryGetShowDataString(showDataElem, "已使用流量")
@@ -736,7 +768,7 @@ public sealed class CampusCardService
         return await ExecuteCardQueryAsync(newToken!, allowRetry: false);
     }
 
-    private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(string token, bool allowRetry)
+    private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(string token, bool allowRetry, bool useLegacyEndpoint = false)
     {
         var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
             ? token
@@ -744,7 +776,10 @@ public sealed class CampusCardService
 
         try
         {
-            using var cardReq = new HttpRequestMessage(HttpMethod.Get, "http://121.251.19.62/berserker-app/ykt/tsm/queryCard");
+            var cardUrl = useLegacyEndpoint
+                ? "http://121.251.19.62/berserker-app/ykt/tsm/queryCard"
+                : "http://121.251.19.62/berserker-app/ykt/tsm/getCampusCards?synAccessSource=h5";
+            using var cardReq = new HttpRequestMessage(HttpMethod.Get, cardUrl);
             cardReq.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
             cardReq.Headers.TryAddWithoutValidation("Authorization", authHeader);
             cardReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
@@ -770,7 +805,7 @@ public sealed class CampusCardService
 
             using (doc)
             {
-                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401)
+                if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
                     SettingsManager.Shared.HuixinAuthToken = null;
                     if (allowRetry)
@@ -778,21 +813,43 @@ public sealed class CampusCardService
                         var (newToken, retryErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync();
                         if (!string.IsNullOrWhiteSpace(newToken))
                         {
-                            return await ExecuteCardQueryAsync(newToken!, allowRetry: false);
+                            return await ExecuteCardQueryAsync(newToken!, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint);
                         }
                         return (null, retryErr ?? "慧新易校授权已过期，请核对学号与密码");
                     }
                     return (null, "慧新易校授权已过期，请核对学号与密码");
                 }
 
-                if (doc == null ||
-                    doc.RootElement.ValueKind != JsonValueKind.Object ||
-                    !doc.RootElement.TryGetProperty("data", out var dataElem) ||
-                    dataElem.ValueKind != JsonValueKind.Object ||
-                    !dataElem.TryGetProperty("card", out var cardArrElem) ||
-                    cardArrElem.ValueKind != JsonValueKind.Array ||
-                    cardArrElem.GetArrayLength() == 0)
+                if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
                 {
+                    if (!useLegacyEndpoint)
+                        return await ExecuteCardQueryAsync(token, allowRetry: false, useLegacyEndpoint: true);
+                    return (null, "未能解析到校园一卡通账户信息");
+                }
+
+                var root = doc.RootElement;
+                var dataElem = root.TryGetProperty("data", out var dataValue) ? dataValue : default;
+                JsonElement cardArrElem = default;
+                bool hasCards = dataElem.ValueKind == JsonValueKind.Array;
+                if (hasCards)
+                {
+                    cardArrElem = dataElem;
+                }
+                else if (dataElem.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var key in new[] { "card", "cards", "cardList", "list" })
+                    {
+                        if (dataElem.TryGetProperty(key, out cardArrElem))
+                        {
+                            hasCards = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasCards || cardArrElem.ValueKind != JsonValueKind.Array || cardArrElem.GetArrayLength() == 0)
+                {
+                    if (!useLegacyEndpoint)
+                        return await ExecuteCardQueryAsync(token, allowRetry: false, useLegacyEndpoint: true);
                     return (null, "未能解析到校园一卡通账户信息");
                 }
 
@@ -844,7 +901,7 @@ public sealed class CampusCardService
         var list = new List<CampusCardTransaction>();
         try
         {
-            var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current=1&size={size}";
+            var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current=1&size={size}&synAccessSource=h5";
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
             req.Headers.TryAddWithoutValidation("Authorization", authHeader);

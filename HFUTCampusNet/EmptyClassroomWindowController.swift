@@ -510,9 +510,9 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             statusFilterSegment?.setLabel("上午空闲", forSegment: 2)
             statusFilterSegment?.setLabel("下午空闲", forSegment: 3)
         }
-        statusFilterSegment?.setLabel("当前占用", forSegment: 4)
+        statusFilterSegment?.setLabel("当前有课", forSegment: 4)
         statusFilterSegment?.setEnabled(isToday, forSegment: 4)
-        statusFilterSegment?.toolTip = "筛选当前正在占用的教室（包含上课、开会、借用等）；只在今天可用"
+        statusFilterSegment?.toolTip = "筛选当前正在上课的教室（不含考试、借用等其他占用）；只在今天可用"
         if !isToday, statusFilterMode == 4 {
             statusFilterMode = 0
             statusFilterSegment?.selectedSegment = 0
@@ -1643,7 +1643,9 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                 // 今日：当前空闲；非今日（明天/指定日期）：下午空闲 (14:00-18:00)
                 return isToday ? (room.currentOccupation(atMinutes: nowMin) == nil) : room.isFree(from: 14 * 60, to: 18 * 60)
             case 4:
-                return isToday && room.currentOccupation(atMinutes: nowMin) != nil
+                return isToday && room.sortedOccupations.contains {
+                    $0.activityType == ClassroomOccupiedCause.lesson.rawValue && $0.isOngoing(atMinutes: nowMin)
+                }
             default:
                 return true
             }
@@ -1680,7 +1682,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
 
         if filtered.isEmpty {
             let msg = statusFilterMode == 4 && isToday
-                ? "当前查询范围没有正在占用的教室"
+                ? "当前查询范围没有正在上课的教室"
                 : (EmptyClassroomService.shared.isSyncing
                 ? "正在同步教室占用数据..."
                 : (EmptyClassroomService.shared.lastErrorMessage ?? "没有符合当前筛选条件的教室"))

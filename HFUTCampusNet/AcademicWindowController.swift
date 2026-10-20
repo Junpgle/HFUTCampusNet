@@ -20,12 +20,16 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
     private var sectionTitleLabel: NSTextField!
     private var scrollTableView: NSScrollView!
     private var tableView: NSTableView!
+    private var forecastSectionTitleLabel: NSTextField!
+    private var forecastScrollTableView: NSScrollView!
+    private var forecastTableView: NSTableView!
 
     private var currentMode: Int = 0 // 0: 成绩单与 GPA, 1: 考试与校历进度, 2: 培养方案与毕业学分, 3: 课程教材与评教
     private var selectedTermIndex: Int = 0 // 0 表示最新学期，最后一个选项表示「全部学期汇总」
 
     private var currentGrades: [GradeItem] = []
     private var currentExams: [ExamItem] = []
+    private var currentExamForecasts: [CourseExamForecast] = []
     private var currentModules: [ProgramModuleItem] = []
     private var currentTextbooks: [CourseTextbookItem] = []
     private var currentSurveys: [LessonSurveyItem] = []
@@ -48,6 +52,12 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
             self,
             selector: #selector(onAcademicDataUpdated),
             name: .academicDataDidUpdate,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onCourseScheduleUpdated),
+            name: .courseScheduleDidUpdate,
             object: nil
         )
     }
@@ -185,6 +195,25 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
         scrollTableView.documentView = tableView
         contentView.addSubview(scrollTableView)
 
+        forecastSectionTitleLabel = NSTextField(labelWithString: "期末考试预测")
+        forecastSectionTitleLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        forecastSectionTitleLabel.textColor = .secondaryLabelColor
+        forecastSectionTitleLabel.isHidden = true
+        contentView.addSubview(forecastSectionTitleLabel)
+
+        forecastScrollTableView = NSScrollView(frame: .zero)
+        forecastScrollTableView.autoresizingMask = [.width]
+        forecastScrollTableView.hasVerticalScroller = true
+        forecastScrollTableView.borderType = .bezelBorder
+        forecastScrollTableView.isHidden = true
+
+        forecastTableView = NSTableView(frame: .zero)
+        forecastTableView.autoresizingMask = [.width, .height]
+        forecastTableView.rowHeight = 25
+        forecastTableView.usesAlternatingRowBackgroundColors = true
+        forecastScrollTableView.documentView = forecastTableView
+        contentView.addSubview(forecastScrollTableView)
+
         layoutSubviewsForCurrentBounds()
         reloadUI()
     }
@@ -225,7 +254,24 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
 
         let tableBottom: CGFloat = 20
         let tableHeight = max(120, titleY - 8 - tableBottom)
-        scrollTableView?.frame = NSRect(x: sidePad, y: tableBottom, width: contentW, height: tableHeight)
+        let showsForecasts = currentMode == 1
+        forecastSectionTitleLabel?.isHidden = !showsForecasts
+        forecastScrollTableView?.isHidden = !showsForecasts
+
+        if showsForecasts {
+            let forecastTableHeight = max(82, min(140, (tableHeight - 42) * 0.34))
+            forecastScrollTableView?.frame = NSRect(x: sidePad, y: tableBottom, width: contentW, height: forecastTableHeight)
+            forecastTableView?.frame = forecastScrollTableView?.bounds ?? .zero
+
+            let forecastTitleY = tableBottom + forecastTableHeight + 6
+            forecastSectionTitleLabel?.frame = NSRect(x: sidePad, y: forecastTitleY, width: contentW, height: 18)
+
+            let officialBottom = forecastTitleY + 18 + 6
+            let officialHeight = max(82, titleY - 8 - officialBottom)
+            scrollTableView?.frame = NSRect(x: sidePad, y: officialBottom, width: contentW, height: officialHeight)
+        } else {
+            scrollTableView?.frame = NSRect(x: sidePad, y: tableBottom, width: contentW, height: tableHeight)
+        }
     }
 
     public func showWindow(mode: Int = 0) {
@@ -286,6 +332,12 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     @objc private func onAcademicDataUpdated() {
+        DispatchQueue.main.async { [weak self] in
+            self?.reloadUI()
+        }
+    }
+
+    @objc private func onCourseScheduleUpdated() {
         DispatchQueue.main.async { [weak self] in
             self?.reloadUI()
         }
@@ -384,23 +436,31 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
             let upcoming = allExams.filter { !$0.isFinished(at: now) }.sorted { $0.dateTimeString < $1.dateTimeString }
             let finished = allExams.filter { $0.isFinished(at: now) }.sorted { $0.dateTimeString > $1.dateTimeString }
             currentExams = upcoming + finished
+            currentExamForecasts = CourseExamForecastService.upcoming(
+                schedule: CourseScheduleService.shared.currentSchedule,
+                officialExams: allExams,
+                at: now
+            )
 
             let milestone = SemesterMilestoneInfo.calculate(at: now)
             let nextCampusEvent = CampusCalendarService.upcomingEvents(at: now).first
             let nextEventText = nextCampusEvent.map { " · 下一项：\($0.title) \($0.dateRange)" } ?? ""
 
             if currentExams.isEmpty {
-                sectionTitleLabel.stringValue = "\(milestone.campusName) · \(milestone.semesterName)（暂未发布排考）\(nextEventText)"
+                sectionTitleLabel.stringValue = "\(milestone.campusName) · 教务正式考试安排（\(milestone.semesterName) · 暂未发布排考）\(nextEventText)"
             } else {
-                sectionTitleLabel.stringValue = "\(milestone.campusName) · 考试安排（共 \(currentExams.count) 场，待考 \(upcoming.count) 场 · \(milestone.semesterName)）\(nextEventText)"
+                sectionTitleLabel.stringValue = "\(milestone.campusName) · 教务正式考试安排（共 \(currentExams.count) 场，待考 \(upcoming.count) 场 · \(milestone.semesterName)）\(nextEventText)"
             }
+            forecastSectionTitleLabel.stringValue = currentExamForecasts.isEmpty
+                ? "期末考试预测 · 当前无可展示项目（按最后一课所在周暂定次次周周一）"
+                : "期末考试预测（\(currentExamForecasts.count) 个教学班 · 按最后一课所在周暂定次次周周一，最终以教务安排为准）"
 
             if let nextExam = upcoming.first {
                 let badge = nextExam.countdownBadgeText(at: now)
                 setCard(index: 0, title: "最近一场考试", value: nextExam.courseName, sub: "\(nextExam.dateString) \(nextExam.startTimeString)~\(nextExam.endTimeString)", color: .systemOrange)
                 setCard(index: 1, title: "考试倒计时", value: badge, sub: "考场：\(nextExam.displayLocation)", color: nextExam.daysRemaining(at: now) <= 3 ? .systemRed : .systemBlue)
             } else {
-                setCard(index: 0, title: "最近一场考试", value: "暂无待考科目", sub: allExams.isEmpty ? "教务系统尚未公布本学期排考" : "本学期考试已全部结束", color: .systemGreen)
+                setCard(index: 0, title: "正式考试安排", value: "暂无待考科目", sub: allExams.isEmpty ? "教务系统尚未公布；预测日期见下方" : "本学期正式考试已全部结束", color: .systemGreen)
                 let examWeek = [milestone.examWeekStartDateString, milestone.examWeekEndDateString].compactMap { $0 }.joined(separator: " 至 ")
                 setCard(index: 1, title: "期末考试周倒计时", value: milestone.daysUntilExamWeek > 0 ? "还有 \(milestone.daysUntilExamWeek) 天" : "已进入期末阶段", sub: examWeek.isEmpty ? "待考 \(upcoming.count) 场 / 已考 \(finished.count) 场" : "官方考试周：\(examWeek)", color: .systemBlue)
             }
@@ -521,7 +581,10 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
         }
 
         setupTableColumns()
+        setupForecastTableColumns()
+        layoutSubviewsForCurrentBounds()
         tableView.reloadData()
+        forecastTableView.reloadData()
     }
 
     private func setCard(index: Int, title: String, value: String, sub: String, color: NSColor) {
@@ -615,9 +678,35 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
         tv.delegate = self
     }
 
+    private func setupForecastTableColumns() {
+        guard let tv = forecastTableView else { return }
+        tv.dataSource = nil
+        tv.delegate = nil
+        while !tv.tableColumns.isEmpty {
+            tv.removeTableColumn(tv.tableColumns.last!)
+        }
+
+        let columns: [(String, String, CGFloat)] = [
+            ("forecast-course", "课程", 260),
+            ("forecast-date", "预计日期", 190),
+            ("forecast-basis", "推算依据", 340)
+        ]
+        for (identifier, title, width) in columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = title
+            column.width = width
+            tv.addTableColumn(column)
+        }
+        tv.dataSource = self
+        tv.delegate = self
+    }
+
     // MARK: - NSTableViewDataSource & Delegate
 
     public func numberOfRows(in tableView: NSTableView) -> Int {
+        if tableView === forecastTableView {
+            return max(1, currentExamForecasts.count)
+        }
         switch currentMode {
         case 0: return currentGrades.count
         case 1: return max(1, currentExams.count)
@@ -644,6 +733,35 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
         cell.textColor = .labelColor
         cell.font = NSFont.systemFont(ofSize: 12)
         cell.toolTip = nil
+
+        if tableView === forecastTableView {
+            guard row >= 0 && row < currentExamForecasts.count else {
+                if cid == "forecast-course" {
+                    cell.stringValue = "当前无可展示的预测项目"
+                    cell.textColor = .secondaryLabelColor
+                } else {
+                    cell.stringValue = "--"
+                    cell.textColor = .tertiaryLabelColor
+                }
+                return cell
+            }
+            let forecast = currentExamForecasts[row]
+            switch cid {
+            case "forecast-course":
+                cell.stringValue = forecast.courseName
+                cell.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            case "forecast-date":
+                cell.stringValue = forecast.predictedDateDisplayText
+                cell.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+                cell.textColor = .systemOrange
+            case "forecast-basis":
+                cell.stringValue = forecast.basisDisplayText
+                cell.textColor = .secondaryLabelColor
+            default:
+                break
+            }
+            return cell
+        }
 
         if currentMode == 0 {
             guard row >= 0 && row < currentGrades.count else { return nil }

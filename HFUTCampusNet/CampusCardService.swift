@@ -59,10 +59,14 @@ public class CampusCardService {
     private func executeCardQuery(
         token: String,
         allowRetry: Bool,
+        useLegacyEndpoint: Bool = false,
         completion: ((Result<CampusCardData, Error>) -> Void)?
     ) {
         let authHeader = token.lowercased().hasPrefix("bearer ") ? token : "bearer \(token)"
-        let cardURL = URL(string: "http://121.251.19.62/berserker-app/ykt/tsm/queryCard")!
+        let cardURLString = useLegacyEndpoint
+            ? "http://121.251.19.62/berserker-app/ykt/tsm/queryCard"
+            : "http://121.251.19.62/berserker-app/ykt/tsm/getCampusCards?synAccessSource=h5"
+        let cardURL = URL(string: cardURLString)!
         var cardReq = URLRequest(url: cardURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10.0)
         cardReq.httpMethod = "GET"
         cardReq.setValue(authHeader, forHTTPHeaderField: "synjones-auth")
@@ -81,13 +85,13 @@ public class CampusCardService {
             let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let jsonCode = json?["code"] as? Int ?? httpStatus
 
-            if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 {
+            if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403 {
                 SettingsManager.shared.huixinAuthToken = nil
                 if allowRetry {
                     ElectricityService.shared.obtainHuiXinToken { retryRes in
                         switch retryRes {
                         case .success(let newToken):
-                            self.executeCardQuery(token: newToken, allowRetry: false, completion: completion)
+                            self.executeCardQuery(token: newToken, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint, completion: completion)
                         case .failure(let err):
                             DispatchQueue.main.async { completion?(.failure(err)) }
                         }
@@ -99,9 +103,16 @@ public class CampusCardService {
                 return
             }
 
-            guard let dataObj = json?["data"] as? [String: Any],
-                  let cards = dataObj["card"] as? [[String: Any]],
-                  let firstCard = cards.first else {
+            let dataObject = json?["data"] as? [String: Any]
+            let cards = (dataObject?["card"] as? [[String: Any]])
+                ?? (dataObject?["cards"] as? [[String: Any]])
+                ?? (dataObject?["cardList"] as? [[String: Any]])
+                ?? (json?["data"] as? [[String: Any]])
+            guard let firstCard = cards?.first else {
+                if !useLegacyEndpoint {
+                    self.executeCardQuery(token: token, allowRetry: false, useLegacyEndpoint: true, completion: completion)
+                    return
+                }
                 let err = NSError(domain: "cn.edu.hfut.card", code: -2, userInfo: [NSLocalizedDescriptionKey: "未能解析到校园一卡通账户信息"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
@@ -170,7 +181,8 @@ public class CampusCardService {
         }
         components.queryItems = [
             URLQueryItem(name: "current", value: String(page)),
-            URLQueryItem(name: "size", value: String(size))
+            URLQueryItem(name: "size", value: String(size)),
+            URLQueryItem(name: "synAccessSource", value: "h5")
         ]
         guard let url = components.url else {
             completion(accumulated)

@@ -40,7 +40,7 @@ public class ElectricityService {
         }
     }
 
-    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号/端口时，清理不匹配的旧宿舍缓存与旧宿舍历史记录
+    /// 当用户修改宿舍校区/楼栋/房间号/端口时，清理余额缓存并切换到对应历史分区。
     public func invalidateCacheIfDormChanged() {
         if let cached = self.latestData,
            SettingsManager.shared.isDormConfigured,
@@ -53,7 +53,12 @@ public class ElectricityService {
         let hadDataOrCache = (self.latestData != nil) || FileManager.default.fileExists(atPath: cacheURL.path)
         self.latestData = nil
         try? FileManager.default.removeItem(at: cacheURL)
-        CampusHistoryManager.shared.clearElectricityHistory()
+        CampusHistoryManager.shared.activateElectricityHistory(
+            campus: SettingsManager.shared.dormCampus,
+            building: SettingsManager.shared.dormBuilding,
+            room: SettingsManager.shared.dormRoom,
+            endNumber: SettingsManager.shared.dormEndNumber
+        )
         if hadDataOrCache {
             NotificationCenter.default.post(name: .dormElectricityDidUpdate, object: nil)
         }
@@ -81,14 +86,12 @@ public class ElectricityService {
                 case .success(let data):
                     completion?(.success(data))
                 case .failure(let firstErr):
-                    // Token 可能失效，尝试通过已保存学号密码静默重新登录；若首次已明确为房间配置错误(-2)且重登失败，保留原始报错
-                    self?.loginHuiXinAndRetry { retryResult in
-                        if case .failure = retryResult, (firstErr as NSError).code == -2 {
-                            completion?(.failure(firstErr))
-                        } else {
-                            completion?(retryResult)
-                        }
+                    // 只有认证失败才刷新 Token；业务异常（例如未知异常/房间查询失败）不应触发重复登录和重复查询。
+                    guard (firstErr as NSError).code == 401 else {
+                        completion?(.failure(firstErr))
+                        return
                     }
+                    self?.loginHuiXinAndRetry(completion: completion)
                 }
             }
         } else {
@@ -175,12 +178,12 @@ public class ElectricityService {
         let building = SettingsManager.shared.dormBuilding
         let room = SettingsManager.shared.dormRoom
         let endNumber = SettingsManager.shared.dormEndNumber
+        var requestedRoomCode: String?
 
         let url = URL(string: "http://121.251.19.62/charge/feeitem/getThirdData")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 10.0
-
         let authHeader = token.lowercased().hasPrefix("bearer ") ? token : "bearer \(token)"
         request.setValue(authHeader, forHTTPHeaderField: "synjones-auth")
         request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
@@ -199,7 +202,7 @@ public class ElectricityService {
                 // 用户直接输入了 9 位标准代码 (例如 300731511)
                 roomCode = cleanRoom
             } else {
-                // 宣城校区官方规范: 30 + 楼宇(2位) + 房间号(3位) + 端口(11/12/21/22)
+                // 宣城房间编码使用设置页中的端口值 (11/12/21/22) 作为末两位。
                 let bNum = Int(cleanBuilding) ?? 0
                 let bStr = String(format: "%02d", bNum)
                 let rNum = Int(cleanRoom) ?? 0
@@ -207,7 +210,9 @@ public class ElectricityService {
                 let suffix = cleanEnd.isEmpty ? "11" : cleanEnd
                 roomCode = "30\(bStr)\(rStr)\(suffix)"
             }
+            // 项目内慧新接口按表单 POST 传入单数 room 字段。
             formParams["room"] = roomCode
+            requestedRoomCode = roomCode
         } else {
             // 合肥校区本科生
             formParams["feeitemid"] = "1"
@@ -218,7 +223,13 @@ public class ElectricityService {
             formParams["room"] = room
         }
 
-        let bodyString = formParams.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? $0.value)" }.joined(separator: "&")
+        let bodyString = formParams
+            .sorted { $0.key < $1.key }
+            .map { key, value in
+                let encodedValue = value.addingPercentEncoding(withAllowedCharacters: Self.formFieldAllowedCharacters) ?? value
+                return "\(key)=\(encodedValue)"
+            }
+            .joined(separator: "&")
         request.httpBody = bodyString.data(using: .utf8)
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -239,13 +250,13 @@ public class ElectricityService {
 
             guard let data = data,
                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                let err = NSError(domain: "cn.edu.hfut.electricity", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式非 JSON"])
+                let err = NSError(domain: "cn.edu.hfut.electricity", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式非 JSON (HTTP \(httpStatus))"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
             }
 
             // 检查是否有 401 权限问题
-            if let code = jsonObject["code"] as? Int, code == 401 {
+            if let code = jsonObject["code"] as? Int, code == 401 || code == 403 {
                 SettingsManager.shared.huixinAuthToken = nil
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
@@ -253,10 +264,22 @@ public class ElectricityService {
             }
 
             // 解析 map -> showData
-            guard let map = jsonObject["map"] as? [String: Any],
-                  let showData = map["showData"] as? [String: Any] else {
+            let map = jsonObject["map"] as? [String: Any]
+            let dataObject = jsonObject["data"] as? [String: Any]
+            guard let showData = (map?["showData"] as? [String: Any])
+                ?? (dataObject?["showData"] as? [String: Any])
+                ?? dataObject else {
                 let msg = (jsonObject["msg"] as? String) ?? "未能获取到电费详情，请核对楼栋与寝室号配置"
-                let err = NSError(domain: "cn.edu.hfut.electricity", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])
+                let responseCode = jsonObject["code"].map { String(describing: $0) } ?? "未返回"
+                var diagnostics = ["HTTP \(httpStatus)", "响应码 \(responseCode)"]
+                if let requestedRoomCode = requestedRoomCode {
+                    diagnostics.append("room=\(requestedRoomCode)")
+                }
+                let err = NSError(
+                    domain: "cn.edu.hfut.electricity",
+                    code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "\(msg) [\(diagnostics.joined(separator: ", "))]"]
+                )
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
             }
@@ -304,7 +327,16 @@ public class ElectricityService {
             if parsedBalance == nil && parsedKWh == nil {
                 let detailHint = stringMap.values.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 let msg = detailHint ?? (jsonObject["msg"] as? String) ?? "未能解析到有效电费数据，请核对楼栋、房间号及端口配置"
-                let err = NSError(domain: "cn.edu.hfut.electricity", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])
+                let responseCode = jsonObject["code"].map { String(describing: $0) } ?? "未返回"
+                var diagnostics = ["HTTP \(httpStatus)", "响应码 \(responseCode)"]
+                if let requestedRoomCode = requestedRoomCode {
+                    diagnostics.append("room=\(requestedRoomCode)")
+                }
+                let err = NSError(
+                    domain: "cn.edu.hfut.electricity",
+                    code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "\(msg) [\(diagnostics.joined(separator: ", "))]"]
+                )
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
             }
@@ -365,8 +397,13 @@ public class ElectricityService {
     /// 离线/校外模式下通过慧新易校查询校园网流量与余额 (feeitemid=281)
     public func fetchSchoolNetInfoFromHuiXin(completion: ((_ flow: String?, _ balance: String?) -> Void)? = nil) {
         func query(token: String, allowRetry: Bool) {
-            let url = URL(string: "http://121.251.19.62/charge/feeitem/getThirdData")!
-            var request = URLRequest(url: url)
+            var urlComponents = URLComponents(string: "http://121.251.19.62/charge/feeitem/getThirdData")!
+            urlComponents.queryItems = [
+                URLQueryItem(name: "feeitemid", value: "281"),
+                URLQueryItem(name: "type", value: "IEC"),
+                URLQueryItem(name: "level", value: "0")
+            ]
+            var request = URLRequest(url: urlComponents.url!)
             request.httpMethod = "POST"
             request.timeoutInterval = 8.0
 
@@ -382,7 +419,7 @@ public class ElectricityService {
                 let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 let jsonCode = json?["code"] as? Int
 
-                if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 {
+                if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403 {
                     SettingsManager.shared.huixinAuthToken = nil
                     if allowRetry {
                         self?.obtainHuiXinToken { res in
@@ -399,9 +436,11 @@ public class ElectricityService {
                     return
                 }
 
-                guard let json = json,
-                      let map = json["map"] as? [String: Any],
-                      let showData = map["showData"] as? [String: Any] else {
+                let map = json?["map"] as? [String: Any]
+                let dataObject = json?["data"] as? [String: Any]
+                guard let showData = (map?["showData"] as? [String: Any])
+                    ?? (dataObject?["showData"] as? [String: Any])
+                    ?? dataObject else {
                     DispatchQueue.main.async { completion?(nil, nil) }
                     return
                 }
