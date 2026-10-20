@@ -103,13 +103,6 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         pending.append(data)
         // 同时支持 LF 与 CRLF；按完整帧切割可避免拆分 UTF-8 汉字。
-        while let lf = pending.range(of: Data("\n\n".utf8)),
-              let crlf = pending.range(of: Data("\r\n\r\n".utf8)) {
-            // 存在两种分隔符时取最靠前的一种。
-            let range = lf.lowerBound < crlf.lowerBound ? lf : crlf
-            readFrame(pending.subdata(in: 0..<range.lowerBound))
-            pending.removeSubrange(0..<range.upperBound)
-        }
         while true {
             let lf = pending.range(of: Data("\n\n".utf8))
             let crlf = pending.range(of: Data("\r\n\r\n".utf8))
@@ -271,6 +264,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         transcriptScroll.autoresizingMask = [.width, .height]
         transcriptScroll.hasVerticalScroller = true
         transcriptScroll.borderType = .bezelBorder
+        transcriptView.frame = NSRect(x: 0, y: 0, width: 940, height: 458)
+        transcriptView.autoresizingMask = [.width]
+        transcriptView.isVerticallyResizable = true
+        transcriptView.textContainer?.widthTracksTextView = true
         transcriptView.isEditable = false
         transcriptView.isSelectable = true
         transcriptView.font = .systemFont(ofSize: 13)
@@ -332,7 +329,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     @objc private func sendMessage() {
         if sending {
-            activeClient?.cancel()
+            if let client = activeClient {
+                client.cancel()
+            } else {
+                complete("已取消")
+            }
             return
         }
         let question = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -388,14 +389,19 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         // businessType=1 为智能体会话候选类型，具体平台版本可能不同；失败时让用户手动提供会话 ID。
         request.httpBody = Data("{\"businessId\":\(agentID),\"businessType\":1}".utf8)
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-            // 直接在原始文本中抓取 64-bit ID，避免 JSON 中大整数桥接与显示精度问题。
             var resolvedID: String?
-            if let data = data, let raw = String(data: data, encoding: .utf8),
-               let regex = try? NSRegularExpression(pattern: #""(?:id|groupId)"\s*:\s*"?([0-9]{16,19})"?"#),
-               let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
-               let range = Range(match.range(at: 1), in: raw) {
-                let candidate = String(raw[range])
-                if CampusAIEndpoint.validID(candidate) { resolvedID = candidate }
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let data = data,
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               (object["status"] as? NSNumber)?.intValue == 1,
+               let group = object["data"] as? [String: Any] {
+                // Foundation 的 NSNumber 支持 int64，无 JavaScript Number 精度问题。
+                let id = (group["id"] as? NSNumber)?.stringValue ?? (group["id"] as? String)
+                let returnedAgent = (group["agentId"] as? NSNumber)?.stringValue ?? (group["agentId"] as? String)
+                if let id = id, CampusAIEndpoint.validID(id),
+                   returnedAgent == nil || returnedAgent == agentID {
+                    resolvedID = id
+                }
             }
             DispatchQueue.main.async {
                 guard let self = self, self.sending else { return }
@@ -459,6 +465,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     public func windowWillClose(_ notification: Notification) {
-        activeClient?.cancel()
+        if sending {
+            if let client = activeClient {
+                client.cancel()
+            } else {
+                complete("窗口已关闭，已取消请求。")
+            }
+        }
     }
 }
