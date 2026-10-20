@@ -140,6 +140,7 @@ private struct CampusAIPendingLookupSend {
     let agentID: String
     let modelID: String
     let cookies: [HTTPCookie]
+    let saveCookies: [HTTPCookie]
     let aiFlow: String
     let referer: URL?
     let navigationID: UUID
@@ -172,6 +173,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var activeLookupSession: URLSession?
     private var activeLookupID: UUID?
     private var pendingLookupSend: CampusAIPendingLookupSend?
+    private var emptyHistoryAgentID: String?
+    private var emptyHistoryNavigationID: UUID?
     private var sending = false
     private var displayingLogin = false
     private var nativeCASFormReady = false
@@ -256,7 +259,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         root.addSubview(groupLabel)
         chatOnlyViews.append(groupLabel)
         groupField.frame = NSRect(x: 706, y: 608, width: 254, height: 24)
-        groupField.placeholderString = "留空自动获取已有会话"
+        groupField.placeholderString = "留空自动使用历史会话；空历史时首次发送会创建"
         root.addSubview(groupField)
         chatOnlyViews.append(groupField)
         for item in [agentField, modelField, groupField] {
@@ -378,6 +381,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             if sending { complete("已取消") }
         }
         cancelGroupLookup()
+        emptyHistoryAgentID = nil
+        emptyHistoryNavigationID = nil
         groupField.stringValue = ""
         portalNavigationID = UUID()
         navigationTrace.removeAll(keepingCapacity: true)
@@ -663,6 +668,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             DispatchQueue.main.async {
                 guard let self = self, self.sending else { return }
                 let cookies = CampusAIEndpoint.cookies(from: all, requestPath: CampusAIEndpoint.chatSendPath)
+                let saveCookies = CampusAIEndpoint.cookies(from: all, requestPath: CampusAIEndpoint.chatSavePath)
                 guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: cookies)?.value else {
                     self.complete("当前没有 AI 会话。请点击「信息门户」，从「AI 应用中台」进入「合工大辅导员」。")
                     self.openInformationPortal()
@@ -683,11 +689,16 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     let referer = self.aiRefererURL(for: agentID)
                     self.pendingLookupSend = CampusAIPendingLookupSend(
                         question: question, agentID: agentID, modelID: modelID,
-                        cookies: cookies, aiFlow: aiFlow, referer: referer,
+                        cookies: cookies, saveCookies: saveCookies, aiFlow: aiFlow, referer: referer,
                         navigationID: self.portalNavigationID
                     )
                     if self.activeLookupTask != nil {
                         self.statusLabel.stringValue = "正在自动准备会话，准备完成后会立即发送…"
+                    } else if self.emptyHistoryAgentID == agentID,
+                              self.emptyHistoryNavigationID == self.portalNavigationID {
+                        if let pending = self.pendingLookupSend {
+                            self.createSessionAndSend(pending)
+                        }
                     } else {
                         self.startRecentGroupLookup(
                             agentID: agentID, allCookies: all, aiFlow: aiFlow,
@@ -751,9 +762,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let http = response as? HTTPURLResponse
             let successful = (200...299).contains(http?.statusCode ?? 0)
-            let resolvedID = successful
-                ? data.flatMap { CampusAIHistoryResponse.recentGroupID(from: $0, expectedAgentID: agentID) }
-                : nil
+            let lookupResult = successful
+                ? (data.map { CampusAIHistoryResponse.lookup(from: $0, expectedAgentID: agentID) } ?? .invalid)
+                : .invalid
             var statusMessage: String?
             if http?.statusCode == 401 || http?.statusCode == 403 {
                 statusMessage = "AI 平台会话无效或已过期。请重新从信息门户进入目标智能体。"
@@ -781,32 +792,122 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     }
                     return
                 }
-                guard let groupID = resolvedID else {
-                    let message = statusMessage ?? "该账号没有可继续的此智能体历史会话。请先在网页端创建会话后返回，或填写已有会话 ID。平台尚未确认新建会话接口，应用不会猜测会话 ID。"
+                switch lookupResult {
+                case .session(let groupID):
+                    self.emptyHistoryAgentID = nil
+                    self.emptyHistoryNavigationID = nil
+                    let manualGroupID = self.groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let selectedGroupID = CampusAIEndpoint.validID(manualGroupID) ? manualGroupID : groupID
+                    self.groupField.stringValue = selectedGroupID
+                    if let pending = self.pendingLookupSend {
+                        self.pendingLookupSend = nil
+                        guard pending.agentID == agentID,
+                              pending.navigationID == self.portalNavigationID else {
+                            self.complete("会话所属智能体已变化，请重新发送。")
+                            return
+                        }
+                        self.startStreaming(question: pending.question, groupID: selectedGroupID,
+                                            modelID: pending.modelID, cookies: pending.cookies,
+                                            aiFlow: pending.aiFlow, referer: pending.referer)
+                    } else {
+                        self.statusLabel.stringValue = "会话已自动准备，可以直接发送。"
+                    }
+                case .empty:
+                    self.emptyHistoryAgentID = agentID
+                    self.emptyHistoryNavigationID = navigationID
+                    if let pending = self.pendingLookupSend {
+                        self.createSessionAndSend(pending)
+                    } else {
+                        self.statusLabel.stringValue = "暂无历史会话；首次发送时会自动创建新会话。"
+                    }
+                case .invalid:
+                    let message = statusMessage ?? "平台历史会话响应无法识别；为避免误创建会话，请重试或填写已有会话 ID。"
                     if self.pendingLookupSend != nil {
                         self.pendingLookupSend = nil
                         self.complete(message)
                     } else {
                         self.statusLabel.stringValue = message
                     }
+                }
+            }
+        }
+        activeLookupID = lookupID
+        activeLookupSession = session
+        activeLookupTask = task
+        task.resume()
+    }
+
+    private func createSessionAndSend(_ pending: CampusAIPendingLookupSend) {
+        guard sending, pendingLookupSend?.navigationID == pending.navigationID,
+              pending.navigationID == portalNavigationID,
+              pending.agentID == agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            complete("智能体页面已变化，未创建会话；请重新发送。")
+            return
+        }
+        guard activeLookupTask == nil else { return }
+        let saveCookies = CampusAIEndpoint.cookies(from: pending.saveCookies,
+                                                   requestPath: CampusAIEndpoint.chatSavePath)
+        guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: saveCookies)?.value,
+              let body = CampusAIRequestBuilder.chatSaveBody(text: pending.question, agentID: pending.agentID) else {
+            pendingLookupSend = nil
+            complete("缺少可用于创建会话的 AI 平台会话，或请求参数无效。请重新从信息门户进入后重试。")
+            return
+        }
+
+        emptyHistoryAgentID = nil
+        emptyHistoryNavigationID = nil
+        statusLabel.stringValue = "正在创建新会话…"
+        var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/save"))
+        request.httpMethod = "POST"
+        request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(aiFlow, forHTTPHeaderField: "aiflow")
+        if let referer = pending.referer, referer.host?.lowercased() == CampusAIEndpoint.host {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        if let cookieHeader = CampusAIEndpoint.cookieHeader(from: saveCookies) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        request.httpBody = body
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 30
+        let session = URLSession(configuration: configuration)
+        let lookupID = UUID()
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            let http = response as? HTTPURLResponse
+            let successful = (200...299).contains(http?.statusCode ?? 0)
+            let groupID = successful ? data.flatMap(CampusAIChatSaveResponse.groupID(from:)) : nil
+            let statusMessage: String?
+            if http?.statusCode == 401 || http?.statusCode == 403 {
+                statusMessage = "AI 平台会话无效或已过期。请重新从信息门户进入目标智能体。"
+            } else if error != nil {
+                statusMessage = "创建会话时网络连接失败，请检查网络后重试。"
+            } else if !successful {
+                statusMessage = "平台创建会话失败（HTTP \(http?.statusCode ?? 0)）。"
+            } else {
+                statusMessage = nil
+            }
+            session.finishTasksAndInvalidate()
+            DispatchQueue.main.async {
+                guard let self = self, self.activeLookupID == lookupID,
+                      self.portalNavigationID == pending.navigationID,
+                      self.pendingLookupSend?.agentID == pending.agentID else { return }
+                self.activeLookupID = nil
+                self.activeLookupTask = nil
+                self.activeLookupSession = nil
+                guard let groupID = groupID else {
+                    self.pendingLookupSend = nil
+                    self.complete(statusMessage ?? "平台未返回有效的新会话 ID；未发送消息。请重试，应用不会自行生成会话 ID。")
                     return
                 }
-                let manualGroupID = self.groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let selectedGroupID = CampusAIEndpoint.validID(manualGroupID) ? manualGroupID : groupID
-                self.groupField.stringValue = selectedGroupID
-                if let pending = self.pendingLookupSend {
-                    self.pendingLookupSend = nil
-                    guard pending.agentID == agentID,
-                          pending.navigationID == self.portalNavigationID else {
-                        self.complete("会话所属智能体已变化，请重新发送。")
-                        return
-                    }
-                    self.startStreaming(question: pending.question, groupID: selectedGroupID,
-                                        modelID: pending.modelID, cookies: pending.cookies,
-                                        aiFlow: pending.aiFlow, referer: pending.referer)
-                } else {
-                    self.statusLabel.stringValue = "会话已自动准备，可以直接发送。"
-                }
+                self.groupField.stringValue = groupID
+                self.pendingLookupSend = nil
+                self.startStreaming(question: pending.question, groupID: groupID,
+                                    modelID: pending.modelID, cookies: pending.cookies,
+                                    aiFlow: pending.aiFlow, referer: pending.referer)
             }
         }
         activeLookupID = lookupID
@@ -924,6 +1025,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         recordNavigation("start", url: webView.url)
         guard displayingLogin, webView === loginWebView else { return }
+        emptyHistoryAgentID = nil
+        emptyHistoryNavigationID = nil
         casProbeToken = UUID()
         captchaRefreshToken = nil
         nativeCASFormReady = false
@@ -993,6 +1096,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         }
         if agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) != agent {
             cancelGroupLookup()
+            emptyHistoryAgentID = nil
+            emptyHistoryNavigationID = nil
             groupField.stringValue = ""
         }
         agentField.stringValue = agent

@@ -6,6 +6,7 @@ enum CampusAIEndpoint {
     static let api = URL(string: "https://aipt.hfut.edu.cn/api/af-api-agent/")!
     static let defaultAgentID = "1966078115428446208"
     static let defaultModelID = "2097156176776544256"
+    static let chatSavePath = "/api/af-api-agent/chat/save"
     static let chatSendPath = "/api/af-api-agent/chat/send"
     static let historyPath = "/api/af-api-agent/agent/getHistoryData"
 
@@ -94,26 +95,65 @@ enum CampusAIRequestBuilder {
         ]
         return try? JSONSerialization.data(withJSONObject: payload)
     }
+
+    static func chatSaveBody(text: String, agentID: String) -> Data? {
+        guard CampusAIEndpoint.validID(agentID) else { return nil }
+        let payload: [String: Any] = [
+            "groupId": NSNull(),
+            "text": text,
+            "businessId": agentID,
+            // These enum values were read from the normal first-message request in Edge DevTools.
+            "businessType": 4,
+            "type": 2,
+            "sender": 1,
+            // The website's request carries a title string; use the user's first message as its title.
+            "title": text
+        ]
+        return try? JSONSerialization.data(withJSONObject: payload)
+    }
+}
+
+enum CampusAIHistoryLookupResult: Equatable {
+    case session(String)
+    case empty
+    case invalid
 }
 
 enum CampusAIHistoryResponse {
-    static func recentGroupID(from data: Data, expectedAgentID: String) -> String? {
+    static func lookup(from data: Data, expectedAgentID: String) -> CampusAIHistoryLookupResult {
         guard CampusAIEndpoint.validID(expectedAgentID),
-              let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+              let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return .invalid }
         if let rawStatus = response["status"], !(rawStatus is NSNull) {
             guard let status = rawStatus as? NSNumber,
-                  CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1 else { return nil }
+                  CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1 else { return .invalid }
         }
         guard let payload = response["data"] as? [String: Any],
-              let records = payload["list"] as? [Any] else { return nil }
+              let records = payload["list"] as? [Any] else { return .invalid }
+        guard !records.isEmpty else { return .empty }
 
-        let candidates = records.enumerated().compactMap { index, value -> (id: String, createdAt: Date?, index: Int)? in
+        let candidates = sessionCandidates(records, expectedAgentID: expectedAgentID)
+        guard let recent = newest(candidates) else { return .invalid }
+        return .session(recent.id)
+    }
+
+    static func recentGroupID(from data: Data, expectedAgentID: String) -> String? {
+        guard case .session(let groupID) = lookup(from: data, expectedAgentID: expectedAgentID) else { return nil }
+        return groupID
+    }
+
+    private static func sessionCandidates(_ records: [Any], expectedAgentID: String)
+        -> [(id: String, createdAt: Date?, index: Int)] {
+        records.enumerated().compactMap { index, value -> (id: String, createdAt: Date?, index: Int)? in
             guard let record = value as? [String: Any],
                   let businessID = decimalID(record["businessId"]), businessID == expectedAgentID,
                   let id = decimalID(record["id"]), CampusAIEndpoint.validID(id) else { return nil }
             return (id, date(from: record["createTime"]), index)
         }
-        return candidates.max { lhs, rhs in
+    }
+
+    private static func newest(_ candidates: [(id: String, createdAt: Date?, index: Int)])
+        -> (id: String, createdAt: Date?, index: Int)? {
+        candidates.max { lhs, rhs in
             switch (lhs.createdAt, rhs.createdAt) {
             case let (left?, right?):
                 if left != right { return left < right }
@@ -125,7 +165,7 @@ enum CampusAIHistoryResponse {
             case (nil, nil):
                 return lhs.index > rhs.index
             }
-        }?.id
+        }
     }
 
     private static func decimalID(_ value: Any?) -> String? {
@@ -146,6 +186,18 @@ enum CampusAIHistoryResponse {
         localFormatter.timeZone = TimeZone(secondsFromGMT: 0)
         localFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return localFormatter.date(from: value)
+    }
+}
+
+enum CampusAIChatSaveResponse {
+    static func groupID(from data: Data) -> String? {
+        guard let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = response["status"] as? NSNumber,
+              CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1,
+              let payload = response["data"] as? [String: Any],
+              let groupID = payload["groupId"] as? String,
+              CampusAIEndpoint.validID(groupID) else { return nil }
+        return groupID
     }
 }
 

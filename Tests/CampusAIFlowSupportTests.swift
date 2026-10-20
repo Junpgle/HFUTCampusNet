@@ -5,6 +5,7 @@ struct CampusAIFlowSupportTests {
     static func main() throws {
         testIDsAndRequestEncoding()
         testHistoryRequestAndResponse()
+        testChatSaveRequestAndResponse()
         testCookieScope()
         testNavigationTraceRedaction()
         testCASNativeLoginSupport()
@@ -75,6 +76,43 @@ struct CampusAIFlowSupportTests {
         let emptyHistory = Data(#"{"status":null,"data":{"total":"0","list":[]}}"#.utf8)
         expect(CampusAIHistoryResponse.recentGroupID(from: emptyHistory, expectedAgentID: "1966078115428446208") == nil,
                "an empty history must not fabricate a session ID")
+        expect(CampusAIHistoryResponse.lookup(from: emptyHistory, expectedAgentID: "1966078115428446208") == .empty,
+               "a valid empty history must be distinguishable from a malformed response")
+        expect(CampusAIHistoryResponse.lookup(from: malformed, expectedAgentID: "1966078115428446208") == .invalid,
+               "a malformed history must not be treated as an empty history")
+        expect(CampusAIHistoryResponse.lookup(from: wrongAgent, expectedAgentID: "1966078115428446208") == .invalid,
+               "an unrelated history record must not trigger new-session creation")
+    }
+
+    private static func testChatSaveRequestAndResponse() {
+        expect(CampusAIEndpoint.chatSavePath == "/api/af-api-agent/chat/save",
+               "first-message session creation must use the observed chat/save path")
+        let question = "fixture first question"
+        guard let body = CampusAIRequestBuilder.chatSaveBody(text: question, agentID: "1966078115428446208"),
+              let payload = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            fail("chat/save request body should serialize")
+        }
+        expect(payload["groupId"] is NSNull, "first-message creation must not invent a group ID")
+        expect(payload["text"] as? String == question, "chat/save should receive the first user question")
+        expect(payload["businessId"] as? String == "1966078115428446208",
+               "chat/save should target the selected agent")
+        expect(payload["businessType"] as? Int == 4 && payload["type"] as? Int == 2
+               && payload["sender"] as? Int == 1,
+               "chat/save enum values should match the observed first-message request")
+        expect(payload["title"] as? String == question,
+               "the first question should be used as the new conversation title")
+        expect(CampusAIRequestBuilder.chatSaveBody(text: "x", agentID: "bad") == nil,
+               "invalid agent IDs must not produce a chat/save request")
+
+        let created = Data(#"{"status":1,"data":{"groupId":"1000000000000000001","chatId":"fixture-chat"},"msg":"fixture"}"#.utf8)
+        expect(CampusAIChatSaveResponse.groupID(from: created) == "1000000000000000001",
+               "chat/save should yield only a validated group ID")
+        let failureStatus = Data(#"{"status":0,"data":{"groupId":"1000000000000000001"}}"#.utf8)
+        expect(CampusAIChatSaveResponse.groupID(from: failureStatus) == nil,
+               "a failed business status must not yield a session ID")
+        let malformedID = Data(#"{"status":1,"data":{"groupId":"not-an-id"}}"#.utf8)
+        expect(CampusAIChatSaveResponse.groupID(from: malformedID) == nil,
+               "malformed session IDs must be rejected")
     }
 
     private static func testCookieScope() {
@@ -99,6 +137,9 @@ struct CampusAIFlowSupportTests {
         let historyCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.historyPath, now: now)
         expect(!historyCookies.contains(where: { $0.name == "WrongPath" }),
                "cookies scoped to another API path must not be forwarded")
+        let saveCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.chatSavePath, now: now)
+        expect(Set(saveCookies.map(\.name)) == Set(["AiFlow", "Route"]),
+               "session creation must use the same narrowly scoped AI session cookies")
     }
 
     private static func testNavigationTraceRedaction() {
