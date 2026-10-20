@@ -6,6 +6,7 @@ struct CampusAIFlowSupportTests {
         testIDsAndRequestEncoding()
         testHistoryRequestAndResponse()
         testChatSaveRequestAndResponse()
+        testChatAbortRequest()
         testCookieScope()
         testNavigationTraceRedaction()
         testCASNativeLoginSupport()
@@ -28,7 +29,8 @@ struct CampusAIFlowSupportTests {
 
         let data = CampusAIRequestBuilder.chatBody(
             text: "问\"题\n中文", groupID: "1966078115428446208",
-            modelID: "2097156176776544256", traceID: "trace-fixture"
+            modelID: "2097156176776544256", thinkingMode: .balanced,
+            traceID: "trace-fixture"
         )
         guard let data = data,
               let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
@@ -37,11 +39,25 @@ struct CampusAIFlowSupportTests {
         expect(payload["groupId"] as? String == "1966078115428446208", "groupId must preserve the 64-bit decimal string")
         expect(payload["aiLargeModelId"] as? String == "2097156176776544256", "model ID must preserve the 64-bit decimal string")
         expect(payload["text"] as? String == "问\"题\n中文", "question text must be JSON escaped without loss")
-        expect(payload["thinkingMode"] as? String == "balanced", "thinkingMode should match the observed request")
+        expect(payload["thinkingMode"] as? String == "balanced", "thinkingMode should preserve the selected mode")
         expect(payload["debug"] as? Bool == false, "debug output must remain disabled")
         expect(payload["traceId"] as? String == "trace-fixture", "trace ID should be retained")
-        expect(CampusAIRequestBuilder.chatBody(text: "x", groupID: "bad", modelID: "2", traceID: "t") == nil,
+        expect(CampusAIRequestBuilder.chatBody(text: "x", groupID: "bad", modelID: "2",
+                                               thinkingMode: .off, traceID: "t") == nil,
                "invalid IDs should not produce a chat request")
+        let expectedModes: [(CampusAIThinkingMode, String)] = [
+            (.off, "off"), (.fast, "fast"), (.balanced, "balanced"), (.deep, "deep")
+        ]
+        for (mode, rawValue) in expectedModes {
+            guard let modeData = CampusAIRequestBuilder.chatBody(
+                text: "x", groupID: "1966078115428446208", modelID: "2097156176776544256",
+                thinkingMode: mode, traceID: "t"),
+                let modePayload = (try? JSONSerialization.jsonObject(with: modeData)) as? [String: Any] else {
+                fail("thinking mode request should serialize for \(rawValue)")
+            }
+            expect(modePayload["thinkingMode"] as? String == rawValue,
+                   "thinkingMode should serialize the confirmed \(rawValue) mapping")
+        }
     }
 
     private static func testHistoryRequestAndResponse() {
@@ -117,6 +133,20 @@ struct CampusAIFlowSupportTests {
         let malformedID = Data(#"{"status":1,"data":{"groupId":"not-an-id"}}"#.utf8)
         expect(CampusAIChatSaveResponse.groupID(from: malformedID) == nil,
                "malformed session IDs must be rejected")
+    }
+
+    private static func testChatAbortRequest() {
+        expect(CampusAIEndpoint.chatAbortPath == "/api/af-api-agent/chat/abort",
+               "active generation cancellation should use the observed abort endpoint")
+        let traceID = "fixture-trace-id"
+        guard let body = CampusAIRequestBuilder.chatAbortBody(traceID: traceID),
+              let payload = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            fail("chat/abort request body should serialize")
+        }
+        expect(payload.count == 1 && payload["traceId"] as? String == traceID,
+               "chat/abort should carry only the active send request trace ID")
+        expect(CampusAIRequestBuilder.chatAbortBody(traceID: "") == nil,
+               "chat/abort must not be sent without a trace ID")
     }
 
     private static func testCookieScope() {

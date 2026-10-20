@@ -22,6 +22,10 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     private var task: URLSessionDataTask?
     private var parser = CampusAISSEParser()
     private var completed = false
+    private var activeTraceID: String?
+    private var abortCookies: [HTTPCookie] = []
+    private var abortAiFlow: String?
+    private var abortReferer: URL?
 
     init(onEvent: @escaping (Event) -> Void) {
         self.onEvent = onEvent
@@ -29,6 +33,7 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     }
 
     func start(question: String, groupID: String, modelID: String,
+               thinkingMode: CampusAIThinkingMode,
                cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
         var req = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/send"))
         req.httpMethod = "POST"
@@ -43,16 +48,54 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         let traceID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        activeTraceID = traceID
+        abortCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.chatAbortPath)
+        abortAiFlow = aiFlow
+        abortReferer = referer
         req.httpBody = CampusAIRequestBuilder.chatBody(
-            text: question, groupID: groupID, modelID: modelID, traceID: traceID
+            text: question, groupID: groupID, modelID: modelID,
+            thinkingMode: thinkingMode, traceID: traceID
         )
         task = session.dataTask(with: req)
         task?.resume()
     }
 
     func cancel() {
+        if !completed, let traceID = activeTraceID,
+           let aiFlow = abortAiFlow {
+            sendAbort(traceID: traceID, cookies: abortCookies, aiFlow: aiFlow, referer: abortReferer)
+        }
         task?.cancel()
         finish("已取消")
+    }
+
+    private func sendAbort(traceID: String, cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
+        guard let body = CampusAIRequestBuilder.chatAbortBody(traceID: traceID) else { return }
+        var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/abort"))
+        request.httpMethod = "POST"
+        request.httpShouldHandleCookies = false
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        request.setValue(aiFlow, forHTTPHeaderField: "aiflow")
+        if let referer = referer, referer.host?.lowercased() == CampusAIEndpoint.host {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        if let cookie = CampusAIEndpoint.cookieHeader(from: cookies) {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+        request.httpBody = body
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        let abortSession = URLSession(configuration: configuration)
+        let abortTask = abortSession.dataTask(with: request) { _, _, _ in
+            abortSession.finishTasksAndInvalidate()
+        }
+        abortTask.resume()
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
@@ -139,6 +182,7 @@ private struct CampusAIPendingLookupSend {
     let question: String
     let agentID: String
     let modelID: String
+    let thinkingMode: CampusAIThinkingMode
     let cookies: [HTTPCookie]
     let saveCookies: [HTTPCookie]
     let aiFlow: String
@@ -154,6 +198,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let modelField = NSTextField(string: "")
     private let groupField = NSTextField(string: "")
     private let promptField = NSTextField(string: "")
+    private let thinkingModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let transcriptView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "正在检查学校 AI 登录状态…")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
@@ -325,7 +370,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         root.addSubview(transcriptScroll)
         chatOnlyViews.append(transcriptScroll)
 
-        promptField.frame = NSRect(x: 20, y: 72, width: 820, height: 32)
+        promptField.frame = NSRect(x: 20, y: 72, width: 690, height: 32)
         promptField.placeholderString = "输入你想咨询的问题，例如：请查询我本人的课程成绩"
         promptField.font = .systemFont(ofSize: 13)
         promptField.autoresizingMask = [.width, .maxYMargin]
@@ -333,6 +378,17 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         promptField.action = #selector(sendMessageFromKeyboard)
         root.addSubview(promptField)
         chatOnlyViews.append(promptField)
+
+        for mode in CampusAIThinkingMode.allCases {
+            thinkingModePopup.addItem(withTitle: mode.title)
+        }
+        thinkingModePopup.frame = NSRect(x: 718, y: 72, width: 123, height: 32)
+        thinkingModePopup.autoresizingMask = [.minXMargin, .maxYMargin]
+        thinkingModePopup.target = self
+        thinkingModePopup.action = #selector(thinkingModeChanged)
+        thinkingModePopup.selectItem(withTitle: selectedThinkingMode().title)
+        root.addSubview(thinkingModePopup)
+        chatOnlyViews.append(thinkingModePopup)
 
         sendButton.frame = NSRect(x: 851, y: 72, width: 109, height: 32)
         sendButton.autoresizingMask = [.minXMargin, .maxYMargin]
@@ -724,11 +780,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
         defaults.set(agentID, forKey: "campus_ai_agent_id")
         defaults.set(modelID, forKey: "campus_ai_model_id")
+        let thinkingMode = selectedThinkingMode()
         activeAssistantMarkdown = ""
         activeAssistantStart = nil
         sending = true
         sendButton.title = "停止"
         promptField.isEnabled = false
+        thinkingModePopup.isEnabled = false
         appendText("\n你：\(question)\n\nAI：")
         statusLabel.stringValue = "检查当前学校 AI 登录会话…"
 
@@ -751,12 +809,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     if self.activeLookupTask != nil { self.cancelGroupLookup() }
                     let referer = self.aiRefererURL(for: agentID)
                     self.startStreaming(question: question, groupID: currentGroupID,
-                                        modelID: modelID, cookies: cookies, aiFlow: aiFlow,
+                                        modelID: modelID, thinkingMode: thinkingMode,
+                                        cookies: cookies, aiFlow: aiFlow,
                                         referer: referer)
                 } else {
                     let referer = self.aiRefererURL(for: agentID)
                     self.pendingLookupSend = CampusAIPendingLookupSend(
                         question: question, agentID: agentID, modelID: modelID,
+                        thinkingMode: thinkingMode,
                         cookies: cookies, saveCookies: saveCookies, aiFlow: aiFlow, referer: referer,
                         navigationID: self.portalNavigationID
                     )
@@ -912,7 +972,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                             return
                         }
                         self.startStreaming(question: pending.question, groupID: selectedGroupID,
-                                            modelID: pending.modelID, cookies: pending.cookies,
+                                            modelID: pending.modelID, thinkingMode: pending.thinkingMode,
+                                            cookies: pending.cookies,
                                             aiFlow: pending.aiFlow, referer: pending.referer)
                     } else {
                         self.statusLabel.stringValue = "会话已自动准备，可以直接发送。"
@@ -1011,7 +1072,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 self.groupField.stringValue = groupID
                 self.pendingLookupSend = nil
                 self.startStreaming(question: pending.question, groupID: groupID,
-                                    modelID: pending.modelID, cookies: pending.cookies,
+                                    modelID: pending.modelID, thinkingMode: pending.thinkingMode,
+                                    cookies: pending.cookies,
                                     aiFlow: pending.aiFlow, referer: pending.referer)
             }
         }
@@ -1047,6 +1109,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func startStreaming(question: String, groupID: String, modelID: String,
+                                thinkingMode: CampusAIThinkingMode,
                                 cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
         statusLabel.stringValue = "已连接，等待智能体回复…"
         let client = CampusAIStreamClient { [weak self] event in
@@ -1064,7 +1127,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeAssistantStart = transcriptView.textStorage?.length
         activeAssistantMarkdown = ""
         client.start(question: question, groupID: groupID, modelID: modelID,
-                     cookies: cookies, aiFlow: aiFlow, referer: referer)
+                     thinkingMode: thinkingMode, cookies: cookies, aiFlow: aiFlow, referer: referer)
     }
 
     private func appendAssistantMarkdown(_ chunk: String) {
@@ -1108,9 +1171,23 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeClient = nil
         sendButton.title = "发送"
         promptField.isEnabled = true
+        thinkingModePopup.isEnabled = true
         promptField.stringValue = ""
         appendText("\n\n")
         statusLabel.stringValue = error ?? "回复完成。"
+    }
+
+    @objc private func thinkingModeChanged() {
+        let modes = CampusAIThinkingMode.allCases
+        let selectedIndex = thinkingModePopup.indexOfSelectedItem
+        let selected = modes.indices.contains(selectedIndex) ? modes[selectedIndex] : .balanced
+        defaults.set(selected.rawValue, forKey: "campus_ai_thinking_mode")
+    }
+
+    private func selectedThinkingMode() -> CampusAIThinkingMode {
+        guard let rawValue = defaults.string(forKey: "campus_ai_thinking_mode"),
+              let mode = CampusAIThinkingMode(rawValue: rawValue) else { return .balanced }
+        return mode
     }
 
     public func webView(_ webView: WKWebView,

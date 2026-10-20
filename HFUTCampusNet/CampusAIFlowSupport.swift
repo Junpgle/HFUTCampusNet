@@ -8,6 +8,7 @@ enum CampusAIEndpoint {
     static let defaultModelID = "2097156176776544256"
     static let chatSavePath = "/api/af-api-agent/chat/save"
     static let chatSendPath = "/api/af-api-agent/chat/send"
+    static let chatAbortPath = "/api/af-api-agent/chat/abort"
     static let historyPath = "/api/af-api-agent/agent/getHistoryData"
 
     static func validID(_ value: String) -> Bool {
@@ -82,14 +83,15 @@ enum CampusAIRequestBuilder {
         return try? JSONSerialization.data(withJSONObject: payload)
     }
 
-    static func chatBody(text: String, groupID: String, modelID: String, traceID: String) -> Data? {
+    static func chatBody(text: String, groupID: String, modelID: String,
+                         thinkingMode: CampusAIThinkingMode, traceID: String) -> Data? {
         guard CampusAIEndpoint.validID(groupID), CampusAIEndpoint.validID(modelID) else { return nil }
         let payload: [String: Any] = [
             "text": text,
             // The working browser request sends these 64-bit identifiers as decimal strings.
             "groupId": groupID,
             "aiLargeModelId": modelID,
-            "thinkingMode": "balanced",
+            "thinkingMode": thinkingMode.rawValue,
             "debug": false,
             "traceId": traceID
         ]
@@ -110,6 +112,27 @@ enum CampusAIRequestBuilder {
             "title": text
         ]
         return try? JSONSerialization.data(withJSONObject: payload)
+    }
+
+    static func chatAbortBody(traceID: String) -> Data? {
+        guard !traceID.isEmpty else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["traceId": traceID])
+    }
+}
+
+enum CampusAIThinkingMode: String, CaseIterable {
+    case off
+    case fast
+    case balanced
+    case deep
+
+    var title: String {
+        switch self {
+        case .off: return "思考 · 关闭"
+        case .fast: return "思考 · 快速"
+        case .balanced: return "思考 · 均衡"
+        case .deep: return "思考 · 深度"
+        }
     }
 }
 
