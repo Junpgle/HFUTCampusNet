@@ -50,6 +50,7 @@ SOURCES=(
     "HFUTCampusNet/DesktopWidgetController.swift"
     "HFUTCampusNet/LoginWebViewController.swift"
     "HFUTCampusNet/SettingsWindowController.swift"
+    "HFUTCampusNet/CampusAIAssistantWindowController.swift"
     "HFUTCampusNet/MenubarController.swift"
     "HFUTCampusNet/main.swift"
 )

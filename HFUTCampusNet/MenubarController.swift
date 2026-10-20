@@ -299,6 +299,11 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
+        let aiAssistantItem = NSMenuItem(title: "校园 AI 助手...", action: #selector(openAIAssistantAction), keyEquivalent: "")
+        aiAssistantItem.image = symbolImage("bubble.left.and.text.bubble.right")
+        aiAssistantItem.target = self
+        menu.addItem(aiAssistantItem)
+
         let libraryItem = NSMenuItem(title: "图书馆借阅服务...", action: #selector(openLibraryAction), keyEquivalent: "")
         libraryItem.image = symbolImage("books.vertical")
         libraryItem.target = self
@@ -985,6 +990,10 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         let refreshAcademicItem = NSMenuItem(title: "立即同步成绩 / 排考 / 培养方案 / 教材", action: #selector(refreshAcademicMenuAction), keyEquivalent: "")
         refreshAcademicItem.target = self
         submenu.addItem(refreshAcademicItem)
+    }
+
+    @objc private func openAIAssistantAction() {
+        CampusAIAssistantWindowController.shared.showAssistant()
     }
 
     @objc private func openGradeWindowAction() {
