@@ -135,6 +135,16 @@ private final class CampusAIWeakScriptMessageHandler: NSObject, WKScriptMessageH
     }
 }
 
+private struct CampusAIPendingLookupSend {
+    let question: String
+    let agentID: String
+    let modelID: String
+    let cookies: [HTTPCookie]
+    let aiFlow: String
+    let referer: URL?
+    let navigationID: UUID
+}
+
 public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSWindowDelegate {
     public static let shared = CampusAIAssistantWindowController()
 
@@ -160,6 +170,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var activeClient: CampusAIStreamClient?
     private var activeLookupTask: URLSessionDataTask?
     private var activeLookupSession: URLSession?
+    private var activeLookupID: UUID?
+    private var pendingLookupSend: CampusAIPendingLookupSend?
     private var sending = false
     private var displayingLogin = false
     private var nativeCASFormReady = false
@@ -244,7 +256,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         root.addSubview(groupLabel)
         chatOnlyViews.append(groupLabel)
         groupField.frame = NSRect(x: 706, y: 608, width: 254, height: 24)
-        groupField.placeholderString = "留空尝试获取最近会话"
+        groupField.placeholderString = "留空自动获取已有会话"
         root.addSubview(groupField)
         chatOnlyViews.append(groupField)
         for item in [agentField, modelField, groupField] {
@@ -325,7 +337,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if self.hasAISession(cookies) {
-                    self.displayChat(status: "检测到 AI 平台会话 Cookie；服务端会在发送消息时确认是否仍有效。")
+                    self.displayChat(status: "检测到 AI 平台会话，正在自动准备最近会话…")
+                    let agentID = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.prepareRecentGroupIfNeeded(
+                        agentID: agentID, allCookies: cookies,
+                        referer: self.aiRefererURL(for: agentID),
+                        navigationID: self.portalNavigationID
+                    )
                 } else {
                     self.openInformationPortal()
                 }
@@ -355,6 +373,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     // 让学校信息门户发起 AI 应用的 SSO 跳转，不能自行猜测 CAS service 值。
     private func openInformationPortal() {
+        if sending {
+            activeClient?.cancel()
+            if sending { complete("已取消") }
+        }
+        cancelGroupLookup()
+        groupField.stringValue = ""
         portalNavigationID = UUID()
         navigationTrace.removeAll(keepingCapacity: true)
         traceButton.isEnabled = false
@@ -386,11 +410,17 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.portalNavigationID == navigationID else { return }
-                self.displayChat(
-                    status: self.hasAISession(cookies)
-                        ? "检测到 AI 平台会话 Cookie；发送消息时将由服务端确认有效性。"
-                        : "尚未发现 AiFlow 会话。请返回信息门户，按学校的正常入口进入智能体。"
-                )
+                let hasSession = self.hasAISession(cookies)
+                self.displayChat(status: hasSession
+                    ? "检测到 AI 平台会话，正在自动准备最近会话…"
+                    : "尚未发现 AiFlow 会话。请返回信息门户，按学校的正常入口进入智能体。")
+                if hasSession {
+                    let agentID = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.prepareRecentGroupIfNeeded(
+                        agentID: agentID, allCookies: cookies,
+                        referer: self.aiRefererURL(for: agentID), navigationID: navigationID
+                    )
+                }
             }
         }
     }
@@ -598,6 +628,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             if let client = activeClient {
                 client.cancel()
             } else if let task = activeLookupTask {
+                pendingLookupSend = nil
+                activeLookupID = nil
                 task.cancel()
                 activeLookupSession?.invalidateAndCancel()
                 activeLookupTask = nil
@@ -636,24 +668,63 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     self.openInformationPortal()
                     return
                 }
-                if !groupID.isEmpty {
+                let currentGroupID = self.groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !currentGroupID.isEmpty {
+                    guard CampusAIEndpoint.validID(currentGroupID) else {
+                        self.complete("会话 ID 格式不正确。")
+                        return
+                    }
+                    if self.activeLookupTask != nil { self.cancelGroupLookup() }
                     let referer = self.aiRefererURL(for: agentID)
-                    self.startStreaming(question: question, groupID: groupID,
+                    self.startStreaming(question: question, groupID: currentGroupID,
                                         modelID: modelID, cookies: cookies, aiFlow: aiFlow,
                                         referer: referer)
                 } else {
                     let referer = self.aiRefererURL(for: agentID)
-                    self.findRecentGroup(question: question, agentID: agentID, modelID: modelID,
-                                         aiFlow: aiFlow, allCookies: all, referer: referer)
+                    self.pendingLookupSend = CampusAIPendingLookupSend(
+                        question: question, agentID: agentID, modelID: modelID,
+                        cookies: cookies, aiFlow: aiFlow, referer: referer,
+                        navigationID: self.portalNavigationID
+                    )
+                    if self.activeLookupTask != nil {
+                        self.statusLabel.stringValue = "正在自动准备会话，准备完成后会立即发送…"
+                    } else {
+                        self.startRecentGroupLookup(
+                            agentID: agentID, allCookies: all, aiFlow: aiFlow,
+                            referer: referer, navigationID: self.portalNavigationID
+                        )
+                    }
                 }
             }
         }
     }
 
-    private func findRecentGroup(question: String, agentID: String, modelID: String,
-                                 aiFlow: String, allCookies: [HTTPCookie], referer: URL?) {
-        statusLabel.stringValue = "正在查询该智能体的最近会话…"
-        var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/lastGroup"))
+    private func prepareRecentGroupIfNeeded(agentID: String, allCookies: [HTTPCookie],
+                                            referer: URL?, navigationID: UUID) {
+        guard CampusAIEndpoint.validID(agentID) else {
+            statusLabel.stringValue = "智能体 ID 无效，无法自动准备会话。"
+            return
+        }
+        let existingGroupID = groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if CampusAIEndpoint.validID(existingGroupID) {
+            statusLabel.stringValue = "会话已准备，可以直接发送。"
+            return
+        }
+        guard activeLookupTask == nil else { return }
+        let historyCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.historyPath)
+        guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: historyCookies)?.value else {
+            statusLabel.stringValue = "页面已打开，但尚未发现 AI 平台会话 Cookie。"
+            return
+        }
+        startRecentGroupLookup(agentID: agentID, allCookies: allCookies, aiFlow: aiFlow,
+                              referer: referer, navigationID: navigationID)
+    }
+
+    private func startRecentGroupLookup(agentID: String, allCookies: [HTTPCookie], aiFlow: String,
+                                       referer: URL?, navigationID: UUID) {
+        guard activeLookupTask == nil else { return }
+        statusLabel.stringValue = "正在自动获取该智能体的最近会话…"
+        var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("agent/getHistoryData"))
         request.httpMethod = "POST"
         request.httpShouldHandleCookies = false
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -661,17 +732,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         if let referer = referer, referer.host?.lowercased() == CampusAIEndpoint.host {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
-        let groupCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.lastGroupPath)
-        if let cookie = CampusAIEndpoint.cookieHeader(from: groupCookies) {
+        let historyCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.historyPath)
+        if let cookie = CampusAIEndpoint.cookieHeader(from: historyCookies) {
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
-        // businessType=1 remains a candidate from the existing implementation; the platform's
-        // actual value still needs confirmation from a successful browser session.
-        guard let numericAgentID = Int64(agentID),
-              let requestBody = try? JSONSerialization.data(withJSONObject: [
-                "businessId": NSNumber(value: numericAgentID), "businessType": 1
-              ]) else {
-            complete("智能体 ID 无法用于会话查询。")
+        guard let requestBody = CampusAIRequestBuilder.historyBody(agentID: agentID) else {
+            finishGroupLookupFailure("智能体 ID 无法用于会话查询。", navigationID: navigationID)
             return
         }
         request.httpBody = requestBody
@@ -681,42 +747,97 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 30
         let session = URLSession(configuration: configuration)
+        let lookupID = UUID()
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let http = response as? HTTPURLResponse
-            let resolvedID = (200...299).contains(http?.statusCode ?? 0)
-                ? data.flatMap { CampusAIGroupResponse.groupID(from: $0, expectedAgentID: agentID) }
+            let successful = (200...299).contains(http?.statusCode ?? 0)
+            let resolvedID = successful
+                ? data.flatMap { CampusAIHistoryResponse.recentGroupID(from: $0, expectedAgentID: agentID) }
                 : nil
-            let statusMessage: String?
+            var statusMessage: String?
             if http?.statusCode == 401 || http?.statusCode == 403 {
                 statusMessage = "AI 平台会话无效或已过期。请重新从信息门户进入目标智能体。"
             } else if error != nil {
                 statusMessage = "查询会话时网络连接失败，请检查网络后重试。"
+            } else if !successful {
+                statusMessage = "平台查询会话失败（HTTP \(http?.statusCode ?? 0)）。"
             } else {
                 statusMessage = nil
             }
             session.finishTasksAndInvalidate()
             DispatchQueue.main.async {
-                guard let self = self, self.sending else { return }
+                guard let self = self, self.activeLookupID == lookupID,
+                      self.portalNavigationID == navigationID else { return }
+                self.activeLookupID = nil
                 self.activeLookupTask = nil
                 self.activeLookupSession = nil
-                guard let groupID = resolvedID else {
-                    self.complete(statusMessage ?? "平台未返回该智能体的可用会话。请先在网页登录中打开目标对话后重试，或输入自己的会话 ID。")
+                let currentAgentID = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard currentAgentID == agentID else {
+                    if self.pendingLookupSend != nil {
+                        self.pendingLookupSend = nil
+                        self.complete("智能体 ID 已变化，旧查询结果未应用；请重新发送。")
+                    } else {
+                        self.statusLabel.stringValue = "智能体 ID 已变化，旧查询结果未应用。"
+                    }
                     return
                 }
-                self.groupField.stringValue = groupID
-                self.startStreaming(question: question, groupID: groupID,
-                                    modelID: modelID,
-                                    cookies: CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.chatSendPath),
-                                    aiFlow: aiFlow, referer: referer)
+                guard let groupID = resolvedID else {
+                    let message = statusMessage ?? "该账号没有可继续的此智能体历史会话。请先在网页端创建会话后返回，或填写已有会话 ID。平台尚未确认新建会话接口，应用不会猜测会话 ID。"
+                    if self.pendingLookupSend != nil {
+                        self.pendingLookupSend = nil
+                        self.complete(message)
+                    } else {
+                        self.statusLabel.stringValue = message
+                    }
+                    return
+                }
+                let manualGroupID = self.groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let selectedGroupID = CampusAIEndpoint.validID(manualGroupID) ? manualGroupID : groupID
+                self.groupField.stringValue = selectedGroupID
+                if let pending = self.pendingLookupSend {
+                    self.pendingLookupSend = nil
+                    guard pending.agentID == agentID,
+                          pending.navigationID == self.portalNavigationID else {
+                        self.complete("会话所属智能体已变化，请重新发送。")
+                        return
+                    }
+                    self.startStreaming(question: pending.question, groupID: selectedGroupID,
+                                        modelID: pending.modelID, cookies: pending.cookies,
+                                        aiFlow: pending.aiFlow, referer: pending.referer)
+                } else {
+                    self.statusLabel.stringValue = "会话已自动准备，可以直接发送。"
+                }
             }
         }
+        activeLookupID = lookupID
         activeLookupSession = session
         activeLookupTask = task
         task.resume()
     }
 
+    private func finishGroupLookupFailure(_ message: String, navigationID: UUID) {
+        guard portalNavigationID == navigationID else { return }
+        activeLookupID = nil
+        if pendingLookupSend != nil {
+            pendingLookupSend = nil
+            complete(message)
+        } else {
+            statusLabel.stringValue = message
+        }
+    }
+
+    private func cancelGroupLookup() {
+        activeLookupID = nil
+        activeLookupTask?.cancel()
+        activeLookupTask = nil
+        activeLookupSession?.invalidateAndCancel()
+        activeLookupSession = nil
+        pendingLookupSend = nil
+    }
+
     private func aiRefererURL(for agentID: String) -> URL? {
         CampusAIEndpoint.referer(from: loginWebView.url, agentID: agentID)
+            ?? CampusAIEndpoint.agentReferer(agentID: agentID)
     }
 
     private func startStreaming(question: String, groupID: String, modelID: String,
@@ -745,6 +866,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func complete(_ error: String?) {
         guard sending else { return }
+        pendingLookupSend = nil
+        activeLookupID = nil
         activeLookupTask?.cancel()
         activeLookupTask = nil
         activeLookupSession?.invalidateAndCancel()
@@ -858,16 +981,21 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         }
 
         guard host == CampusAIEndpoint.host else { return }
-        if current.path == "/agent-detail",
-           let agent = URLComponents(url: current, resolvingAgainstBaseURL: false)?
-              .queryItems?.first(where: { $0.name == "id" })?.value,
-           CampusAIEndpoint.validID(agent) {
-            agentField.stringValue = agent
-        }
         guard current.path == "/agent-detail" else {
             statusLabel.stringValue = "已到达 AI 应用中台。请继续进入 AI 应用广场，再打开合工大 AI 辅导员。"
             return
         }
+        guard let agent = URLComponents(url: current, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "id" })?.value,
+              CampusAIEndpoint.validID(agent) else {
+            statusLabel.stringValue = "智能体页面缺少有效 ID，无法自动准备会话。"
+            return
+        }
+        if agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) != agent {
+            cancelGroupLookup()
+            groupField.stringValue = ""
+        }
+        agentField.stringValue = agent
         let navigationID = portalNavigationID
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async { [weak self] in
@@ -875,7 +1003,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                       self.portalNavigationID == navigationID,
                       webView === self.loginWebView else { return }
                 if self.hasAISession(cookies) {
-                    self.displayChat(status: "已到达目标智能体页面并检测到 AI 会话 Cookie；服务端仍会确认会话有效性。")
+                    self.displayChat(status: "已到达目标智能体页面，正在自动准备最近会话…")
+                    let agentID = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.prepareRecentGroupIfNeeded(
+                        agentID: agentID, allCookies: cookies,
+                        referer: self.aiRefererURL(for: agentID), navigationID: navigationID
+                    )
                 } else {
                     self.statusLabel.stringValue = "目标智能体页面已打开，但尚未发现 AI 会话 Cookie。请完成页面内登录后点击「返回聊天」。"
                 }

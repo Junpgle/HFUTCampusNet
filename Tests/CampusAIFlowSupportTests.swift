@@ -4,7 +4,7 @@ import Foundation
 struct CampusAIFlowSupportTests {
     static func main() throws {
         testIDsAndRequestEncoding()
-        testGroupResponseDecoding()
+        testHistoryRequestAndResponse()
         testCookieScope()
         testNavigationTraceRedaction()
         testCASNativeLoginSupport()
@@ -39,27 +39,42 @@ struct CampusAIFlowSupportTests {
                "invalid IDs should not produce a chat request")
     }
 
-    private static func testGroupResponseDecoding() {
-        let numeric = Data(#"{"status":1,"data":{"id":1966078115428446208,"agentId":1966078115428446208}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: numeric, expectedAgentID: "1966078115428446208") == "1966078115428446208",
-               "numeric 64-bit group IDs must not lose precision")
+    private static func testHistoryRequestAndResponse() {
+        let body = CampusAIRequestBuilder.historyBody(agentID: "1966078115428446208")
+        guard let body = body,
+              let payload = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            fail("history request body should serialize")
+        }
+        expect(payload["businessId"] as? String == "1966078115428446208",
+               "history lookup must retain the agent ID as a decimal string")
+        expect(payload["pageNum"] as? Int == 1 && payload["pageSize"] as? Int == 20,
+               "history lookup should request the first page")
+        expect(payload["groupId"] as? String == "" && payload["topic"] as? String == "",
+               "history lookup should not filter to an unselected group or topic")
+        expect(payload["type"] as? Int == 1, "history lookup should include the inferred agent history type")
+        expect(CampusAIRequestBuilder.historyBody(agentID: "bad") == nil,
+               "invalid agent IDs should not produce a history request")
 
-        let string = Data(#"{"status":1,"data":{"id":"1966078115428446209","agentId":"1966078115428446208"}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: string, expectedAgentID: "1966078115428446208") == "1966078115428446209",
-               "string group IDs should be accepted")
+        let response = Data(#"{"status":null,"data":{"total":"3","list":[{"id":"1000000000000000003","businessId":"3","userId":"ignored","topic":"synthetic","createTime":"2026-10-20T18:49:32"},{"id":"1000000000000000001","businessId":"1966078115428446208","userId":"ignored","topic":"synthetic","createTime":"2026-10-20T18:46:08"},{"id":"1000000000000000002","businessId":"1966078115428446208","userId":"ignored","topic":"synthetic","createTime":"2026-10-20T18:50:00"}]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: response, expectedAgentID: "1966078115428446208") == "1000000000000000002",
+               "history lookup should choose the newest session for the expected agent")
 
-        let wrongAgent = Data(#"{"status":1,"data":{"id":"1966078115428446209","agentId":"3"}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: wrongAgent, expectedAgentID: "1966078115428446208") == nil,
-               "a group returned for a different agent must be rejected")
-        let missingAgent = Data(#"{"status":1,"data":{"id":"1966078115428446209"}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: missingAgent, expectedAgentID: "1966078115428446208") == "1966078115428446209",
-               "responses without agentId should remain compatible with the agent-scoped lookup")
-        let malformedAgent = Data(#"{"status":1,"data":{"id":"1966078115428446209","agentId":true}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: malformedAgent, expectedAgentID: "1966078115428446208") == nil,
-               "a present but malformed agent association must be rejected")
-        let failure = Data(#"{"status":0,"data":{"id":"1966078115428446209"}}"#.utf8)
-        expect(CampusAIGroupResponse.groupID(from: failure, expectedAgentID: "1966078115428446208") == nil,
-               "business failure responses must not yield a group ID")
+        let numericID = Data(#"{"status":null,"data":{"list":[{"id":1000000000000000003,"businessId":1966078115428446208,"createTime":"2026-10-20T18:49:32"}]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: numericID, expectedAgentID: "1966078115428446208") == "1000000000000000003",
+               "numeric 64-bit history IDs must not lose precision")
+
+        let failedStatus = Data(#"{"status":0,"data":{"list":[{"id":"1000000000000000001","businessId":"1966078115428446208"}]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: failedStatus, expectedAgentID: "1966078115428446208") == nil,
+               "business failure responses must not yield a session ID")
+        let wrongAgent = Data(#"{"status":null,"data":{"list":[{"id":"1000000000000000001","businessId":"3"}]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: wrongAgent, expectedAgentID: "1966078115428446208") == nil,
+               "history entries for another agent must be rejected")
+        let malformed = Data(#"{"status":null,"data":{"list":[{"id":"invalid","businessId":"1966078115428446208"}]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: malformed, expectedAgentID: "1966078115428446208") == nil,
+               "malformed session IDs must be rejected")
+        let emptyHistory = Data(#"{"status":null,"data":{"total":"0","list":[]}}"#.utf8)
+        expect(CampusAIHistoryResponse.recentGroupID(from: emptyHistory, expectedAgentID: "1966078115428446208") == nil,
+               "an empty history must not fabricate a session ID")
     }
 
     private static func testCookieScope() {
@@ -81,8 +96,8 @@ struct CampusAIFlowSupportTests {
         expect(CampusAIEndpoint.aiFlowCookie(from: sendCookies)?.value == "fixture-ai-session",
                "the platform session cookie should be identifiable")
 
-        let lastGroupCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.lastGroupPath, now: now)
-        expect(!lastGroupCookies.contains(where: { $0.name == "WrongPath" }),
+        let historyCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.historyPath, now: now)
+        expect(!historyCookies.contains(where: { $0.name == "WrongPath" }),
                "cookies scoped to another API path must not be forwarded")
     }
 
@@ -105,6 +120,9 @@ struct CampusAIFlowSupportTests {
         expect(CampusAIEndpoint.referer(from: URL(string: "https://aipt.hfut.edu.cn/index/agent?token=opaque"),
                                          agentID: "1966078115428446208") == nil,
                "unrelated AI center routes should not be used as API Referer")
+        expect(CampusAIEndpoint.agentReferer(agentID: "1966078115428446208")?.absoluteString
+               == "https://aipt.hfut.edu.cn/agent-detail?id=1966078115428446208",
+               "automatic history requests should use a clean target-agent referer")
     }
 
     private static func testCASNativeLoginSupport() {

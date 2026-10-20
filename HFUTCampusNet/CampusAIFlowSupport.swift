@@ -7,7 +7,7 @@ enum CampusAIEndpoint {
     static let defaultAgentID = "1966078115428446208"
     static let defaultModelID = "2097156176776544256"
     static let chatSendPath = "/api/af-api-agent/chat/send"
-    static let lastGroupPath = "/api/af-api-agent/chat/lastGroup"
+    static let historyPath = "/api/af-api-agent/agent/getHistoryData"
 
     static func validID(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -44,20 +44,43 @@ enum CampusAIEndpoint {
 
     static func referer(from url: URL?, agentID: String) -> URL? {
         guard validID(agentID), let url = url,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme?.lowercased() == "https",
               components.host?.lowercased() == host,
               components.path == "/agent-detail",
               components.user == nil, components.password == nil,
               components.port == nil || components.port == 443 else { return nil }
         // Keep the target agent context while dropping opaque `after` and other query values.
+        return agentReferer(agentID: agentID)
+    }
+
+    static func agentReferer(agentID: String) -> URL? {
+        guard validID(agentID) else { return nil }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.path = "/agent-detail"
         components.queryItems = [URLQueryItem(name: "id", value: agentID)]
-        components.fragment = nil
         return components.url
     }
 }
 
 enum CampusAIRequestBuilder {
+    static func historyBody(agentID: String) -> Data? {
+        guard CampusAIEndpoint.validID(agentID) else { return nil }
+        // The page's POST /agent/getHistoryData uses these fields. Pagination/filter defaults
+        // are inferred from the observed request shape and need a live App-session check.
+        let payload: [String: Any] = [
+            "businessId": agentID,
+            "groupId": "",
+            "pageNum": 1,
+            "pageSize": 20,
+            "topic": "",
+            "type": 1
+        ]
+        return try? JSONSerialization.data(withJSONObject: payload)
+    }
+
     static func chatBody(text: String, groupID: String, modelID: String, traceID: String) -> Data? {
         guard CampusAIEndpoint.validID(groupID), CampusAIEndpoint.validID(modelID) else { return nil }
         let payload: [String: Any] = [
@@ -73,24 +96,56 @@ enum CampusAIRequestBuilder {
     }
 }
 
-enum CampusAIGroupResponse {
-    static func groupID(from data: Data, expectedAgentID: String) -> String? {
+enum CampusAIHistoryResponse {
+    static func recentGroupID(from data: Data, expectedAgentID: String) -> String? {
         guard CampusAIEndpoint.validID(expectedAgentID),
-              let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let status = response["status"] as? NSNumber,
-              CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1,
-              let group = response["data"] as? [String: Any],
-              let id = decimalID(group["id"]), CampusAIEndpoint.validID(id) else { return nil }
-        if let rawAgentID = group["agentId"], !(rawAgentID is NSNull) {
-            guard let returnedAgentID = decimalID(rawAgentID), returnedAgentID == expectedAgentID else { return nil }
+              let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        if let rawStatus = response["status"], !(rawStatus is NSNull) {
+            guard let status = rawStatus as? NSNumber,
+                  CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1 else { return nil }
         }
-        return id
+        guard let payload = response["data"] as? [String: Any],
+              let records = payload["list"] as? [Any] else { return nil }
+
+        let candidates = records.enumerated().compactMap { index, value -> (id: String, createdAt: Date?, index: Int)? in
+            guard let record = value as? [String: Any],
+                  let businessID = decimalID(record["businessId"]), businessID == expectedAgentID,
+                  let id = decimalID(record["id"]), CampusAIEndpoint.validID(id) else { return nil }
+            return (id, date(from: record["createTime"]), index)
+        }
+        return candidates.max { lhs, rhs in
+            switch (lhs.createdAt, rhs.createdAt) {
+            case let (left?, right?):
+                if left != right { return left < right }
+                return lhs.index > rhs.index
+            case (_?, nil):
+                return false
+            case (nil, _?):
+                return true
+            case (nil, nil):
+                return lhs.index > rhs.index
+            }
+        }?.id
     }
 
     private static func decimalID(_ value: Any?) -> String? {
         if let string = value as? String { return string }
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         return number.stringValue
+    }
+
+    private static func date(from value: Any?) -> Date? {
+        guard let value = value as? String else { return nil }
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        localFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return localFormatter.date(from: value)
     }
 }
 
