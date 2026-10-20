@@ -34,6 +34,28 @@ enum CampusAITranscriptStyle {
             ]
         )
     }
+
+    static func markdownAttributedString(_ markdown: String, font: NSFont) -> NSAttributedString {
+        guard !markdown.isEmpty,
+              let parsed = try? NSAttributedString(
+                markdown: markdown,
+                options: .init(interpretedSyntax: .full)
+              ) else {
+            return attributedString(markdown, font: font)
+        }
+
+        let result = NSMutableAttributedString(attributedString: parsed)
+        let range = NSRange(location: 0, length: result.length)
+        result.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        var missingFontRanges: [NSRange] = []
+        result.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            if value == nil { missingFontRanges.append(subrange) }
+        }
+        for subrange in missingFontRanges {
+            result.addAttribute(.font, value: font, range: subrange)
+        }
+        return result
+    }
 }
 
 enum CampusAIEntryNavigationStep: String, Equatable {

@@ -11,6 +11,7 @@ struct CampusAIFlowSupportTests {
         testCASNativeLoginSupport()
         testChatWindowInputActionPolicy()
         testTranscriptStyleAdaptsToAppearance()
+        testMarkdownTranscriptRendering()
         testAutomaticEntryNavigation()
         try testSanitizedSSEFixture()
         testSSEVariantsAndErrors()
@@ -274,6 +275,20 @@ struct CampusAIFlowSupportTests {
         let darkLuminance = (darkRed + darkGreen + darkBlue) / 3
         expect(lightLuminance < darkLuminance,
                "semantic transcript text should be dark in Aqua and light in Dark Aqua")
+    }
+
+    private static func testMarkdownTranscriptRendering() {
+        let rendered = CampusAITranscriptStyle.markdownAttributedString(
+            "**bold** and `code`",
+            font: .systemFont(ofSize: 13)
+        )
+        expect(rendered.string.contains("bold") && rendered.string.contains("code"),
+               "Markdown rendering should preserve the visible content")
+        expect(!rendered.string.contains("**") && !rendered.string.contains("`"),
+               "Markdown markers should not be shown as literal response text")
+        let boldRange = (rendered.string as NSString).range(of: "bold")
+        expect(boldRange.location != NSNotFound && rendered.attribute(.font, at: boldRange.location, effectiveRange: nil) != nil,
+               "Markdown emphasis should produce styled attributed text")
     }
 
     private static func testAutomaticEntryNavigation() {

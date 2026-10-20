@@ -157,6 +157,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let transcriptView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "正在检查学校 AI 登录状态…")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
+    private let newSessionButton = NSButton(title: "新建会话", target: nil, action: nil)
     private let loginButton = NSButton(title: "信息门户", target: nil, action: nil)
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
     private let traceButton = NSButton(title: "复制脱敏轨迹", target: nil, action: nil)
@@ -176,6 +177,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var emptyHistoryAgentID: String?
     private var emptyHistoryNavigationID: UUID?
     private var sending = false
+    private var activeAssistantMarkdown = ""
+    private var activeAssistantStart: Int?
     private var displayingLogin = false
     private var nativeCASFormReady = false
     private var preferWebLoginForCurrentCASPage = false
@@ -241,6 +244,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         traceButton.action = #selector(copyNavigationTrace)
         traceButton.isEnabled = false
         root.addSubview(traceButton)
+
+        newSessionButton.frame = NSRect(x: 500, y: 650, width: 104, height: 30)
+        newSessionButton.autoresizingMask = [.minXMargin, .minYMargin]
+        newSessionButton.target = self
+        newSessionButton.action = #selector(startNewSession)
+        root.addSubview(newSessionButton)
+        chatOnlyViews.append(newSessionButton)
 
         let agentLabel = label("智能体 ID", x: 20, y: 611, width: 75)
         root.addSubview(agentLabel)
@@ -714,6 +724,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
         defaults.set(agentID, forKey: "campus_ai_agent_id")
         defaults.set(modelID, forKey: "campus_ai_model_id")
+        activeAssistantMarkdown = ""
+        activeAssistantStart = nil
         sending = true
         sendButton.title = "停止"
         promptField.isEnabled = false
@@ -764,6 +776,34 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 }
             }
         }
+    }
+
+    @objc private func startNewSession() {
+        let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard CampusAIEndpoint.validID(agentID) else {
+            statusLabel.stringValue = "智能体 ID 格式不正确，无法准备新会话。"
+            return
+        }
+
+        if sending {
+            activeClient?.cancel()
+            cancelGroupLookup()
+            if sending { complete("当前回复已取消。") }
+        } else {
+            cancelGroupLookup()
+        }
+
+        groupField.stringValue = ""
+        emptyHistoryAgentID = agentID
+        emptyHistoryNavigationID = portalNavigationID
+        activeAssistantMarkdown = ""
+        activeAssistantStart = nil
+        transcriptView.textStorage?.setAttributedString(CampusAITranscriptStyle.attributedString(
+            "已新建对话\n\n",
+            font: transcriptView.font ?? .systemFont(ofSize: 13)
+        ))
+        statusLabel.stringValue = "新会话已准备；发送首条消息时会由平台创建正式会话。"
+        promptField.becomeFirstResponder()
     }
 
     @objc private func sendMessageFromKeyboard() {
@@ -1013,7 +1053,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             guard let self = self else { return }
             switch event {
             case .text(let chunk):
-                self.appendText(chunk)
+                self.appendAssistantMarkdown(chunk)
             case .status(let message):
                 self.statusLabel.stringValue = message
             case .finished(let error):
@@ -1021,8 +1061,26 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             }
         }
         activeClient = client
+        activeAssistantStart = transcriptView.textStorage?.length
+        activeAssistantMarkdown = ""
         client.start(question: question, groupID: groupID, modelID: modelID,
                      cookies: cookies, aiFlow: aiFlow, referer: referer)
+    }
+
+    private func appendAssistantMarkdown(_ chunk: String) {
+        activeAssistantMarkdown += chunk
+        guard let storage = transcriptView.textStorage,
+              let start = activeAssistantStart, start <= storage.length else {
+            appendText(chunk)
+            return
+        }
+        let currentRange = NSRange(location: start, length: storage.length - start)
+        let rendered = CampusAITranscriptStyle.markdownAttributedString(
+            activeAssistantMarkdown,
+            font: transcriptView.font ?? .systemFont(ofSize: 13)
+        )
+        storage.replaceCharacters(in: currentRange, with: rendered)
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func appendText(_ value: String) {
@@ -1041,6 +1099,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeLookupTask = nil
         activeLookupSession?.invalidateAndCancel()
         activeLookupSession = nil
+        if !activeAssistantMarkdown.isEmpty {
+            appendAssistantMarkdown("")
+        }
+        activeAssistantStart = nil
+        activeAssistantMarkdown = ""
         sending = false
         activeClient = nil
         sendButton.title = "发送"
