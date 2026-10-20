@@ -10,6 +10,7 @@ enum CampusAIEndpoint {
     static let chatSendPath = "/api/af-api-agent/chat/send"
     static let chatAbortPath = "/api/af-api-agent/chat/abort"
     static let historyPath = "/api/af-api-agent/agent/getHistoryData"
+    static let historyDeletePathPrefix = "/api/af-api-agent/agent/delHistoryData/"
 
     static func validID(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,16 +66,21 @@ enum CampusAIEndpoint {
         components.queryItems = [URLQueryItem(name: "id", value: agentID)]
         return components.url
     }
+
+    static func historyDeletePath(sessionID: String) -> String? {
+        guard validID(sessionID) else { return nil }
+        return historyDeletePathPrefix + sessionID
+    }
 }
 
 enum CampusAIRequestBuilder {
-    static func historyBody(agentID: String) -> Data? {
-        guard CampusAIEndpoint.validID(agentID) else { return nil }
+    static func historyBody(agentID: String, pageNumber: Int = 1) -> Data? {
+        guard CampusAIEndpoint.validID(agentID), pageNumber > 0 else { return nil }
         // These fields and enum values match the observed website POST /agent/getHistoryData request.
         let payload: [String: Any] = [
             "businessId": agentID,
             "groupId": "",
-            "pageNum": 1,
+            "pageNum": pageNumber,
             "pageSize": 20,
             "topic": "",
             "type": 2
@@ -141,7 +147,59 @@ enum CampusAIHistoryLookupResult: Equatable {
     case invalid
 }
 
+struct CampusAIHistoryEntry: Equatable {
+    let id: String
+    let topic: String
+    let createTime: String?
+}
+
+struct CampusAIHistoryPage: Equatable {
+    let entries: [CampusAIHistoryEntry]
+    let pageNumber: Int
+    let pageCount: Int
+    let hasPreviousPage: Bool
+    let hasNextPage: Bool
+}
+
 enum CampusAIHistoryResponse {
+    static func page(from data: Data, expectedAgentID: String,
+                     requestedPageNumber: Int) -> CampusAIHistoryPage? {
+        guard CampusAIEndpoint.validID(expectedAgentID), requestedPageNumber > 0,
+              let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        if let rawStatus = response["status"], !(rawStatus is NSNull) {
+            guard let status = rawStatus as? NSNumber,
+                  CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1 else { return nil }
+        }
+        guard let payload = response["data"] as? [String: Any],
+              let records = payload["list"] as? [Any] else { return nil }
+
+        let entries = records.compactMap { value -> CampusAIHistoryEntry? in
+            guard let record = value as? [String: Any],
+                  decimalID(record["businessId"]) == expectedAgentID,
+                  let id = decimalID(record["id"]), CampusAIEndpoint.validID(id) else { return nil }
+            let rawTopic = (record["topic"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let createTime = record["createTime"] as? String
+            return CampusAIHistoryEntry(
+                id: id,
+                topic: rawTopic.isEmpty ? "未命名会话" : rawTopic,
+                createTime: createTime
+            )
+        }
+        guard records.isEmpty || !entries.isEmpty else { return nil }
+
+        let pageNumber = positiveInteger(payload["pageNum"]) ?? requestedPageNumber
+        let pageCount = max(1, positiveInteger(payload["pages"]) ?? 1)
+        let hasPreviousPage = boolean(payload["hasPreviousPage"]) ?? (pageNumber > 1)
+        let hasNextPage = boolean(payload["hasNextPage"]) ?? (pageNumber < pageCount)
+        return CampusAIHistoryPage(
+            entries: entries,
+            pageNumber: pageNumber,
+            pageCount: pageCount,
+            hasPreviousPage: hasPreviousPage,
+            hasNextPage: hasNextPage
+        )
+    }
+
     static func lookup(from data: Data, expectedAgentID: String) -> CampusAIHistoryLookupResult {
         guard CampusAIEndpoint.validID(expectedAgentID),
               let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return .invalid }
@@ -196,6 +254,18 @@ enum CampusAIHistoryResponse {
         return number.stringValue
     }
 
+    private static func positiveInteger(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(), number.intValue > 0 else { return nil }
+        return number.intValue
+    }
+
+    private static func boolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
     private static func date(from value: Any?) -> Date? {
         guard let value = value as? String else { return nil }
         let formatter = ISO8601DateFormatter()
@@ -208,6 +278,17 @@ enum CampusAIHistoryResponse {
         localFormatter.timeZone = TimeZone(secondsFromGMT: 0)
         localFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         return localFormatter.date(from: value)
+    }
+}
+
+enum CampusAIHistoryDeleteResponse {
+    static func deleted(from data: Data) -> Bool {
+        guard let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = response["status"] as? NSNumber,
+              CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1,
+              let deleted = response["data"] as? NSNumber,
+              CFGetTypeID(deleted) == CFBooleanGetTypeID() else { return false }
+        return deleted.boolValue
     }
 }
 

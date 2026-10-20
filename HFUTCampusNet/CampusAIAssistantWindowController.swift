@@ -190,7 +190,7 @@ private struct CampusAIPendingLookupSend {
     let navigationID: UUID
 }
 
-public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSWindowDelegate {
+public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSWindowDelegate, NSPopoverDelegate {
     public static let shared = CampusAIAssistantWindowController()
 
     private let defaults = UserDefaults.standard
@@ -202,6 +202,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let transcriptView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "正在检查学校 AI 登录状态…")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
+    private let historyButton = NSButton(title: "历史会话", target: nil, action: nil)
     private let newSessionButton = NSButton(title: "新建会话", target: nil, action: nil)
     private let loginButton = NSButton(title: "信息门户", target: nil, action: nil)
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
@@ -216,6 +217,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var activeLookupTask: URLSessionDataTask?
     private var activeLookupSession: URLSession?
     private var activeLookupID: UUID?
+    private var historyPopover: NSPopover?
+    private var historyPopoverController: CampusAIHistoryPopoverViewController?
+    private var historyListTask: URLSessionDataTask?
+    private var historyListSession: URLSession?
+    private var historyListRequestID: UUID?
+    private var historyDeleteTask: URLSessionDataTask?
+    private var historyDeleteSession: URLSession?
+    private var historyDeleteRequestID: UUID?
     private var pendingLookupSend: CampusAIPendingLookupSend?
     private var emptyHistoryAgentID: String?
     private var emptyHistoryNavigationID: UUID?
@@ -267,6 +276,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         title.frame = NSRect(x: 20, y: 653, width: 220, height: 26)
         title.autoresizingMask = [.minYMargin]
         root.addSubview(title)
+
+        historyButton.frame = NSRect(x: 380, y: 650, width: 104, height: 30)
+        historyButton.autoresizingMask = [.minXMargin, .minYMargin]
+        historyButton.target = self
+        historyButton.action = #selector(showHistoryPopover)
+        root.addSubview(historyButton)
+        chatOnlyViews.append(historyButton)
 
         loginButton.frame = NSRect(x: 750, y: 650, width: 105, height: 30)
         loginButton.autoresizingMask = [.minXMargin, .minYMargin]
@@ -438,6 +454,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     // 让学校信息门户发起 AI 应用的 SSO 跳转，不能自行猜测 CAS service 值。
     private func openInformationPortal() {
+        closeHistoryPopover()
         if sending {
             activeClient?.cancel()
             if sending { complete("已取消") }
@@ -755,6 +772,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         sendButton.title = "停止"
         promptField.isEnabled = false
         thinkingModePopup.isEnabled = false
+        historyButton.isEnabled = false
         appendText("\n你：\(question)\n\nAI：")
         statusLabel.stringValue = "检查当前学校 AI 登录会话…"
 
@@ -807,6 +825,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     @objc private func startNewSession() {
+        closeHistoryPopover()
         let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard CampusAIEndpoint.validID(agentID) else {
             statusLabel.stringValue = "智能体 ID 格式不正确，无法准备新会话。"
@@ -841,6 +860,273 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
         sendMessage()
+    }
+
+    @objc private func showHistoryPopover() {
+        guard !sending else { return }
+        if historyPopover?.isShown == true {
+            historyPopover?.performClose(nil)
+            return
+        }
+
+        let controller = CampusAIHistoryPopoverViewController()
+        controller.onPageRequested = { [weak self] pageNumber in
+            self?.loadHistoryPage(pageNumber)
+        }
+        controller.onRefreshRequested = { [weak self] in
+            self?.loadHistoryPage(1)
+        }
+        controller.onDeleteRequested = { [weak self] entry in
+            self?.confirmDeleteHistory(entry)
+        }
+        controller.onCloseRequested = { [weak self] in
+            self?.historyPopover?.performClose(nil)
+        }
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 560, height: 450)
+        popover.behavior = .transient
+        popover.delegate = self
+        popover.contentViewController = controller
+        historyPopoverController = controller
+        historyPopover = popover
+        popover.show(relativeTo: historyButton.bounds, of: historyButton, preferredEdge: .minY)
+        loadHistoryPage(1)
+    }
+
+    private func loadHistoryPage(_ requestedPageNumber: Int) {
+        let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard CampusAIEndpoint.validID(agentID), requestedPageNumber > 0 else {
+            showHistoryError("智能体 ID 无效，无法获取历史会话。")
+            return
+        }
+        let navigationID = portalNavigationID
+        historyPopoverController?.beginLoading(pageNumber: requestedPageNumber)
+        cancelHistoryListRequest()
+        let requestID = UUID()
+        historyListRequestID = requestID
+
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] allCookies in
+            DispatchQueue.main.async {
+                guard let self = self, self.historyListRequestID == requestID,
+                      self.portalNavigationID == navigationID,
+                      self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == agentID else { return }
+
+                let requestCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.historyPath)
+                guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: requestCookies)?.value,
+                      let body = CampusAIRequestBuilder.historyBody(agentID: agentID, pageNumber: requestedPageNumber) else {
+                    self.historyListRequestID = nil
+                    self.showHistoryError("请先从信息门户进入合工大 AI 辅导员，再获取历史会话。")
+                    return
+                }
+
+                var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("agent/getHistoryData"))
+                request.httpMethod = "POST"
+                request.httpShouldHandleCookies = false
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+                request.setValue(aiFlow, forHTTPHeaderField: "aiflow")
+                if let referer = self.aiRefererURL(for: agentID) {
+                    request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                }
+                if let cookie = CampusAIEndpoint.cookieHeader(from: requestCookies) {
+                    request.setValue(cookie, forHTTPHeaderField: "Cookie")
+                }
+                request.httpBody = body
+
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.httpCookieAcceptPolicy = .never
+                configuration.httpShouldSetCookies = false
+                configuration.timeoutIntervalForRequest = 30
+                let session = URLSession(configuration: configuration)
+                let task = session.dataTask(with: request) { [weak self] data, response, error in
+                    let http = response as? HTTPURLResponse
+                    let successful = (200...299).contains(http?.statusCode ?? 0)
+                    let page = successful
+                        ? data.flatMap { CampusAIHistoryResponse.page(from: $0, expectedAgentID: agentID,
+                                                                       requestedPageNumber: requestedPageNumber) }
+                        : nil
+                    let message: String?
+                    if http?.statusCode == 401 || http?.statusCode == 403 {
+                        message = "AI 平台会话无效或已过期，请重新从信息门户进入。"
+                    } else if error != nil {
+                        message = "获取历史会话时网络连接失败，请检查网络后重试。"
+                    } else if !successful {
+                        message = "平台获取历史会话失败（HTTP \(http?.statusCode ?? 0)）。"
+                    } else if page == nil {
+                        message = "平台历史会话响应无法识别。"
+                    } else {
+                        message = nil
+                    }
+                    session.finishTasksAndInvalidate()
+                    DispatchQueue.main.async {
+                        guard let self = self, self.historyListRequestID == requestID,
+                              self.portalNavigationID == navigationID,
+                              self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == agentID else { return }
+                        self.historyListRequestID = nil
+                        self.historyListTask = nil
+                        self.historyListSession = nil
+                        if let message = message {
+                            self.showHistoryError(message)
+                            return
+                        }
+                        guard let page = page else {
+                            self.showHistoryError("平台历史会话响应无法识别。")
+                            return
+                        }
+
+                        self.historyPopoverController?.show(page: page)
+                    }
+                }
+                self.historyListSession = session
+                self.historyListTask = task
+                task.resume()
+            }
+        }
+    }
+
+    private func confirmDeleteHistory(_ entry: CampusAIHistoryEntry) {
+        guard CampusAIEndpoint.validID(entry.id), let window = window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "删除这条历史会话？"
+        alert.informativeText = "该记录将从 AI 平台删除，此操作无法撤销。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.deleteHistory(entryID: entry.id)
+        }
+    }
+
+    private func deleteHistory(entryID: String) {
+        let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard CampusAIEndpoint.validID(entryID), CampusAIEndpoint.validID(agentID),
+              let path = CampusAIEndpoint.historyDeletePath(sessionID: entryID),
+              let url = URL(string: "https://\(CampusAIEndpoint.host)\(path)") else {
+            showHistoryError("历史会话 ID 无效，无法删除。")
+            return
+        }
+        let navigationID = portalNavigationID
+        historyPopoverController?.beginDeleting()
+        cancelHistoryDeleteRequest()
+        let requestID = UUID()
+        historyDeleteRequestID = requestID
+
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] allCookies in
+            DispatchQueue.main.async {
+                guard let self = self, self.historyDeleteRequestID == requestID,
+                      self.portalNavigationID == navigationID,
+                      self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == agentID else { return }
+                let requestCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: path)
+                guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: requestCookies)?.value else {
+                    self.historyDeleteRequestID = nil
+                    self.showHistoryError("AI 平台会话无效或已过期，请重新从信息门户进入。")
+                    return
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.httpShouldHandleCookies = false
+                request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+                request.setValue(aiFlow, forHTTPHeaderField: "aiflow")
+                if let referer = self.aiRefererURL(for: agentID) {
+                    request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                }
+                if let cookie = CampusAIEndpoint.cookieHeader(from: requestCookies) {
+                    request.setValue(cookie, forHTTPHeaderField: "Cookie")
+                }
+
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.httpCookieAcceptPolicy = .never
+                configuration.httpShouldSetCookies = false
+                configuration.timeoutIntervalForRequest = 30
+                let session = URLSession(configuration: configuration)
+                let task = session.dataTask(with: request) { [weak self] data, response, error in
+                    let http = response as? HTTPURLResponse
+                    let successfulHTTP = (200...299).contains(http?.statusCode ?? 0)
+                    let deleted = successfulHTTP && (data.map { CampusAIHistoryDeleteResponse.deleted(from: $0) } ?? false)
+                    let message: String?
+                    if http?.statusCode == 401 || http?.statusCode == 403 {
+                        message = "AI 平台会话无效或已过期，请重新从信息门户进入。"
+                    } else if error != nil {
+                        message = "删除历史会话时网络连接失败，请检查网络后重试。"
+                    } else if !successfulHTTP {
+                        message = "平台删除历史会话失败（HTTP \(http?.statusCode ?? 0)）。"
+                    } else if !deleted {
+                        message = "平台未确认删除成功，历史列表未刷新。"
+                    } else {
+                        message = nil
+                    }
+                    session.finishTasksAndInvalidate()
+                    DispatchQueue.main.async {
+                        guard let self = self, self.historyDeleteRequestID == requestID,
+                              self.portalNavigationID == navigationID,
+                              self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == agentID else { return }
+                        self.historyDeleteRequestID = nil
+                        self.historyDeleteTask = nil
+                        self.historyDeleteSession = nil
+                        if let message = message {
+                            self.showHistoryError(message)
+                            return
+                        }
+                        let deletedCurrentSession = self.groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == entryID
+                        if deletedCurrentSession {
+                            self.groupField.stringValue = ""
+                            self.emptyHistoryAgentID = nil
+                            self.emptyHistoryNavigationID = nil
+                            self.activeAssistantMarkdown = ""
+                            self.activeAssistantStart = nil
+                            self.transcriptView.textStorage?.setAttributedString(CampusAITranscriptStyle.attributedString(
+                                "当前会话已删除。\n\n",
+                                font: self.transcriptView.font ?? .systemFont(ofSize: 13)
+                            ))
+                        }
+                        self.loadHistoryPage(1)
+                    }
+                }
+                self.historyDeleteSession = session
+                self.historyDeleteTask = task
+                task.resume()
+            }
+        }
+    }
+
+    private func showHistoryError(_ message: String) {
+        historyPopoverController?.showError(message)
+        statusLabel.stringValue = message
+    }
+
+    private func cancelHistoryListRequest() {
+        historyListRequestID = nil
+        historyListTask?.cancel()
+        historyListTask = nil
+        historyListSession?.invalidateAndCancel()
+        historyListSession = nil
+    }
+
+    private func cancelHistoryDeleteRequest() {
+        historyDeleteRequestID = nil
+        historyDeleteTask?.cancel()
+        historyDeleteTask = nil
+        historyDeleteSession?.invalidateAndCancel()
+        historyDeleteSession = nil
+    }
+
+    private func closeHistoryPopover() {
+        let popover = historyPopover
+        historyPopover = nil
+        historyPopoverController = nil
+        popover?.performClose(nil)
+        cancelHistoryListRequest()
+    }
+
+    public func popoverDidClose(_ notification: Notification) {
+        guard let closedPopover = notification.object as? NSPopover,
+              closedPopover === historyPopover else { return }
+        historyPopover = nil
+        historyPopoverController = nil
+        cancelHistoryListRequest()
     }
 
     private func prepareRecentGroupIfNeeded(agentID: String, allCookies: [HTTPCookie],
@@ -1140,6 +1426,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         sendButton.title = "发送"
         promptField.isEnabled = true
         thinkingModePopup.isEnabled = true
+        historyButton.isEnabled = true
         promptField.stringValue = ""
         appendText("\n\n")
         statusLabel.stringValue = error ?? "回复完成。"

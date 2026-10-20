@@ -5,6 +5,7 @@ struct CampusAIFlowSupportTests {
     static func main() throws {
         testIDsAndRequestEncoding()
         testHistoryRequestAndResponse()
+        testHistoryManagementProtocol()
         testChatSaveRequestAndResponse()
         testChatAbortRequest()
         testCookieScope()
@@ -102,6 +103,59 @@ struct CampusAIFlowSupportTests {
                "a malformed history must not be treated as an empty history")
         expect(CampusAIHistoryResponse.lookup(from: wrongAgent, expectedAgentID: "1966078115428446208") == .invalid,
                "an unrelated history record must not trigger new-session creation")
+    }
+
+    private static func testHistoryManagementProtocol() {
+        expect(CampusAIEndpoint.historyDeletePath(sessionID: "1000000000000000002")
+               == "/api/af-api-agent/agent/delHistoryData/1000000000000000002",
+               "history deletion must use the observed per-session path")
+        expect(CampusAIEndpoint.historyDeletePath(sessionID: "not-an-id") == nil,
+               "invalid session IDs must not form a deletion path")
+
+        guard let secondPageBody = CampusAIRequestBuilder.historyBody(
+            agentID: "1966078115428446208", pageNumber: 2),
+              let secondPagePayload = (try? JSONSerialization.jsonObject(with: secondPageBody)) as? [String: Any] else {
+            fail("history pagination request should serialize")
+        }
+        expect(secondPagePayload["pageNum"] as? Int == 2,
+               "history pagination should request the selected page")
+        expect(CampusAIRequestBuilder.historyBody(agentID: "1966078115428446208", pageNumber: 0) == nil,
+               "history pagination must reject non-positive page numbers")
+
+        let pagedResponse = Data(#"{"status":null,"data":{"list":[{"id":"1000000000000000002","businessId":"1966078115428446208","topic":"synthetic topic","createTime":"2026-10-20T18:50:00"},{"id":"1000000000000000003","businessId":"3","topic":"other agent","createTime":"2026-10-20T18:49:32"}],"pageNum":2,"pages":3,"hasPreviousPage":true,"hasNextPage":true}}"#.utf8)
+        guard let page = CampusAIHistoryResponse.page(from: pagedResponse,
+                                                       expectedAgentID: "1966078115428446208",
+                                                       requestedPageNumber: 2) else {
+            fail("history page response should parse")
+        }
+        expect(page.entries.map(\.id) == ["1000000000000000002"],
+               "history page should include only valid sessions belonging to the selected agent")
+        expect(page.entries.first?.topic == "synthetic topic"
+               && page.entries.first?.createTime == "2026-10-20T18:50:00",
+               "history page should expose only the display title and creation time")
+        expect(page.pageNumber == 2 && page.pageCount == 3
+               && page.hasPreviousPage && page.hasNextPage,
+               "history page should preserve server pagination state")
+
+        let emptyResponse = Data(#"{"status":null,"data":{"list":[],"pageNum":1,"pages":0,"hasPreviousPage":false,"hasNextPage":false}}"#.utf8)
+        guard let emptyPage = CampusAIHistoryResponse.page(from: emptyResponse,
+                                                            expectedAgentID: "1966078115428446208",
+                                                            requestedPageNumber: 1) else {
+            fail("empty history page should parse")
+        }
+        expect(emptyPage.entries.isEmpty && !emptyPage.hasNextPage,
+               "an empty history page should remain a valid empty result")
+
+        let deleted = Data(#"{"status":1,"data":true,"msg":"synthetic"}"#.utf8)
+        let failedStatus = Data(#"{"status":0,"data":true}"#.utf8)
+        let falseResult = Data(#"{"status":1,"data":false}"#.utf8)
+        let malformed = Data(#"{"status":1,"data":1}"#.utf8)
+        expect(CampusAIHistoryDeleteResponse.deleted(from: deleted),
+               "history deletion should require successful business status and boolean data")
+        expect(!CampusAIHistoryDeleteResponse.deleted(from: failedStatus)
+               && !CampusAIHistoryDeleteResponse.deleted(from: falseResult)
+               && !CampusAIHistoryDeleteResponse.deleted(from: malformed),
+               "failed or malformed deletion responses must not be treated as success")
     }
 
     private static func testChatSaveRequestAndResponse() {
