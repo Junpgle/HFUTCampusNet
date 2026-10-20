@@ -2,42 +2,7 @@ import Foundation
 import AppKit
 import WebKit
 
-// HFUT AI-Flow 官方聊天入口。仅使用当前用户登录后获得的 AiFlow 会话，
-// 不在 App 配置文件/源码中另存 Cookie、账号密码或数据库 SQL；
-// WKWebView 默认网站数据存储按学校 Cookie 自身有效期维护会话。
-private enum CampusAIEndpoint {
-    static let host = "aipt.hfut.edu.cn"
-    static let api = URL(string: "https://aipt.hfut.edu.cn/api/af-api-agent/")!
-    static let defaultAgentID = "1966078115428446208"
-    static let defaultModelID = "2097156176776544256"
-
-    static func validID(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.range(of: "^[0-9]{1,19}$", options: .regularExpression) != nil
-            && Int64(trimmed) != nil
-    }
-
-    static func jsonString(_ value: String) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed]),
-              let result = String(data: data, encoding: .utf8) else { return "\"\"" }
-        return String(result.dropFirst().dropLast())
-    }
-
-    static func cookies(from all: [HTTPCookie]) -> [HTTPCookie] {
-        all.filter { cookie in
-            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            let path = "/api/af-api-agent/chat/send"
-            // 不要把 CAS 等其他路径的 Cookie 扩大范围发送给 AI-Flow。
-            let pathMatches = path.hasPrefix(cookie.path)
-            let notExpired = cookie.expiresDate.map { $0 > Date() } ?? true
-            return (domain == host || domain == "hfut.edu.cn")
-                && pathMatches && notExpired
-        }
-    }
-}
-
-// 在 macOS 原生 URLSession 中解析 SSE，避免 WKWebView 隐藏后 JS 流可能被节流。
-// 回调都在主线程执行，流中的 SQL 和完整工具返回值不记录、不持久化。
+// Only final answer text and safe status labels cross into the AppKit UI.
 private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     enum Event {
         case text(String)
@@ -51,12 +16,12 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
         config.timeoutIntervalForRequest = 90
         config.timeoutIntervalForResource = 300
         config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
     private var task: URLSessionDataTask?
-    private var pending = Data()
+    private var parser = CampusAISSEParser()
     private var completed = false
-    private var httpStatus: Int?
 
     init(onEvent: @escaping (Event) -> Void) {
         self.onEvent = onEvent
@@ -64,22 +29,23 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     }
 
     func start(question: String, groupID: String, modelID: String,
-               agentID: String, cookies: [HTTPCookie], aiFlow: String) {
+               cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
         var req = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/send"))
         req.httpMethod = "POST"
+        req.httpShouldHandleCookies = false
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue(aiFlow, forHTTPHeaderField: "aiflow")
-        req.setValue("https://aipt.hfut.edu.cn/agent-detail?id=\(agentID)", forHTTPHeaderField: "Referer")
-        if let header = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"] {
+        if let referer = referer, referer.host?.lowercased() == CampusAIEndpoint.host {
+            req.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        if let header = CampusAIEndpoint.cookieHeader(from: cookies) {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
-        // ID 必须作为 JSON int64 原样传输；不能通过 JavaScript Number 处理。
-        let payload = "{\"text\":\(CampusAIEndpoint.jsonString(question)),"
-            + "\"groupId\":\(groupID),\"aiLargeModelId\":\(modelID),"
-            + "\"thinkingMode\":\"balanced\",\"debug\":false,"
-            + "\"traceId\":\"\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased())\"}"
-        req.httpBody = Data(payload.utf8)
+        let traceID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        req.httpBody = CampusAIRequestBuilder.chatBody(
+            text: question, groupID: groupID, modelID: modelID, traceID: traceID
+        )
         task = session.dataTask(with: req)
         task?.resume()
     }
@@ -93,10 +59,9 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        httpStatus = status
         if status == 401 || status == 403 {
             completionHandler(.cancel)
-            finish("平台拒绝请求（HTTP \(status)），请在网页登录后重试。")
+            finish("AI 平台会话无效或已过期（HTTP \(status)）。请从信息门户重新进入合工大 AI 辅导员后重试。")
         } else if !(200...299).contains(status) {
             completionHandler(.cancel)
             finish("平台返回 HTTP \(status)，无法继续对话。")
@@ -106,66 +71,53 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        pending.append(data)
-        // 同时支持 LF 与 CRLF；按完整帧切割可避免拆分 UTF-8 汉字。
-        while true {
-            let lf = pending.range(of: Data("\n\n".utf8))
-            let crlf = pending.range(of: Data("\r\n\r\n".utf8))
-            guard let range = [lf, crlf].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound }) else { break }
-            readFrame(pending.subdata(in: 0..<range.lowerBound))
-            pending.removeSubrange(0..<range.upperBound)
-        }
-        if pending.count > 2_000_000 {
-            finish("返回的单个 SSE 数据帧异常过大，已中止。")
-            task?.cancel()
-        }
-    }
-
-    private func readFrame(_ data: Data) {
-        guard let frame = String(data: data, encoding: .utf8) else { return }
-        let lines = frame.components(separatedBy: .newlines)
-        let json = lines.filter { $0.hasPrefix("data:") }
-            .map { String($0.dropFirst(5)).trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-        guard !json.isEmpty, let bytes = json.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { return }
-        let type = object["type"] as? String ?? ""
-        switch type {
-        case "text":
-            if let content = object["content"] as? String { onEvent(.text(content)) }
-        case "thinking_start":
-            onEvent(.status("AI 正在思考…"))
-        case "tool_call_start":
-            onEvent(.status("正在调用学校智能体工具…"))
-        case "tool_call_result":
-            let call = object["tool_call"] as? [String: Any]
-            let state = call?["status"] as? String ?? ""
-            onEvent(.status(state == "success" ? "工具执行完成，正在生成回复…" : "工具返回状态：\(state)"))
-        case "error":
-            let msg = object["error"] as? String ?? "智能体执行失败"
-            onEvent(.status(msg))
-        default:
-            break
-        }
-        if object["is_end"] as? Bool == true {
-            onEvent(.status("回复已完成"))
-        }
+        consume(parser.append(data))
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !completed else { return }
         if let error = error as NSError?, error.code != NSURLErrorCancelled {
-            finish("连接中断：\(error.localizedDescription)")
+            finish("连接中断（网络错误）。请检查网络后重试。")
+        } else if let error = error as NSError?, error.code == NSURLErrorCancelled {
+            finish("连接已取消。")
         } else {
-            // SSE 最后一个数据帧可能没有以空行终止。
-            if !pending.isEmpty { readFrame(pending) }
+            consume(parser.finish())
+            guard !completed else { return }
             finish(nil)
+        }
+    }
+
+    private func consume(_ events: [CampusAISSEEvent]) {
+        for event in events {
+            switch event {
+            case .text(let chunk):
+                onEvent(.text(chunk))
+            case .status(.thinking):
+                onEvent(.status("AI 正在生成回复…"))
+            case .status(.toolStarted):
+                onEvent(.status("正在调用学校智能体工具…"))
+            case .status(.toolSucceeded):
+                onEvent(.status("工具执行完成，正在生成回复…"))
+            case .status(.toolFailed):
+                onEvent(.status("智能体工具未能完成。"))
+            case .completed:
+                finish(nil)
+            case .failed:
+                finish("智能体处理失败。平台错误详情未显示。")
+                task?.cancel()
+            case .incomplete:
+                finish("回复连接提前结束，未收到完成标记。请重试。")
+            case .responseTooLarge:
+                finish("平台响应超过本地安全处理上限，已中止。")
+                task?.cancel()
+            }
+            if completed { return }
         }
     }
 
     private func finish(_ error: String?) {
         guard !completed else { return }
         completed = true
-        pending.removeAll()
         onEvent(.finished(error))
         session.invalidateAndCancel()
     }
@@ -184,10 +136,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let loginButton = NSButton(title: "信息门户", target: nil, action: nil)
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
+    private let traceButton = NSButton(title: "复制脱敏轨迹", target: nil, action: nil)
     private let transcriptScroll = NSScrollView()
     private var loginWebView: WKWebView!
     private var portalWebViews: [WKWebView] = []
+    private var navigationTrace: [String] = []
     private var activeClient: CampusAIStreamClient?
+    private var activeLookupTask: URLSessionDataTask?
+    private var activeLookupSession: URLSession?
     private var sending = false
     private var displayingLogin = false
     // 完整 SSO 跳转由信息门户及其注册应用发起；本客户端不构造 ST/service。
@@ -242,6 +198,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         backButton.isEnabled = false
         root.addSubview(backButton)
 
+        traceButton.frame = NSRect(x: 610, y: 650, width: 135, height: 30)
+        traceButton.autoresizingMask = [.minXMargin, .minYMargin]
+        traceButton.target = self
+        traceButton.action = #selector(copyNavigationTrace)
+        traceButton.isEnabled = false
+        root.addSubview(traceButton)
+
         root.addSubview(label("智能体 ID", x: 20, y: 611, width: 75))
         agentField.frame = NSRect(x: 96, y: 608, width: 236, height: 24)
         agentField.stringValue = defaults.string(forKey: "campus_ai_agent_id") ?? CampusAIEndpoint.defaultAgentID
@@ -262,6 +225,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default() // 与 App 现有统一登录 WebView 共用 Cookie 存储
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
         loginWebView = WKWebView(frame: NSRect(x: 20, y: 128, width: 940, height: 458), configuration: config)
         loginWebView.navigationDelegate = self
         loginWebView.uiDelegate = self
@@ -315,7 +279,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 if self.hasAISession(cookies) {
-                    self.displayChat(status: "已检测到 AI 平台 Cookie，可尝试发送消息；过期时请从信息门户重新进入。")
+                    self.displayChat(status: "检测到 AI 平台会话 Cookie；服务端会在发送消息时确认是否仍有效。")
                 } else {
                     self.openInformationPortal()
                 }
@@ -324,9 +288,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func hasAISession(_ cookies: [HTTPCookie]) -> Bool {
-        CampusAIEndpoint.cookies(from: cookies).contains {
-            $0.name == "AiFlow" && !$0.value.isEmpty
-        }
+        let requestCookies = CampusAIEndpoint.cookies(from: cookies, requestPath: CampusAIEndpoint.chatSendPath)
+        return CampusAIEndpoint.aiFlowCookie(from: requestCookies) != nil
     }
 
     private func displayChat(status: String) {
@@ -340,12 +303,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     // 让学校信息门户发起 AI 应用的 SSO 跳转，不能自行猜测 CAS service 值。
     private func openInformationPortal() {
         portalNavigationID = UUID()
+        navigationTrace.removeAll(keepingCapacity: true)
+        traceButton.isEnabled = false
         displayingLogin = true
         for webView in portalWebViews { webView.isHidden = (webView !== loginWebView) }
         loginWebView.isHidden = false
         transcriptScroll.isHidden = true
         backButton.isEnabled = true
-        statusLabel.stringValue = "请在信息门户中点击「AI 应用中台」，再进入「合工大辅导员」。"
+        statusLabel.stringValue = "请沿学校正常路径进入 AI 应用中台 → AI 应用广场 → 合工大 AI 辅导员。"
         let url = URL(string: "https://one.hfut.edu.cn/")!
         loginWebView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
     }
@@ -361,17 +326,44 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 guard let self = self, self.portalNavigationID == navigationID else { return }
                 self.displayChat(
                     status: self.hasAISession(cookies)
-                        ? "已发现 AI 会话，可发送消息。"
+                        ? "检测到 AI 平台会话 Cookie；发送消息时将由服务端确认有效性。"
                         : "尚未发现 AiFlow 会话。请返回信息门户，按学校的正常入口进入智能体。"
                 )
             }
         }
     }
 
+    @objc private func copyNavigationTrace() {
+        guard !navigationTrace.isEmpty else {
+            statusLabel.stringValue = "当前没有可复制的跳转记录。"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(navigationTrace.joined(separator: "\n"), forType: .string)
+        statusLabel.stringValue = "已复制 \(navigationTrace.count) 条脱敏记录，仅含事件、host、path 和 query 参数名。"
+    }
+
+    private func recordNavigation(_ event: String, url: URL?, target: String = "main") {
+        guard displayingLogin, let url = url else { return }
+        let line = CampusAISafeNavigationTrace.line(event: event, url: url, target: target)
+        if navigationTrace.last != line {
+            navigationTrace.append(line)
+            if navigationTrace.count > 100 { navigationTrace.removeFirst(navigationTrace.count - 100) }
+        }
+        traceButton.isEnabled = !navigationTrace.isEmpty
+        statusLabel.stringValue = "SSO 跳转：\(line)"
+    }
+
     @objc private func sendMessage() {
         if sending {
             if let client = activeClient {
                 client.cancel()
+            } else if let task = activeLookupTask {
+                task.cancel()
+                activeLookupSession?.invalidateAndCancel()
+                activeLookupTask = nil
+                activeLookupSession = nil
+                complete("已取消")
             } else {
                 complete("已取消")
             }
@@ -399,68 +391,97 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
             DispatchQueue.main.async {
                 guard let self = self, self.sending else { return }
-                let cookies = CampusAIEndpoint.cookies(from: all)
-                guard let aiFlow = cookies.first(where: { $0.name == "AiFlow" })?.value,
-                      !aiFlow.isEmpty else {
+                let cookies = CampusAIEndpoint.cookies(from: all, requestPath: CampusAIEndpoint.chatSendPath)
+                guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: cookies)?.value else {
                     self.complete("当前没有 AI 会话。请点击「信息门户」，从「AI 应用中台」进入「合工大辅导员」。")
                     self.openInformationPortal()
                     return
                 }
                 if !groupID.isEmpty {
+                    let referer = self.aiRefererURL(for: agentID)
                     self.startStreaming(question: question, groupID: groupID,
-                                        modelID: modelID, agentID: agentID,
-                                        cookies: cookies, aiFlow: aiFlow)
+                                        modelID: modelID, cookies: cookies, aiFlow: aiFlow,
+                                        referer: referer)
                 } else {
+                    let referer = self.aiRefererURL(for: agentID)
                     self.findRecentGroup(question: question, agentID: agentID, modelID: modelID,
-                                         cookies: cookies, aiFlow: aiFlow)
+                                         aiFlow: aiFlow, allCookies: all, referer: referer)
                 }
             }
         }
     }
 
     private func findRecentGroup(question: String, agentID: String, modelID: String,
-                                 cookies: [HTTPCookie], aiFlow: String) {
+                                 aiFlow: String, allCookies: [HTTPCookie], referer: URL?) {
         statusLabel.stringValue = "正在查询该智能体的最近会话…"
         var request = URLRequest(url: CampusAIEndpoint.api.appendingPathComponent("chat/lastGroup"))
         request.httpMethod = "POST"
+        request.httpShouldHandleCookies = false
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(aiFlow, forHTTPHeaderField: "aiflow")
-        if let cookie = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"] {
+        if let referer = referer, referer.host?.lowercased() == CampusAIEndpoint.host {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        let groupCookies = CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.lastGroupPath)
+        if let cookie = CampusAIEndpoint.cookieHeader(from: groupCookies) {
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
-        // businessType=1 为智能体会话候选类型，具体平台版本可能不同；失败时让用户手动提供会话 ID。
-        request.httpBody = Data("{\"businessId\":\(agentID),\"businessType\":1}".utf8)
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-            var resolvedID: String?
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-               let data = data,
-               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               (object["status"] as? NSNumber)?.intValue == 1,
-               let group = object["data"] as? [String: Any] {
-                // Foundation 的 NSNumber 支持 int64，无 JavaScript Number 精度问题。
-                let id = (group["id"] as? NSNumber)?.stringValue ?? (group["id"] as? String)
-                let returnedAgent = (group["agentId"] as? NSNumber)?.stringValue ?? (group["agentId"] as? String)
-                if let id = id, CampusAIEndpoint.validID(id),
-                   returnedAgent == nil || returnedAgent == agentID {
-                    resolvedID = id
-                }
+        // businessType=1 remains a candidate from the existing implementation; the platform's
+        // actual value still needs confirmation from a successful browser session.
+        guard let numericAgentID = Int64(agentID),
+              let requestBody = try? JSONSerialization.data(withJSONObject: [
+                "businessId": NSNumber(value: numericAgentID), "businessType": 1
+              ]) else {
+            complete("智能体 ID 无法用于会话查询。")
+            return
+        }
+        request.httpBody = requestBody
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForRequest = 30
+        let session = URLSession(configuration: configuration)
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            let http = response as? HTTPURLResponse
+            let resolvedID = (200...299).contains(http?.statusCode ?? 0)
+                ? data.flatMap { CampusAIGroupResponse.groupID(from: $0, expectedAgentID: agentID) }
+                : nil
+            let statusMessage: String?
+            if http?.statusCode == 401 || http?.statusCode == 403 {
+                statusMessage = "AI 平台会话无效或已过期。请重新从信息门户进入目标智能体。"
+            } else if error != nil {
+                statusMessage = "查询会话时网络连接失败，请检查网络后重试。"
+            } else {
+                statusMessage = nil
             }
+            session.finishTasksAndInvalidate()
             DispatchQueue.main.async {
                 guard let self = self, self.sending else { return }
+                self.activeLookupTask = nil
+                self.activeLookupSession = nil
                 guard let groupID = resolvedID else {
-                    self.complete("无法自动获取会话 ID。请先在网页登录页打开对话，再从该页面 /chat/send 请求中复制 groupId 到上方会话 ID 输入框。")
+                    self.complete(statusMessage ?? "平台未返回该智能体的可用会话。请先在网页登录中打开目标对话后重试，或输入自己的会话 ID。")
                     return
                 }
                 self.groupField.stringValue = groupID
                 self.startStreaming(question: question, groupID: groupID,
-                                    modelID: modelID, agentID: agentID,
-                                    cookies: cookies, aiFlow: aiFlow)
+                                    modelID: modelID,
+                                    cookies: CampusAIEndpoint.cookies(from: allCookies, requestPath: CampusAIEndpoint.chatSendPath),
+                                    aiFlow: aiFlow, referer: referer)
             }
-        }.resume()
+        }
+        activeLookupSession = session
+        activeLookupTask = task
+        task.resume()
+    }
+
+    private func aiRefererURL(for agentID: String) -> URL? {
+        CampusAIEndpoint.referer(from: loginWebView.url, agentID: agentID)
     }
 
     private func startStreaming(question: String, groupID: String, modelID: String,
-                                agentID: String, cookies: [HTTPCookie], aiFlow: String) {
+                                cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
         statusLabel.stringValue = "已连接，等待智能体回复…"
         let client = CampusAIStreamClient { [weak self] event in
             guard let self = self else { return }
@@ -475,7 +496,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         }
         activeClient = client
         client.start(question: question, groupID: groupID, modelID: modelID,
-                     agentID: agentID, cookies: cookies, aiFlow: aiFlow)
+                     cookies: cookies, aiFlow: aiFlow, referer: referer)
     }
 
     private func appendText(_ value: String) {
@@ -485,6 +506,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func complete(_ error: String?) {
         guard sending else { return }
+        activeLookupTask?.cancel()
+        activeLookupTask = nil
+        activeLookupSession?.invalidateAndCancel()
+        activeLookupSession = nil
         sending = false
         activeClient = nil
         sendButton.title = "发送"
@@ -500,6 +525,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         windowFeatures: WKWindowFeatures) -> WKWebView? {
         // 门户有时使用 window.open() 或 target=_blank，然后继续更新窗口 location。
         // 返回真实的弹出 WKWebView 才能让后续浏览器导航和 CAS 回跳正常执行。
+        recordNavigation("popup-request", url: navigationAction.request.url, target: "popup")
         guard navigationAction.targetFrame == nil else { return nil }
         if let url = navigationAction.request.url, url.scheme != "about" {
             let host = url.host?.lowercased() ?? ""
@@ -510,6 +536,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             }
         }
         guard let parent = loginWebView.superview else { return nil }
+        configuration.websiteDataStore = .default()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let popup = WKWebView(frame: loginWebView.frame, configuration: configuration)
         popup.navigationDelegate = self
         popup.uiDelegate = self
@@ -522,17 +550,45 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         return popup
     }
 
+    public func webView(_ webView: WKWebView,
+                        decidePolicyFor navigationAction: WKNavigationAction,
+                        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let target = navigationAction.targetFrame?.isMainFrame == false ? "frame" : "main"
+        recordNavigation("navigate", url: navigationAction.request.url, target: target)
+        decisionHandler(.allow)
+    }
+
+    public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        recordNavigation("start", url: webView.url)
+    }
+
+    public func webView(_ webView: WKWebView,
+                        didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        recordNavigation("redirect", url: webView.url)
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard (error as NSError).code != NSURLErrorCancelled else { return }
+        recordNavigation("provisional-failure", url: webView.url)
+        statusLabel.stringValue = "学校登录页面连接失败。可复制脱敏跳转轨迹用于排查。"
+    }
+
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let current = webView.url else { return }
+        recordNavigation("finish", url: current)
+        guard webView === loginWebView, displayingLogin else { return }
         let host = current.host?.lowercased() ?? ""
 
-        if host == "cas.hfut.edu.cn" || host == "one.hfut.edu.cn" {
+        if host == "cas.hfut.edu.cn" || host == "one.hfut.edu.cn" || host == CampusAIEndpoint.host {
             // 只读取页面可见报错文字以便提示；绝不采集 ST 值或密码。
+            let navigationID = portalNavigationID
             webView.evaluateJavaScript("document.body ? document.body.innerText.slice(0, 1300) : ''") { [weak self] result, _ in
                 guard let self = self, self.displayingLogin,
+                      self.portalNavigationID == navigationID,
+                      webView === self.loginWebView,
                       let body = result as? String else { return }
                 if body.contains("不符合目标服务") || body.contains("INVALID_SERVICE") {
-                    self.statusLabel.stringValue = "CAS 服务票据校验失败。请确认是从信息门户应用入口进入；若仍失败，需校方排查 service 配置。"
+                    self.statusLabel.stringValue = "CAS 服务票据校验失败。请确认通过信息门户的 AI 应用中台进入；复制脱敏跳转轨迹可帮助定位具体一跳。"
                 }
             }
         }
@@ -544,13 +600,20 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
            CampusAIEndpoint.validID(agent) {
             agentField.stringValue = agent
         }
+        guard current.path == "/agent-detail" else {
+            statusLabel.stringValue = "已到达 AI 应用中台。请继续进入 AI 应用广场，再打开合工大 AI 辅导员。"
+            return
+        }
+        let navigationID = portalNavigationID
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.displayingLogin else { return }
+                guard let self = self, self.displayingLogin,
+                      self.portalNavigationID == navigationID,
+                      webView === self.loginWebView else { return }
                 if self.hasAISession(cookies) {
-                    self.displayChat(status: "已从学校门户进入 AI 平台并检测到会话，可发送消息。")
+                    self.displayChat(status: "已到达目标智能体页面并检测到 AI 会话 Cookie；服务端仍会确认会话有效性。")
                 } else {
-                    self.statusLabel.stringValue = "AI 页面已打开，请进入「合工大辅导员」；建立会话后点击「返回聊天」。"
+                    self.statusLabel.stringValue = "目标智能体页面已打开，但尚未发现 AI 会话 Cookie。请完成页面内登录后点击「返回聊天」。"
                 }
             }
         }
@@ -558,7 +621,19 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
-        statusLabel.stringValue = "学校页面加载失败：\(error.localizedDescription)"
+        recordNavigation("failure", url: webView.url)
+        guard webView === loginWebView else { return }
+        statusLabel.stringValue = "学校页面加载失败。可复制脱敏跳转轨迹用于排查。"
+    }
+
+    public func webViewDidClose(_ webView: WKWebView) {
+        let wasActive = webView === loginWebView
+        portalWebViews.removeAll { $0 === webView }
+        webView.removeFromSuperview()
+        if wasActive, let fallback = portalWebViews.last {
+            loginWebView = fallback
+            fallback.isHidden = false
+        }
     }
 
     public func windowWillClose(_ notification: Notification) {

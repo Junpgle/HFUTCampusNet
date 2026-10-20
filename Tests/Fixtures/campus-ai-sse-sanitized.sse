@@ -1,0 +1,13 @@
+data:{"type":"chat_meta","chat_id":"9000000000000000001"}
+
+data:{"type":"thinking","content":"SYNTHETIC_PRIVATE_REASONING"}
+
+data:{"type":"thinking_start"}
+
+data:{"type":"tool_call_start"}
+
+data:{"type":"tool_call_result","tool_call":{"status":"success","output":{"data":"SYNTHETIC_PRIVATE_TOOL_OUTPUT"}}}
+
+data:{"type":"text","content":"你"}
+
+data:{"type":"text","content":"好","is_end":true}
