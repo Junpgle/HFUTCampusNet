@@ -6,6 +6,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     public static let shared = CourseLoginWebViewController()
 
     private var webView: WKWebView!
+    private var casLoginCoordinator: HFUTCASLoginCoordinator!
     private var progressIndicator: NSProgressIndicator!
     private var statusLabel: NSTextField!
     private var isSyncing: Bool = false
@@ -39,11 +40,17 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         config.userContentController.add(self, name: "casCredentialsHandler")
 
         webView = WKWebView(frame: NSRect(x: 0, y: 52, width: 960, height: 628), configuration: config)
+        casLoginCoordinator = HFUTCASLoginCoordinator(frame: webView.frame)
+        casLoginCoordinator.installMessageHandler(in: config.userContentController)
+        casLoginCoordinator.onStatus = { [weak self] message in
+            self?.statusLabel.stringValue = message
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         webView.autoresizingMask = [.width, .height]
         containerView.addSubview(webView)
+        casLoginCoordinator.attach(webView: webView, overlayHost: containerView)
 
         // 底部状态与操作栏
         let bottomBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 0, width: 960, height: 52))
@@ -96,6 +103,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
 
         progressIndicator.startAnimation(nil)
+        casLoginCoordinator.setEnabled(true)
         statusLabel.stringValue = "请登录教务系统（如已登录将自动同步课表）..."
         statusLabel.textColor = .secondaryLabelColor
         isSyncing = false
@@ -123,6 +131,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         progressIndicator.startAnimation(nil)
+        casLoginCoordinator.navigationStarted(in: webView)
         statusLabel.stringValue = "正在加载页面..."
         statusLabel.textColor = .secondaryLabelColor
     }
@@ -143,6 +152,11 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "casCredentialsHandler",
+              message.webView === webView,
+              message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
+                || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
               let dict = message.body as? [String: String] else { return }
         if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
             SettingsManager.shared.portalUsername = u
@@ -154,11 +168,14 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
+        casLoginCoordinator.navigationFinished(in: webView)
         guard let currentURL = webView.url else { return }
         let urlStr = currentURL.absoluteString
 
         // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
-        if urlStr.contains("/login") || urlStr.contains("cas.hfut.edu.cn") {
+        if HFUTCASLoginSupport.isOfficialHTTPSPage(currentURL),
+           !HFUTCASLoginSupport.isCASHost(currentURL),
+           currentURL.path.localizedCaseInsensitiveContains("/login") {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")
@@ -232,7 +249,10 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         // 检查是否到达课表页面
         if urlStr.contains("/for-std/course-table/info/") || urlStr.contains("/for-std/course-table") {
             triggerAutoExtraction()
-        } else if urlStr.contains("/login") || urlStr.contains("cas.hfut.edu.cn") {
+        } else if HFUTCASLoginSupport.isCASHost(currentURL) {
+            statusLabel.stringValue = "请使用 CAS 原生登录面板输入验证码并继续。"
+            statusLabel.textColor = .secondaryLabelColor
+        } else if currentURL.path.localizedCaseInsensitiveContains("/login") {
             statusLabel.stringValue = "已自动填充已存账号密码（首次登录输入后将自动保存）..."
             statusLabel.textColor = .secondaryLabelColor
         } else {
@@ -269,10 +289,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
                 SettingsManager.shared.courseSessionCookie = jxCookieHeader
             }
-            for cookie in cookies {
-                if (cookie.name == "CASTGC" || cookie.name == "TGC") && cookie.domain.contains("hfut.edu.cn") {
-                    SettingsManager.shared.casTgcCookie = cookie.value
-                }
+            if let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) {
+                SettingsManager.shared.casTgcCookie = tgc
             }
 
             // 优先在当前已登录的 WKWebView 页面上下文内直接执行同源 fetch 获取课表 JSON（100% 复用页面自身有效会话）

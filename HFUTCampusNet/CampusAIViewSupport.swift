@@ -106,6 +106,16 @@ enum CampusAIEntryNavigation {
                 const style = getComputedStyle(element);
                 return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
               };
+              const findAdvisorLabel = () => {
+                const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                  if ((node.nodeValue || '').replace(/\s+/g, '').trim() !== '合工大AI辅导员') continue;
+                  const element = node.parentElement;
+                  if (element && visible(element)) return element;
+                }
+                return null;
+              };
               const report = result => {
                 const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.campusAIAutoNavigation;
                 if (bridge) bridge.postMessage({event: 'autoNavigation', step: 'plaza', result});
@@ -128,7 +138,7 @@ enum CampusAIEntryNavigation {
                       let cardAttempts = 0;
                       const cardTimer = window.setInterval(() => {
                         cardAttempts += 1;
-                        const card = [...document.querySelectorAll('.title')].find(element => normalize(element.textContent) === '合工大AI辅导员' && visible(element));
+                        const card = findAdvisorLabel();
                         if (card) {
                           window.clearInterval(cardTimer);
                           if (!window.__campusAIAutoAdvisorClicking) {
@@ -136,6 +146,18 @@ enum CampusAIEntryNavigation {
                             card.click();
                             const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.campusAIAutoNavigation;
                             if (bridge) bridge.postMessage({event: 'autoNavigation', step: 'advisor', result: 'clicked'});
+                            let detailAttempts = 0;
+                            const detailTimer = window.setInterval(() => {
+                              detailAttempts += 1;
+                              const detailURL = new URL(window.location.href);
+                              if (detailURL.pathname === '/agent-detail' && detailURL.searchParams.get('id') === '__AGENT_ID__') {
+                                window.clearInterval(detailTimer);
+                                if (bridge) bridge.postMessage({event: 'autoNavigation', step: 'advisor', result: 'opened'});
+                              } else if (detailAttempts >= 40) {
+                                window.clearInterval(detailTimer);
+                                if (bridge) bridge.postMessage({event: 'autoNavigation', step: 'advisor', result: 'open-failed'});
+                              }
+                            }, 400);
                           }
                         } else if (cardAttempts >= 40) {
                           window.clearInterval(cardTimer);
@@ -162,15 +184,24 @@ enum CampusAIEntryNavigation {
             return script.replacingOccurrences(
                 of: "__CAMPUS_AI_AUTO_OPEN_ADVISOR__",
                 with: agentID == CampusAIEndpoint.defaultAgentID ? "true" : "false"
-            )
+            ).replacingOccurrences(of: "__AGENT_ID__", with: agentID)
         case .clickCampusAdvisor:
             return #"""
             (() => {
-              const normalize = value => (value || '').replace(/\s+/g, '').trim();
               const visible = element => {
                 const rect = element.getBoundingClientRect();
                 const style = getComputedStyle(element);
                 return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+              };
+              const findAdvisorLabel = () => {
+                const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                  if ((node.nodeValue || '').replace(/\s+/g, '').trim() !== '合工大AI辅导员') continue;
+                  const element = node.parentElement;
+                  if (element && visible(element)) return element;
+                }
+                return null;
               };
               const report = result => {
                 const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.campusAIAutoNavigation;
@@ -179,13 +210,25 @@ enum CampusAIEntryNavigation {
               let attempts = 0;
               const timer = window.setInterval(() => {
                 attempts += 1;
-                const card = [...document.querySelectorAll('.title')].find(element => normalize(element.textContent) === '合工大AI辅导员' && visible(element));
+                const card = findAdvisorLabel();
                 if (card) {
                   window.clearInterval(timer);
                   if (!window.__campusAIAutoAdvisorClicking) {
                     window.__campusAIAutoAdvisorClicking = true;
                     card.click();
                     report('clicked');
+                    let detailAttempts = 0;
+                    const detailTimer = window.setInterval(() => {
+                      detailAttempts += 1;
+                      const detailURL = new URL(window.location.href);
+                      if (detailURL.pathname === '/agent-detail' && detailURL.searchParams.get('id') === '__AGENT_ID__') {
+                        window.clearInterval(detailTimer);
+                        report('opened');
+                      } else if (detailAttempts >= 40) {
+                        window.clearInterval(detailTimer);
+                        report('open-failed');
+                      }
+                    }, 400);
                   }
                 } else if (attempts >= 40) {
                   window.clearInterval(timer);
@@ -194,7 +237,7 @@ enum CampusAIEntryNavigation {
               }, 400);
               return true;
             })()
-            """#
+            """#.replacingOccurrences(of: "__AGENT_ID__", with: agentID)
         }
     }
 }

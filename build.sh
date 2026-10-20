@@ -54,6 +54,7 @@ SOURCES=(
     "HFUTCampusNet/CampusAIViewSupport.swift"
     "HFUTCampusNet/CampusAICasLoginSupport.swift"
     "HFUTCampusNet/CampusAICasLoginPanel.swift"
+    "HFUTCampusNet/HFUTCASLoginCoordinator.swift"
     "HFUTCampusNet/CampusAIAssistantWindowController.swift"
     "HFUTCampusNet/MenubarController.swift"
     "HFUTCampusNet/main.swift"

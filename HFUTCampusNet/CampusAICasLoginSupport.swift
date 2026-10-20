@@ -1,12 +1,37 @@
 import Foundation
 
-enum CampusAICasLoginSupport {
+enum HFUTCASLoginSupport {
+    static let messageName = "campusAICaptcha"
+
+    static func isCASHost(_ url: URL?) -> Bool {
+        url?.host?.lowercased() == "cas.hfut.edu.cn"
+    }
+
+    static func isOfficialHTTPSPage(_ url: URL?) -> Bool {
+        guard let url, url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased() else { return false }
+        return host == "hfut.edu.cn" || host.hasSuffix(".hfut.edu.cn")
+    }
+
     static func isLoginPage(_ url: URL?) -> Bool {
         guard let url = url,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
         return components.scheme?.lowercased() == "https"
-            && components.host?.lowercased() == "cas.hfut.edu.cn"
+            && isCASHost(url)
             && components.path == "/cas/login"
+    }
+
+    static func tgcCookieValue(from cookies: [HTTPCookie], now: Date = Date()) -> String? {
+        let casCookies = cookies.filter { cookie in
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let name = cookie.name.uppercased()
+            let isCASDomain = domain == "cas.hfut.edu.cn" || domain == "hfut.edu.cn"
+            let isTicketCookie = name == "CASTGC" || name == "TGC"
+            let isUnexpired = cookie.expiresDate.map { $0 > now } ?? true
+            return isCASDomain && isTicketCookie && isUnexpired && !cookie.value.isEmpty
+        }
+        return casCookies.first(where: { $0.name.caseInsensitiveCompare("CASTGC") == .orderedSame })?.value
+            ?? casCookies.first(where: { $0.name.caseInsensitiveCompare("TGC") == .orderedSame })?.value
     }
 
     static func credentialsLiteral(username: String, password: String, captcha: String) -> String? {

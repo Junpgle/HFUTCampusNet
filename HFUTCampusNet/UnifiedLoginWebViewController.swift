@@ -6,6 +6,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     public static let shared = UnifiedLoginWebViewController()
 
     private var webView: WKWebView!
+    private var casLoginCoordinator: HFUTCASLoginCoordinator!
     private var progressIndicator: NSProgressIndicator!
     private var statusTitleLabel: NSTextField!
     private var statusDetailLabel: NSTextField!
@@ -76,11 +77,17 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         let webViewHeight: CGFloat = 720 - 46 - 86
         webView = WKWebView(frame: NSRect(x: 0, y: 86, width: 1000, height: webViewHeight), configuration: config)
+        casLoginCoordinator = HFUTCASLoginCoordinator(frame: webView.frame)
+        casLoginCoordinator.installMessageHandler(in: config.userContentController)
+        casLoginCoordinator.onStatus = { [weak self] message in
+            self?.statusDetailLabel.stringValue = message
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         webView.autoresizingMask = [.width, .height]
         containerView.addSubview(webView)
+        casLoginCoordinator.attach(webView: webView, overlayHost: containerView)
 
         // 底部服务同步状态栏
         let bottomBar = AdaptiveBoxView(frame: NSRect(x: 0, y: 0, width: 1000, height: 86))
@@ -149,6 +156,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         syncCompletedCount = 0
         syncSessionToken = UUID()
         electricitySyncFailure = nil
+        casLoginCoordinator.setEnabled(true)
         updateStep(index: 0, text: "1. 统一身份认证", status: .waiting)
         updateStep(index: 1, text: "2. 教务课表同步", status: .waiting)
         updateStep(index: 2, text: "3. 宿舍电费查询", status: .waiting)
@@ -203,6 +211,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         progressIndicator.startAnimation(nil)
+        casLoginCoordinator.navigationStarted(in: webView)
     }
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -223,6 +232,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "casCredentialsHandler",
+              message.webView === webView,
+              message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
+                || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
               let dict = message.body as? [String: String] else { return }
         if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
             SettingsManager.shared.portalUsername = u
@@ -234,11 +248,13 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
+        casLoginCoordinator.navigationFinished(in: webView)
         guard let url = webView.url else { return }
-        let urlStr = url.absoluteString
 
         // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
-        if urlStr.contains("cas.hfut.edu.cn") || urlStr.contains("/login") {
+        if HFUTCASLoginSupport.isOfficialHTTPSPage(url),
+           !HFUTCASLoginSupport.isCASHost(url),
+           url.path.localizedCaseInsensitiveContains("/login") {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")
@@ -341,13 +357,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self, !self.isSyncingAll else { return }
 
-            var hasTGC = false
-            for cookie in cookies {
-                if (cookie.name == "CASTGC" || cookie.name == "TGC") && cookie.domain.contains("hfut.edu.cn") {
-                    hasTGC = true
-                    SettingsManager.shared.casTgcCookie = cookie.value
-                }
-            }
+            let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
+            let hasTGC = tgc != nil
+            if let tgc { SettingsManager.shared.casTgcCookie = tgc }
 
             let currentURL = self.webView.url?.absoluteString ?? ""
             guard !currentURL.isEmpty else { return }

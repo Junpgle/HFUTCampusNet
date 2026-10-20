@@ -1,6 +1,6 @@
 import AppKit
 
-final class CampusAICasLoginPanel: NSView {
+final class HFUTCASLoginPanel: NSView {
     private let usernameField = NSTextField()
     private let passwordField = NSSecureTextField()
     private let captchaField = NSTextField()
@@ -36,7 +36,7 @@ final class CampusAICasLoginPanel: NSView {
         title.frame = NSRect(x: 210, y: 402, width: 520, height: 26)
         addSubview(title)
 
-        let subtitle = NSTextField(wrappingLabelWithString: "此表单只在学校门户发起的 CAS 登录页出现。验证码和凭据仍由当前 CAS 页面提交验证。")
+        let subtitle = NSTextField(wrappingLabelWithString: "仅在学校 CAS 密码登录页出现。验证码和凭据仍由当前 CAS 页面提交验证。")
         subtitle.font = .systemFont(ofSize: 12)
         subtitle.textColor = .secondaryLabelColor
         subtitle.alignment = .center

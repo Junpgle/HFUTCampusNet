@@ -170,22 +170,38 @@ struct CampusAIFlowSupportTests {
     }
 
     private static func testCASNativeLoginSupport() {
-        expect(CampusAICasLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Faipt.hfut.edu.cn")),
+        expect(HFUTCASLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Faipt.hfut.edu.cn")),
                "the current official CAS login page should be recognized")
-        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "http://cas.hfut.edu.cn/cas/login")),
+        expect(HFUTCASLoginSupport.isCASHost(URL(string: "https://cas.hfut.edu.cn/cas/oauth2.0/authorize")),
+               "all official CAS routes should be excluded from legacy page autofill")
+        expect(HFUTCASLoginSupport.isOfficialHTTPSPage(URL(string: "https://jxglstu.hfut.edu.cn/eams5-student/login")),
+               "legacy credential automation may remain available on official HTTPS campus pages")
+        expect(!HFUTCASLoginSupport.isOfficialHTTPSPage(URL(string: "https://evil-hfut.edu.cn/login")),
+               "legacy credential automation must reject lookalike campus hosts")
+        expect(!HFUTCASLoginSupport.isLoginPage(URL(string: "http://cas.hfut.edu.cn/cas/login")),
                "CAS native controls must require HTTPS")
-        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "https://evilcas.hfut.edu.cn/cas/login")),
+        expect(!HFUTCASLoginSupport.isLoginPage(URL(string: "https://evilcas.hfut.edu.cn/cas/login")),
                "lookalike CAS hosts must not be trusted")
-        expect(!CampusAICasLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/logout")),
+        expect(!HFUTCASLoginSupport.isLoginPage(URL(string: "https://cas.hfut.edu.cn/cas/logout")),
                "CAS native controls must only activate on the login path")
+        let now = Date()
+        let tgcCookies = [
+            cookie(domain: ".cas.hfut.edu.cn", path: "/", name: "CASTGC", value: "fixture-cas-ticket"),
+            cookie(domain: "hfut.edu.cn", path: "/cas", name: "TGC", value: "fixture-parent-ticket"),
+            cookie(domain: "evilhfut.edu.cn", path: "/", name: "CASTGC", value: "fixture-lookalike"),
+            cookie(domain: "cas.hfut.edu.cn", path: "/", name: "TGC", value: "fixture-expired",
+                   expires: now.addingTimeInterval(-10))
+        ]
+        expect(HFUTCASLoginSupport.tgcCookieValue(from: tgcCookies, now: now) == "fixture-cas-ticket",
+               "shared CAS state must select a valid CAS-scoped ticket and reject lookalike or expired cookies")
 
         let username = "user\"; alert('username') //"
         let password = "p\\ass\nword'; alert('password') //"
         let captcha = "验证码\"; alert('captcha') //"
-        guard let literal = CampusAICasLoginSupport.credentialsLiteral(
+        guard let literal = HFUTCASLoginSupport.credentialsLiteral(
             username: username, password: password, captcha: captcha
         ), let encodedValues = try? JSONSerialization.jsonObject(with: Data(literal.utf8)) as? [String],
-              let script = CampusAICasLoginSupport.submitScript(
+              let script = HFUTCASLoginSupport.submitScript(
                 username: username, password: password, captcha: captcha
               ) else {
             fail("native CAS credentials should serialize into a JavaScript data literal")
@@ -199,21 +215,21 @@ struct CampusAIFlowSupportTests {
                "native login must click the current official page's submit control")
 
         let png = "data:image/png;base64,\(Data([0x89, 0x50, 0x4e, 0x47]).base64EncodedString())"
-        expect(CampusAICasLoginSupport.captchaImageData(from: png) == Data([0x89, 0x50, 0x4e, 0x47]),
+        expect(HFUTCASLoginSupport.captchaImageData(from: png) == Data([0x89, 0x50, 0x4e, 0x47]),
                "a bounded CAPTCHA image data URL should be accepted")
-        expect(CampusAICasLoginSupport.captchaImageData(from: "https://cas.hfut.edu.cn/captcha") == nil,
+        expect(HFUTCASLoginSupport.captchaImageData(from: "https://cas.hfut.edu.cn/captcha") == nil,
                "native code must not fetch or accept a guessed CAPTCHA URL")
-        expect(CampusAICasLoginSupport.captchaImageData(from: "data:image/svg+xml;base64,PHN2Zz4=") == nil,
+        expect(HFUTCASLoginSupport.captchaImageData(from: "data:image/svg+xml;base64,PHN2Zz4=") == nil,
                "unrecognized image formats should fall back to the CAS page")
-        expect(CampusAICasLoginSupport.captchaImageData(from: "data:image/png;base64,%%%") == nil,
+        expect(HFUTCASLoginSupport.captchaImageData(from: "data:image/png;base64,%%%") == nil,
                "malformed image data must be rejected")
         let tooLarge = "data:image/png;base64,\(String(repeating: "A", count: 700_001))"
-        expect(CampusAICasLoginSupport.captchaImageData(from: tooLarge) == nil,
+        expect(HFUTCASLoginSupport.captchaImageData(from: tooLarge) == nil,
                "oversized CAPTCHA data must be rejected")
 
-        expect(CampusAICasLoginSupport.refreshCaptchaScript.contains("controls.refresh.click()")
-               && !CampusAICasLoginSupport.refreshCaptchaScript.contains("fetch(")
-               && !CampusAICasLoginSupport.refreshCaptchaScript.contains("XMLHttpRequest"),
+        expect(HFUTCASLoginSupport.refreshCaptchaScript.contains("controls.refresh.click()")
+               && !HFUTCASLoginSupport.refreshCaptchaScript.contains("fetch(")
+               && !HFUTCASLoginSupport.refreshCaptchaScript.contains("XMLHttpRequest"),
                "refresh must use the current CAS page control rather than a guessed endpoint")
     }
 
@@ -283,8 +299,16 @@ struct CampusAIFlowSupportTests {
                "portal automation should click the visible official AI platform entry")
         let plazaScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: agentID)
         expect(plazaScript.contains(".menu-item") && plazaScript.contains("forceIndex")
-               && plazaScript.contains("合工大AI辅导员"),
+               && plazaScript.contains("合工大AI辅导员")
+               && plazaScript.contains("createTreeWalker")
+               && !plazaScript.contains("querySelectorAll('.title')")
+               && plazaScript.contains("open-failed"),
                "plaza automation should follow the observed menu and target card")
+        let advisorScript = CampusAIEntryNavigation.script(for: .clickCampusAdvisor, agentID: agentID)
+        expect(advisorScript.contains("createTreeWalker")
+               && advisorScript.contains("detailURL.searchParams.get('id') === '\(agentID)'")
+               && advisorScript.contains("open-failed"),
+               "advisor navigation should match visible text and confirm the target route")
         let customAgentScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: "3")
         expect(customAgentScript.contains("if (false)"),
                "a custom agent ID should stop at the plaza instead of opening the default advisor")
