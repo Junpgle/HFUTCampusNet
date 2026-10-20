@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 @main
 struct CampusAIFlowSupportTests {
@@ -9,6 +9,9 @@ struct CampusAIFlowSupportTests {
         testCookieScope()
         testNavigationTraceRedaction()
         testCASNativeLoginSupport()
+        testChatWindowInputActionPolicy()
+        testTranscriptStyleAdaptsToAppearance()
+        testAutomaticEntryNavigation()
         try testSanitizedSSEFixture()
         testSSEVariantsAndErrors()
         testIncompleteAndOversizedStreams()
@@ -212,6 +215,79 @@ struct CampusAIFlowSupportTests {
                && !CampusAICasLoginSupport.refreshCaptchaScript.contains("fetch(")
                && !CampusAICasLoginSupport.refreshCaptchaScript.contains("XMLHttpRequest"),
                "refresh must use the current CAS page control rather than a guessed endpoint")
+    }
+
+    private static func testChatWindowInputActionPolicy() {
+        expect(CampusAIInputActionPolicy.decision(for: .keyboardReturn, isSending: false) == .submit,
+               "Return in an idle prompt should submit a message")
+        expect(CampusAIInputActionPolicy.decision(for: .keyboardReturn, isSending: true) == .ignore,
+               "Return must not cancel a reply already in progress")
+        expect(CampusAIInputActionPolicy.decision(for: .sendButton, isSending: false) == .submit,
+               "clicking Send while idle should submit a message")
+        expect(CampusAIInputActionPolicy.decision(for: .sendButton, isSending: true) == .cancel,
+               "clicking Stop while sending should cancel the reply")
+    }
+
+    private static func testTranscriptStyleAdaptsToAppearance() {
+        let attributed = CampusAITranscriptStyle.attributedString("fixture", font: .systemFont(ofSize: 13))
+        guard let foreground = attributed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+              let lightAppearance = NSAppearance(named: .aqua),
+              let darkAppearance = NSAppearance(named: .darkAqua) else {
+            fail("transcript text should use a resolvable semantic foreground color")
+        }
+        var lightRGB: NSColor?
+        var darkRGB: NSColor?
+        lightAppearance.performAsCurrentDrawingAppearance {
+            lightRGB = foreground.usingColorSpace(.deviceRGB)
+        }
+        darkAppearance.performAsCurrentDrawingAppearance {
+            darkRGB = foreground.usingColorSpace(.deviceRGB)
+        }
+        guard let lightRGB = lightRGB, let darkRGB = darkRGB else {
+            fail("transcript semantic color should resolve in both appearances")
+        }
+        var lightRed: CGFloat = 0
+        var lightGreen: CGFloat = 0
+        var lightBlue: CGFloat = 0
+        var darkRed: CGFloat = 0
+        var darkGreen: CGFloat = 0
+        var darkBlue: CGFloat = 0
+        lightRGB.getRed(&lightRed, green: &lightGreen, blue: &lightBlue, alpha: nil)
+        darkRGB.getRed(&darkRed, green: &darkGreen, blue: &darkBlue, alpha: nil)
+        let lightLuminance = (lightRed + lightGreen + lightBlue) / 3
+        let darkLuminance = (darkRed + darkGreen + darkBlue) / 3
+        expect(lightLuminance < darkLuminance,
+               "semantic transcript text should be dark in Aqua and light in Dark Aqua")
+    }
+
+    private static func testAutomaticEntryNavigation() {
+        let agentID = CampusAIEndpoint.defaultAgentID
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://one.hfut.edu.cn/home/index"), agentID: agentID)
+               == .clickPortalAIPlatform,
+               "the signed-in portal home should trigger its official AI platform entry")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index/agent"), agentID: agentID)
+               == .clickAIPlaza,
+               "the AI center agent route should trigger the observed plaza control")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index?forceIndex=1"), agentID: agentID)
+               == .clickCampusAdvisor,
+               "the observed AI plaza route should open the configured campus advisor")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://aipt.hfut.edu.cn/index?forceIndex=1"), agentID: "3") == nil,
+               "a custom agent ID must not open the default campus advisor card")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "https://evilhfut.edu.cn/home/index"), agentID: agentID) == nil,
+               "automatic portal navigation must reject lookalike hosts")
+        expect(CampusAIEntryNavigation.step(for: URL(string: "http://one.hfut.edu.cn/home/index"), agentID: agentID) == nil,
+               "automatic portal navigation must require HTTPS")
+
+        let portalScript = CampusAIEntryNavigation.script(for: .clickPortalAIPlatform, agentID: agentID)
+        expect(portalScript.contains("AI中台") && portalScript.contains("label.click()"),
+               "portal automation should click the visible official AI platform entry")
+        let plazaScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: agentID)
+        expect(plazaScript.contains(".menu-item") && plazaScript.contains("forceIndex")
+               && plazaScript.contains("合工大AI辅导员"),
+               "plaza automation should follow the observed menu and target card")
+        let customAgentScript = CampusAIEntryNavigation.script(for: .clickAIPlaza, agentID: "3")
+        expect(customAgentScript.contains("if (false)"),
+               "a custom agent ID should stop at the plaza instead of opening the default advisor")
     }
 
     private static func testSanitizedSSEFixture() throws {

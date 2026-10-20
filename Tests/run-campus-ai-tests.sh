@@ -9,6 +9,7 @@ trap 'rm -f "$TEST_BIN"; rm -rf "$TEST_CACHE"' EXIT
 swiftc \
     -module-cache-path "$TEST_CACHE" \
     "$ROOT/HFUTCampusNet/CampusAIFlowSupport.swift" \
+    "$ROOT/HFUTCampusNet/CampusAIViewSupport.swift" \
     "$ROOT/HFUTCampusNet/CampusAICasLoginSupport.swift" \
     "$ROOT/Tests/CampusAIFlowSupportTests.swift" \
     -o "$TEST_BIN"

@@ -182,6 +182,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var casTicketErrorDetected = false
     private var casProbeToken = UUID()
     private var captchaRefreshToken: UUID?
+    private var automaticNavigationAttempts = Set<String>()
     // 完整 SSO 跳转由信息门户及其注册应用发起；本客户端不构造 ST/service。
     private var portalNavigationID = UUID()
 
@@ -273,6 +274,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         captchaMessageProxy = CampusAIWeakScriptMessageHandler(target: self)
         scriptController.add(captchaMessageProxy, name: "campusAICaptcha")
+        scriptController.add(captchaMessageProxy, name: "campusAIAutoNavigation")
         config.userContentController = scriptController
         loginWebView = WKWebView(frame: NSRect(x: 20, y: 128, width: 940, height: 458), configuration: config)
         loginWebView.navigationDelegate = self
@@ -303,8 +305,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         transcriptView.isEditable = false
         transcriptView.isSelectable = true
         transcriptView.font = .systemFont(ofSize: 13)
+        transcriptView.textColor = .labelColor
         transcriptView.textContainerInset = NSSize(width: 12, height: 12)
-        transcriptView.string = "欢迎使用校园 AI 助手。\n\n本功能复用 App 的 WKWebView 网站登录状态。首次使用请从信息门户中的「AI 应用中台」进入「合工大辅导员」，以便由门户完成学校指定的服务认证。\n聊天记录仅保留在当前窗口内。\n\n"
+        transcriptView.textStorage?.setAttributedString(CampusAITranscriptStyle.attributedString(
+            "欢迎使用校园 AI 助手。\n\n本功能复用 App 的 WKWebView 网站登录状态。首次使用请从信息门户中的「AI 应用中台」进入「合工大辅导员」，以便由门户完成学校指定的服务认证。\n聊天记录仅保留在当前窗口内。\n\n",
+            font: transcriptView.font ?? .systemFont(ofSize: 13)
+        ))
         transcriptScroll.documentView = transcriptView
         root.addSubview(transcriptScroll)
         chatOnlyViews.append(transcriptScroll)
@@ -314,7 +320,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         promptField.font = .systemFont(ofSize: 13)
         promptField.autoresizingMask = [.width, .maxYMargin]
         promptField.target = self
-        promptField.action = #selector(sendMessage)
+        promptField.action = #selector(sendMessageFromKeyboard)
         root.addSubview(promptField)
         chatOnlyViews.append(promptField)
 
@@ -322,7 +328,6 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         sendButton.autoresizingMask = [.minXMargin, .maxYMargin]
         sendButton.target = self
         sendButton.action = #selector(sendMessage)
-        sendButton.keyEquivalent = "\r"
         root.addSubview(sendButton)
         chatOnlyViews.append(sendButton)
 
@@ -385,6 +390,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         emptyHistoryNavigationID = nil
         groupField.stringValue = ""
         portalNavigationID = UUID()
+        automaticNavigationAttempts.removeAll(keepingCapacity: true)
         navigationTrace.removeAll(keepingCapacity: true)
         traceButton.isEnabled = false
         displayingLogin = true
@@ -614,13 +620,20 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "campusAICaptcha",
-              let webView = message.webView, webView === loginWebView,
+        guard let webView = message.webView,
               message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
+              let body = message.body as? [String: String] else { return }
+
+        if message.name == "campusAIAutoNavigation" {
+            handleAutomaticNavigationMessage(body, from: webView, host: message.frameInfo.securityOrigin.host.lowercased())
+            return
+        }
+
+        guard message.name == "campusAICaptcha",
+              webView === loginWebView,
               message.frameInfo.securityOrigin.host.lowercased() == "cas.hfut.edu.cn",
               displayingLogin,
-              let body = message.body as? [String: String],
               ["formChanged", "captchaChanged"].contains(body["event"] ?? "") else { return }
         if body["event"] == "captchaChanged" {
             captchaRefreshToken = nil
@@ -628,8 +641,45 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         inspectCASLoginPage(webView)
     }
 
+    private func handleAutomaticNavigationMessage(_ body: [String: String], from webView: WKWebView, host: String) {
+        guard displayingLogin, portalWebViews.contains(where: { $0 === webView }),
+              body["event"] == "autoNavigation",
+              let step = body["step"], let result = body["result"] else { return }
+
+        let expectedHost: String
+        switch step {
+        case "portal": expectedHost = "one.hfut.edu.cn"
+        case "plaza", "advisor": expectedHost = CampusAIEndpoint.host
+        default: return
+        }
+        guard host == expectedHost else { return }
+
+        if result == "clicked" {
+            switch step {
+            case "portal": statusLabel.stringValue = "正在通过信息门户入口打开 AI 应用中台…"
+            case "plaza": statusLabel.stringValue = "正在打开 AI 应用广场…"
+            case "advisor": statusLabel.stringValue = "正在加载目标智能体并准备会话…"
+            default: break
+            }
+        } else if result == "opened", step == "plaza" {
+            statusLabel.stringValue = "已进入 AI 应用广场，正在打开合工大 AI 辅导员…"
+        } else if result == "manual", step == "plaza" {
+            statusLabel.stringValue = "已到达 AI 应用广场；当前智能体 ID 不是默认辅导员，请手动选择目标智能体。"
+        } else if result == "missing" {
+            switch step {
+            case "portal": statusLabel.stringValue = "未找到门户中的 AI中台入口，请在网页中手动点击「AI中台」。"
+            case "plaza": statusLabel.stringValue = "未找到 AI 应用广场或辅导员卡片，请在网页中手动继续。"
+            case "advisor": statusLabel.stringValue = "未找到合工大 AI 辅导员卡片，请在应用广场中手动打开。"
+            default: break
+            }
+        }
+    }
+
     @objc private func sendMessage() {
-        if sending {
+        switch CampusAIInputActionPolicy.decision(for: .sendButton, isSending: sending) {
+        case .submit:
+            break
+        case .cancel:
             if let client = activeClient {
                 client.cancel()
             } else if let task = activeLookupTask {
@@ -643,6 +693,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             } else {
                 complete("已取消")
             }
+            return
+        case .ignore:
             return
         }
         let question = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -708,6 +760,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 }
             }
         }
+    }
+
+    @objc private func sendMessageFromKeyboard() {
+        // Return in the prompt field only submits. It must never become the Stop action
+        // if AppKit delivers another action after the request has started.
+        guard CampusAIInputActionPolicy.decision(for: .keyboardReturn, isSending: sending) == .submit else {
+            return
+        }
+        sendMessage()
     }
 
     private func prepareRecentGroupIfNeeded(agentID: String, allCookies: [HTTPCookie],
@@ -961,7 +1022,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func appendText(_ value: String) {
-        transcriptView.textStorage?.append(NSAttributedString(string: value))
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.attributedString(
+            value,
+            font: transcriptView.font ?? .systemFont(ofSize: 13)
+        ))
         transcriptView.scrollToEndOfDocument(nil)
     }
 
@@ -1025,6 +1089,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         recordNavigation("start", url: webView.url)
         guard displayingLogin, webView === loginWebView else { return }
+        automaticNavigationAttempts.removeAll(keepingCapacity: true)
         emptyHistoryAgentID = nil
         emptyHistoryNavigationID = nil
         casProbeToken = UUID()
@@ -1083,9 +1148,19 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             }
         }
 
+        let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let step = CampusAIEntryNavigation.step(for: current, agentID: agentID) {
+            startAutomaticNavigation(step, in: webView, at: current)
+            return
+        }
+
         guard host == CampusAIEndpoint.host else { return }
         guard current.path == "/agent-detail" else {
-            statusLabel.stringValue = "已到达 AI 应用中台。请继续进入 AI 应用广场，再打开合工大 AI 辅导员。"
+            if current.path == "/index" {
+                statusLabel.stringValue = agentID == CampusAIEndpoint.defaultAgentID
+                    ? "已到达 AI 应用广场，请手动打开合工大 AI 辅导员。"
+                    : "已到达 AI 应用广场；当前智能体 ID 不是默认辅导员，请手动选择目标智能体。"
+            }
             return
         }
         guard let agent = URLComponents(url: current, resolvingAgainstBaseURL: false)?
@@ -1116,6 +1191,35 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     )
                 } else {
                     self.statusLabel.stringValue = "目标智能体页面已打开，但尚未发现 AI 会话 Cookie。请完成页面内登录后点击「返回聊天」。"
+                }
+            }
+        }
+    }
+
+    private func startAutomaticNavigation(_ step: CampusAIEntryNavigationStep, in webView: WKWebView, at url: URL) {
+        let navigationID = portalNavigationID
+        let key = "\(navigationID.uuidString):\(step.rawValue):\(url.host?.lowercased() ?? ""):\(url.path)"
+        guard automaticNavigationAttempts.insert(key).inserted else { return }
+
+        switch step {
+        case .clickPortalAIPlatform:
+            statusLabel.stringValue = "正在查找门户中的 AI中台入口…"
+        case .clickAIPlaza:
+            statusLabel.stringValue = "正在进入 AI 应用广场…"
+        case .clickCampusAdvisor:
+            statusLabel.stringValue = "正在查找合工大 AI 辅导员…"
+        }
+
+        webView.evaluateJavaScript(CampusAIEntryNavigation.script(
+            for: step,
+            agentID: agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        )) { [weak self] result, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.displayingLogin,
+                      self.portalNavigationID == navigationID,
+                      self.portalWebViews.contains(where: { $0 === webView }) else { return }
+                if result as? Bool != true {
+                    self.statusLabel.stringValue = "自动入口脚本未能启动；可在信息门户页面手动继续。"
                 }
             }
         }
