@@ -7,6 +7,7 @@ struct CampusAIFlowSupportTests {
         testHistoryRequestAndResponse()
         testHistoryManagementProtocol()
         testChatSaveRequestAndResponse()
+        testAttachmentProtocol()
         testChatAbortRequest()
         testCookieScope()
         testRefererValidation()
@@ -41,7 +42,7 @@ struct CampusAIFlowSupportTests {
         expect(payload["aiLargeModelId"] as? String == "2097156176776544256", "model ID must preserve the 64-bit decimal string")
         expect(payload["text"] as? String == "问\"题\n中文", "question text must be JSON escaped without loss")
         expect(payload["thinkingMode"] as? String == "balanced", "thinkingMode should preserve the selected mode")
-        expect(payload["debug"] as? Bool == false, "debug output must remain disabled")
+        expect(payload["debug"] as? Bool == true, "debug flag should match the observed webpage request")
         expect(payload["traceId"] as? String == "trace-fixture", "trace ID should be retained")
         expect(CampusAIRequestBuilder.chatBody(text: "x", groupID: "bad", modelID: "2",
                                                thinkingMode: .off, traceID: "t") == nil,
@@ -177,6 +178,15 @@ struct CampusAIFlowSupportTests {
                "the first question should be used as the new conversation title")
         expect(CampusAIRequestBuilder.chatSaveBody(text: "x", agentID: "bad") == nil,
                "invalid agent IDs must not produce a chat/save request")
+        guard let continuedBody = CampusAIRequestBuilder.chatSaveBody(
+            text: question, agentID: "1966078115428446208",
+            groupID: "1000000000000000001", title: "fixture.docx"
+        ), let continuedPayload = (try? JSONSerialization.jsonObject(with: continuedBody)) as? [String: Any] else {
+            fail("existing-group attachment save should serialize")
+        }
+        expect(continuedPayload["groupId"] as? String == "1000000000000000001"
+               && continuedPayload["title"] as? String == "fixture.docx",
+               "attachment save should preserve the selected group and original file name")
 
         let created = Data(#"{"status":1,"data":{"groupId":"1000000000000000001","chatId":"fixture-chat"},"msg":"fixture"}"#.utf8)
         expect(CampusAIChatSaveResponse.groupID(from: created) == "1000000000000000001",
@@ -187,6 +197,106 @@ struct CampusAIFlowSupportTests {
         let malformedID = Data(#"{"status":1,"data":{"groupId":"not-an-id"}}"#.utf8)
         expect(CampusAIChatSaveResponse.groupID(from: malformedID) == nil,
                "malformed session IDs must be rejected")
+
+        let identified = Data(#"{"status":1,"data":{"groupId":"1000000000000000001","chatId":"1000000000000000004"}}"#.utf8)
+        let identifiers = CampusAIChatSaveResponse.identifiers(from: identified)
+        expect(identifiers?.groupID == "1000000000000000001"
+               && identifiers?.chatID == "1000000000000000004",
+               "attachment metadata should use platform-returned group and chat IDs")
+        expect(CampusAIChatSaveResponse.identifiers(from: identified,
+                                                      expectedGroupID: "1000000000000000002") == nil,
+               "attachment metadata must not cross conversation groups")
+    }
+
+    private static func testAttachmentProtocol() {
+        let uploadBody = CampusAIAttachmentProtocol.uploadURLBody(
+            fileName: "fixture.docx", fileSize: 9, folder: "agent-chat-file/20261020/"
+        )
+        guard let uploadBody = uploadBody,
+              let uploadPayload = (try? JSONSerialization.jsonObject(with: uploadBody)) as? [String: Any] else {
+            fail("attachment upload URL request should serialize")
+        }
+        expect(uploadPayload["id"] as? String == "" && uploadPayload["fileId"] as? String == "",
+               "upload URL request should preserve the observed empty id fields")
+        expect(uploadPayload["fileName"] as? String == "fixture.docx"
+               && uploadPayload["fileSize"] as? Int == 9,
+               "upload URL request should carry file name and byte size")
+        expect(uploadPayload["chunkSize"] as? Int == 8 * 1024 * 1024
+               && uploadPayload["contentType"] as? String == "application/octet-stream",
+               "upload URL request should use the observed chunk size and content type")
+        expect(CampusAIAttachmentProtocol.uploadURLBody(
+            fileName: "fixture.docx", fileSize: 0, folder: "agent-chat-file/20261020/"
+        ) == nil, "empty attachments should be rejected")
+        expect(CampusAIAttachmentProtocol.uploadURLBody(
+            fileName: "fixture.docx", fileSize: 9, folder: "../outside/"
+        ) == nil, "upload folders should stay in the attachment namespace")
+
+        let planResponse = Data(#"{"status":1,"data":{"uploadId":"upload-fixture","uploadUrls":["/ai-flow-files/ai-flow/agent-chat-file/20261020/opaque.docx?partNumber=1&X-Amz-Signature=fixture"],"fileName":"opaque.docx","folder":"agent-chat-file/20261020/"}}"#.utf8)
+        let plan = CampusAIAttachmentProtocol.uploadPlan(from: planResponse)
+        expect(plan?.uploadID == "upload-fixture" && plan?.uploadURLs.count == 1,
+               "upload response should resolve the relative signed URL")
+        expect(plan?.uploadURLs.first?.scheme == "https"
+               && plan?.uploadURLs.first?.host == CampusAIEndpoint.host,
+               "signed object uploads should stay on the platform HTTPS host")
+        let untrustedPlan = Data(#"{"status":1,"data":{"uploadId":"upload-fixture","uploadUrls":["https://example.com/object?sig=fixture"],"fileName":"opaque.docx","folder":"agent-chat-file/20261020/"}}"#.utf8)
+        expect(CampusAIAttachmentProtocol.uploadPlan(from: untrustedPlan) == nil,
+               "signed object uploads must reject untrusted hosts")
+
+        let mergeBody = CampusAIAttachmentProtocol.mergeBody(
+            uploadID: "upload-fixture", fileName: "opaque.docx", folder: "agent-chat-file/20261020/"
+        )
+        guard let mergeBody = mergeBody,
+              let mergePayload = (try? JSONSerialization.jsonObject(with: mergeBody)) as? [String: Any] else {
+            fail("multipart merge request should serialize")
+        }
+        expect(mergePayload["uploadId"] as? String == "upload-fixture"
+               && mergePayload["id"] as? String == "",
+               "merge request should use the platform upload ID and observed empty id")
+        let mergeResponse = Data(#"{"status":1,"data":{"fileName":"opaque","downloadUrl":"/ai-flow-files/ai-flow/agent-chat-file/20261020/opaque.docx","fullPath":"/ai-flow/agent-chat-file/20261020/opaque.docx"}}"#.utf8)
+        guard let stored = CampusAIAttachmentProtocol.storedFile(from: mergeResponse) else {
+            fail("merge response should yield platform file paths")
+        }
+        let draft = CampusAIAttachmentDraft(originalFileName: "fixture.docx", data: Data("binary".utf8), uid: 1700000000000)
+        guard let extractBody = CampusAIAttachmentProtocol.extractBody(file: stored, draft: draft),
+              let extractPayload = (try? JSONSerialization.jsonObject(with: extractBody)) as? [String: Any] else {
+            fail("extract request should serialize")
+        }
+        expect(extractPayload["fileName"] as? String == "opaque"
+               && extractPayload["downloadUrl"] as? String == stored.downloadURL
+               && extractPayload["fullPath"] as? String == stored.fullPath,
+               "extract request should use the merge response paths")
+        expect(extractPayload["size"] as? Int == 6
+               && extractPayload["originalFileName"] as? String == "fixture.docx"
+               && extractPayload["uid"] as? Int64 == draft.uid,
+               "extract request should carry byte size, original name, and attachment UID")
+        let extractResponse = Data(#"{"status":1,"data":{"content":"fixture extracted text"}}"#.utf8)
+        let content = CampusAIAttachmentProtocol.extractedContent(from: extractResponse)
+        expect(content == "fixture extracted text", "extracted text should come from a successful response")
+        expect(!CampusAIAttachmentProtocol.businessSucceeded(from: Data(#"{"status":0,"data":{}}"#.utf8)),
+               "file registration should reject a failed business response")
+
+        let uploaded = CampusAIUploadedAttachment(
+            originalFileName: draft.originalFileName, totalSize: draft.data.count, uid: draft.uid,
+            downloadURL: stored.downloadURL, fullPath: stored.fullPath, content: content ?? ""
+        )
+        guard let fileListBody = CampusAIAttachmentProtocol.saveFileListBody(
+            files: [uploaded], groupID: "1000000000000000001", chatID: "1000000000000000004"),
+              let fileList = (try? JSONSerialization.jsonObject(with: fileListBody)) as? [[String: Any]],
+              let fileRecord = fileList.first else {
+            fail("saveFileList request should serialize as an array")
+        }
+        expect(fileRecord["groupId"] as? String == "1000000000000000001"
+               && fileRecord["chatId"] as? String == "1000000000000000004",
+               "file list should use IDs returned by chat/save")
+        expect(fileRecord["downloadUrl"] as? String == stored.fullPath
+               && fileRecord["fullPath"] as? String == stored.fullPath
+               && fileRecord["send"] as? Int == 1,
+               "file list should use the observed registered path and send flag")
+        let message = CampusAIAttachmentProtocol.chatText(question: "请总结", files: [uploaded])
+        expect(message.contains("请总结\n用户已上传文件内容参考：")
+               && message.contains("文件1内容：\nfixture extracted text")
+               && message.contains("文件1名称：fixture.docx"),
+               "chat/send text should include the question and parsed attachment text")
     }
 
     private static func testChatAbortRequest() {

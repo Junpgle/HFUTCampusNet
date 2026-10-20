@@ -197,6 +197,8 @@ private struct CampusAIPendingLookupSend {
     let agentID: String
     let modelID: String
     let thinkingMode: CampusAIThinkingMode
+    let attachments: [CampusAIAttachmentDraft]
+    let allCookies: [HTTPCookie]
     let cookies: [HTTPCookie]
     let saveCookies: [HTTPCookie]
     let aiFlow: String
@@ -212,6 +214,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let modelField = NSTextField(string: "")
     private let groupField = NSTextField(string: "")
     private let promptField = NSTextField(string: "")
+    private let attachmentButton = NSButton(title: "添加文件", target: nil, action: nil)
+    private let clearAttachmentsButton = NSButton(title: "清除", target: nil, action: nil)
+    private let attachmentSummaryLabel = NSTextField(labelWithString: "未添加附件")
     private let thinkingModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let transcriptView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "正在检查学校 AI 登录状态…")
@@ -228,6 +233,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var loginWebView: WKWebView!
     private var portalWebViews: [WKWebView] = []
     private var activeClient: CampusAIStreamClient?
+    private var activeAttachmentClient: CampusAIAttachmentClient?
+    private var selectedAttachments: [CampusAIAttachmentDraft] = []
     private var activeLookupTask: URLSessionDataTask?
     private var activeLookupSession: URLSession?
     private var activeLookupID: UUID?
@@ -394,7 +401,32 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         root.addSubview(transcriptScroll)
         chatOnlyViews.append(transcriptScroll)
 
-        promptField.frame = NSRect(x: 20, y: 72, width: 690, height: 32)
+        attachmentButton.frame = NSRect(x: 20, y: 72, width: 88, height: 32)
+        attachmentButton.bezelStyle = .rounded
+        attachmentButton.target = self
+        attachmentButton.action = #selector(chooseAttachments)
+        root.addSubview(attachmentButton)
+        chatOnlyViews.append(attachmentButton)
+
+        attachmentSummaryLabel.frame = NSRect(x: 20, y: 45, width: 830, height: 18)
+        attachmentSummaryLabel.font = .systemFont(ofSize: 11)
+        attachmentSummaryLabel.textColor = .secondaryLabelColor
+        attachmentSummaryLabel.lineBreakMode = .byTruncatingMiddle
+        attachmentSummaryLabel.autoresizingMask = [.width, .maxYMargin]
+        root.addSubview(attachmentSummaryLabel)
+        chatOnlyViews.append(attachmentSummaryLabel)
+
+        clearAttachmentsButton.frame = NSRect(x: 870, y: 42, width: 72, height: 24)
+        clearAttachmentsButton.bezelStyle = .rounded
+        clearAttachmentsButton.controlSize = .small
+        clearAttachmentsButton.target = self
+        clearAttachmentsButton.action = #selector(clearAttachments)
+        clearAttachmentsButton.isEnabled = false
+        clearAttachmentsButton.autoresizingMask = [.minXMargin, .maxYMargin]
+        root.addSubview(clearAttachmentsButton)
+        chatOnlyViews.append(clearAttachmentsButton)
+
+        promptField.frame = NSRect(x: 116, y: 72, width: 592, height: 32)
         promptField.placeholderString = "输入你想咨询的问题，例如：请查询我本人的课程成绩"
         promptField.font = .systemFont(ofSize: 13)
         promptField.autoresizingMask = [.width, .maxYMargin]
@@ -754,6 +786,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         case .cancel:
             if let client = activeClient {
                 client.cancel()
+            } else if let client = activeAttachmentClient {
+                activeAttachmentClient = nil
+                client.cancel()
+                complete("已取消")
             } else if let task = activeLookupTask {
                 pendingLookupSend = nil
                 activeLookupID = nil
@@ -769,8 +805,10 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         case .ignore:
             return
         }
-        let question = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else { return }
+        let typedQuestion = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = selectedAttachments
+        guard !typedQuestion.isEmpty || !attachments.isEmpty else { return }
+        let question = typedQuestion.isEmpty ? "请阅读并分析我上传的文件。" : typedQuestion
         let agentID = agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelID = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let groupID = groupField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -791,9 +829,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         sending = true
         sendButton.title = "停止"
         promptField.isEnabled = false
+        attachmentButton.isEnabled = false
+        clearAttachmentsButton.isEnabled = false
         thinkingModePopup.isEnabled = false
         historyButton.isEnabled = false
-        appendText("\n你：\(question)\n\nAI：")
+        let attachmentNames = attachments.map(\.originalFileName).joined(separator: "、")
+        let attachmentSuffix = attachmentNames.isEmpty ? "" : "\n附件：\(attachmentNames)"
+        appendText("\n你：\(question)\(attachmentSuffix)\n\nAI：")
         statusLabel.stringValue = "检查当前学校 AI 登录会话…"
 
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
@@ -814,15 +856,27 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     }
                     if self.activeLookupTask != nil { self.cancelGroupLookup() }
                     let referer = self.aiRefererURL(for: agentID)
-                    self.startStreaming(question: question, groupID: currentGroupID,
-                                        modelID: modelID, thinkingMode: thinkingMode,
-                                        cookies: cookies, aiFlow: aiFlow,
-                                        referer: referer)
+                    let pending = CampusAIPendingLookupSend(
+                        question: question, agentID: agentID, modelID: modelID,
+                        thinkingMode: thinkingMode, attachments: attachments,
+                        allCookies: all,
+                        cookies: cookies, saveCookies: saveCookies, aiFlow: aiFlow,
+                        referer: referer, navigationID: self.portalNavigationID
+                    )
+                    if attachments.isEmpty {
+                        self.startStreaming(question: question, groupID: currentGroupID,
+                                            modelID: modelID, thinkingMode: thinkingMode,
+                                            cookies: cookies, aiFlow: aiFlow,
+                                            referer: referer)
+                    } else {
+                        self.prepareAttachmentsAndSend(pending, existingGroupID: currentGroupID)
+                    }
                 } else {
                     let referer = self.aiRefererURL(for: agentID)
                     self.pendingLookupSend = CampusAIPendingLookupSend(
                         question: question, agentID: agentID, modelID: modelID,
-                        thinkingMode: thinkingMode,
+                        thinkingMode: thinkingMode, attachments: attachments,
+                        allCookies: all,
                         cookies: cookies, saveCookies: saveCookies, aiFlow: aiFlow, referer: referer,
                         navigationID: self.portalNavigationID
                     )
@@ -883,6 +937,68 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
         sendMessage()
+    }
+
+    @objc private func chooseAttachments() {
+        guard !sending, let window = window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "添加到对话"
+        panel.message = "选择要上传并由 AI 阅读的文件（单个文件最大 100 MB）。"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let self = self else { return }
+            let urls = panel.urls
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let uidBase = Int64(Date().timeIntervalSince1970 * 1000)
+                    var loaded: [CampusAIAttachmentDraft] = []
+                    for (index, url) in urls.enumerated() {
+                        let hasScope = url.startAccessingSecurityScopedResource()
+                        defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
+                        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+                        guard let fileSize = values.fileSize, fileSize > 0,
+                              fileSize <= CampusAIAttachmentProtocol.maximumFileSize else {
+                            throw CampusAIAttachmentClient.Failure.invalidFile
+                        }
+                        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                        guard data.count == fileSize else { throw CampusAIAttachmentClient.Failure.invalidFile }
+                        loaded.append(CampusAIAttachmentDraft(
+                            originalFileName: url.lastPathComponent,
+                            data: data,
+                            uid: uidBase + Int64(index)
+                        ))
+                    }
+                    DispatchQueue.main.async {
+                        self.selectedAttachments.append(contentsOf: loaded)
+                        self.updateAttachmentSummary()
+                        self.statusLabel.stringValue = "已添加 \(loaded.count) 个附件；发送时会先上传并提取文本。"
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.statusLabel.stringValue = "读取所选附件失败；请确认文件可访问且小于 100 MB。"
+                    }
+                }
+            }
+        }
+    }
+
+    @objc private func clearAttachments() {
+        guard !sending else { return }
+        selectedAttachments.removeAll()
+        updateAttachmentSummary()
+    }
+
+    private func updateAttachmentSummary() {
+        guard !selectedAttachments.isEmpty else {
+            attachmentSummaryLabel.stringValue = "未添加附件"
+            clearAttachmentsButton.isEnabled = false
+            return
+        }
+        let names = selectedAttachments.map(\.originalFileName).joined(separator: "、")
+        attachmentSummaryLabel.stringValue = "已添加 \(selectedAttachments.count) 个文件：\(names)"
+        clearAttachmentsButton.isEnabled = !sending
     }
 
     @objc private func showHistoryPopover() {
@@ -1251,10 +1367,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                             self.complete("会话所属智能体已变化，请重新发送。")
                             return
                         }
-                        self.startStreaming(question: pending.question, groupID: selectedGroupID,
-                                            modelID: pending.modelID, thinkingMode: pending.thinkingMode,
-                                            cookies: pending.cookies,
-                                            aiFlow: pending.aiFlow, referer: pending.referer)
+                        if pending.attachments.isEmpty {
+                            self.startStreaming(question: pending.question, groupID: selectedGroupID,
+                                                modelID: pending.modelID, thinkingMode: pending.thinkingMode,
+                                                cookies: pending.cookies,
+                                                aiFlow: pending.aiFlow, referer: pending.referer)
+                        } else {
+                            self.prepareAttachmentsAndSend(pending, existingGroupID: selectedGroupID)
+                        }
                     } else {
                         self.statusLabel.stringValue = "会话已自动准备，可以直接发送。"
                     }
@@ -1262,7 +1382,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     self.emptyHistoryAgentID = agentID
                     self.emptyHistoryNavigationID = navigationID
                     if let pending = self.pendingLookupSend {
-                        self.createSessionAndSend(pending)
+                        if pending.attachments.isEmpty {
+                            self.createSessionAndSend(pending)
+                        } else {
+                            self.pendingLookupSend = nil
+                            self.prepareAttachmentsAndSend(pending, existingGroupID: nil)
+                        }
                     } else {
                         self.statusLabel.stringValue = "暂无历史会话；首次发送时会自动创建新会话。"
                     }
@@ -1291,6 +1416,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
         guard activeLookupTask == nil else { return }
+        if !pending.attachments.isEmpty {
+            pendingLookupSend = nil
+            prepareAttachmentsAndSend(pending, existingGroupID: nil)
+            return
+        }
         let saveCookies = CampusAIEndpoint.cookies(from: pending.saveCookies,
                                                    requestPath: CampusAIEndpoint.chatSavePath)
         guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: saveCookies)?.value,
@@ -1381,6 +1511,66 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeLookupSession?.invalidateAndCancel()
         activeLookupSession = nil
         pendingLookupSend = nil
+    }
+
+    private func prepareAttachmentsAndSend(_ pending: CampusAIPendingLookupSend, existingGroupID: String?) {
+        guard sending, pending.navigationID == portalNavigationID,
+              pending.agentID == agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+              !pending.attachments.isEmpty else {
+            complete("智能体页面已变化，附件未发送；请重新发送。")
+            return
+        }
+        statusLabel.stringValue = "正在准备附件…"
+        let client = CampusAIAttachmentClient(
+            files: pending.attachments,
+            question: pending.question,
+            agentID: pending.agentID,
+            existingGroupID: existingGroupID,
+            cookies: pending.allCookies,
+            referer: pending.referer,
+            onProgress: { [weak self] message in
+                guard let self = self, self.sending,
+                      self.portalNavigationID == pending.navigationID else { return }
+                self.statusLabel.stringValue = message
+            },
+            completion: { [weak self] result in
+                guard let self = self, self.sending,
+                      self.portalNavigationID == pending.navigationID,
+                      self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == pending.agentID else { return }
+                self.activeAttachmentClient = nil
+                switch result {
+                case .success(let (identifiers, messageText)):
+                    self.groupField.stringValue = identifiers.groupID
+                    self.statusLabel.stringValue = "附件已登记，正在发送问题…"
+                    self.startStreaming(
+                        question: messageText,
+                        groupID: identifiers.groupID,
+                        modelID: pending.modelID,
+                        thinkingMode: pending.thinkingMode,
+                        cookies: pending.cookies,
+                        aiFlow: pending.aiFlow,
+                        referer: pending.referer
+                    )
+                case .failure(let failure):
+                    let message: String
+                    switch failure {
+                    case .invalidFile:
+                        message = "附件为空、过大或无法读取。请检查文件后重试。"
+                    case .platformRejected:
+                        message = "AI 平台会话无效或已过期，请重新从信息门户进入。"
+                    case .network:
+                        message = "附件上传或登记失败，请检查网络后重试。"
+                    case .invalidResponse:
+                        message = "AI 平台返回了无法识别的附件或会话响应。"
+                    case .cancelled:
+                        message = "已取消附件发送。"
+                    }
+                    self.complete(message)
+                }
+            }
+        )
+        activeAttachmentClient = client
+        client.start()
     }
 
     private func aiRefererURL(for agentID: String) -> URL? {
@@ -1510,6 +1700,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func complete(_ error: String?) {
         guard sending else { return }
+        activeAttachmentClient?.cancel()
+        activeAttachmentClient = nil
         pendingLookupSend = nil
         activeLookupID = nil
         activeLookupTask?.cancel()
@@ -1527,9 +1719,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeClient = nil
         sendButton.title = "发送"
         promptField.isEnabled = true
+        attachmentButton.isEnabled = true
+        clearAttachmentsButton.isEnabled = !selectedAttachments.isEmpty
         thinkingModePopup.isEnabled = true
         historyButton.isEnabled = true
         promptField.stringValue = ""
+        if error == nil {
+            selectedAttachments.removeAll()
+        }
+        updateAttachmentSummary()
         appendText("\n\n")
         statusLabel.stringValue = error ?? "回复完成。"
     }

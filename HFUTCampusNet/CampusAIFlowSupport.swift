@@ -97,24 +97,29 @@ enum CampusAIRequestBuilder {
             "groupId": groupID,
             "aiLargeModelId": modelID,
             "thinkingMode": thinkingMode.rawValue,
-            "debug": false,
+            "debug": true,
             "traceId": traceID
         ]
         return try? JSONSerialization.data(withJSONObject: payload)
     }
 
     static func chatSaveBody(text: String, agentID: String) -> Data? {
+        chatSaveBody(text: text, agentID: agentID, groupID: nil, title: text)
+    }
+
+    static func chatSaveBody(text: String, agentID: String, groupID: String?, title: String?) -> Data? {
         guard CampusAIEndpoint.validID(agentID) else { return nil }
+        guard groupID.map(CampusAIEndpoint.validID) ?? true else { return nil }
         let payload: [String: Any] = [
-            "groupId": NSNull(),
+            "groupId": groupID.map { $0 as Any } ?? NSNull(),
             "text": text,
             "businessId": agentID,
             // These enum values were read from the normal first-message request in Edge DevTools.
             "businessType": 4,
             "type": 2,
             "sender": 1,
-            // The website's request carries a title string; use the user's first message as its title.
-            "title": text
+            // The website's request carries a title string; attachment sends use their file name.
+            "title": title ?? text
         ]
         return try? JSONSerialization.data(withJSONObject: payload)
     }
@@ -301,6 +306,17 @@ enum CampusAIChatSaveResponse {
               let groupID = payload["groupId"] as? String,
               CampusAIEndpoint.validID(groupID) else { return nil }
         return groupID
+    }
+
+    static func identifiers(from data: Data, expectedGroupID: String? = nil) -> CampusAIChatSaveIdentifiers? {
+        guard let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = response["status"] as? NSNumber,
+              CFGetTypeID(status) != CFBooleanGetTypeID(), status.intValue == 1,
+              let payload = response["data"] as? [String: Any],
+              let groupID = payload["groupId"] as? String, CampusAIEndpoint.validID(groupID),
+              let chatID = payload["chatId"] as? String, CampusAIEndpoint.validID(chatID),
+              expectedGroupID.map({ $0 == groupID }) ?? true else { return nil }
+        return CampusAIChatSaveIdentifiers(groupID: groupID, chatID: chatID)
     }
 }
 
