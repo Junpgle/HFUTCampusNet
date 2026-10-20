@@ -428,15 +428,26 @@ struct CampusAIFlowSupportTests {
         }
         events += parser.finish()
 
-        expect(events.contains(.status(.thinking)), "thinking should produce only a generic status")
-        expect(events.contains(.status(.toolStarted)), "tool calls should produce a generic status")
-        expect(events.contains(.status(.toolSucceeded)), "tool result should expose only its status")
+        expect(events.contains(.thinkingStarted)
+               && events.contains(.thinking("SYNTHETIC_PRIVATE_REASONING"))
+               && events.contains(.thinkingEnded),
+               "thinking chunks should stay in their own stream events between explicit boundaries")
+        expect(events.contains(.toolCallStarted), "tool calls should create a distinct UI event")
+        expect(events.contains(.toolCallResult(success: true)), "tool results should expose success without output")
         expect(events.contains(.text("你")) && events.contains(.text("好")), "final text chunks should be preserved")
         expect(events.last == .completed && parser.receivedEnd, "is_end should complete the stream")
-        let rendered = String(describing: events)
-        expect(!rendered.contains("SYNTHETIC_PRIVATE_REASONING")
-               && !rendered.contains("SYNTHETIC_PRIVATE_TOOL_OUTPUT"),
-               "thinking and tool output must never reach UI events")
+        let thinking = events.compactMap { event -> String? in
+            guard case .thinking(let chunk) = event else { return nil }
+            return chunk
+        }.joined()
+        let finalText = events.compactMap { event -> String? in
+            guard case .text(let chunk) = event else { return nil }
+            return chunk
+        }.joined()
+        expect(thinking == "SYNTHETIC_PRIVATE_REASONING" && !finalText.contains(thinking),
+               "thinking and final text should remain separate")
+        expect(!String(describing: events).contains("SYNTHETIC_PRIVATE_TOOL_OUTPUT"),
+               "raw tool output must never reach UI events")
     }
 
     private static func testSSEVariantsAndErrors() {

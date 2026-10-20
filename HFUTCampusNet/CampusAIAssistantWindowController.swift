@@ -2,10 +2,16 @@ import Foundation
 import AppKit
 import WebKit
 
-// Only final answer text and safe status labels cross into the AppKit UI.
+// Thinking and final answer chunks are rendered in separate transcript sections.
+// Raw tool payloads and metadata values remain outside the UI.
 private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     enum Event {
+        case thinkingStarted
+        case thinking(String)
+        case thinkingEnded
         case text(String)
+        case toolCallStarted
+        case toolCallResult(success: Bool)
         case status(String)
         case finished(String?)
     }
@@ -133,16 +139,24 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
     private func consume(_ events: [CampusAISSEEvent]) {
         for event in events {
             switch event {
+            case .thinkingStarted:
+                onEvent(.thinkingStarted)
+            case .thinking(let chunk):
+                onEvent(.thinking(chunk))
+            case .thinkingEnded:
+                onEvent(.thinkingEnded)
             case .text(let chunk):
                 onEvent(.text(chunk))
-            case .status(.thinking):
-                onEvent(.status("AI 正在生成回复…"))
-            case .status(.toolStarted):
+            case .toolCallStarted:
+                onEvent(.toolCallStarted)
                 onEvent(.status("正在调用学校智能体工具…"))
-            case .status(.toolSucceeded):
-                onEvent(.status("工具执行完成，正在生成回复…"))
-            case .status(.toolFailed):
-                onEvent(.status("智能体工具未能完成。"))
+            case .toolCallResult(let success):
+                onEvent(.toolCallResult(success: success))
+                if success {
+                    onEvent(.status("工具执行完成，正在生成回复…"))
+                } else {
+                    onEvent(.status("智能体工具未能完成。"))
+                }
             case .completed:
                 finish(nil)
             case .failed:
@@ -229,8 +243,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var emptyHistoryAgentID: String?
     private var emptyHistoryNavigationID: UUID?
     private var sending = false
+    private var activeThinkingMarkdown = ""
+    private var activeThinkingStart: Int?
     private var activeAssistantMarkdown = ""
     private var activeAssistantStart: Int?
+    private var hasStartedFinalAnswer = false
     private var displayingLogin = false
     private var nativeCASFormReady = false
     private var preferWebLoginForCurrentCASPage = false
@@ -766,8 +783,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         defaults.set(agentID, forKey: "campus_ai_agent_id")
         defaults.set(modelID, forKey: "campus_ai_model_id")
         let thinkingMode = selectedThinkingMode()
+        activeThinkingMarkdown = ""
+        activeThinkingStart = nil
         activeAssistantMarkdown = ""
         activeAssistantStart = nil
+        hasStartedFinalAnswer = false
         sending = true
         sendButton.title = "停止"
         promptField.isEnabled = false
@@ -843,8 +863,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         groupField.stringValue = ""
         emptyHistoryAgentID = agentID
         emptyHistoryNavigationID = portalNavigationID
+        activeThinkingMarkdown = ""
+        activeThinkingStart = nil
         activeAssistantMarkdown = ""
         activeAssistantStart = nil
+        hasStartedFinalAnswer = false
         transcriptView.textStorage?.setAttributedString(CampusAITranscriptStyle.attributedString(
             "已新建对话\n\n",
             font: transcriptView.font ?? .systemFont(ofSize: 13)
@@ -1075,8 +1098,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                             self.groupField.stringValue = ""
                             self.emptyHistoryAgentID = nil
                             self.emptyHistoryNavigationID = nil
+                            self.activeThinkingMarkdown = ""
+                            self.activeThinkingStart = nil
                             self.activeAssistantMarkdown = ""
                             self.activeAssistantStart = nil
+                            self.hasStartedFinalAnswer = false
                             self.transcriptView.textStorage?.setAttributedString(CampusAITranscriptStyle.attributedString(
                                 "当前会话已删除。\n\n",
                                 font: self.transcriptView.font ?? .systemFont(ofSize: 13)
@@ -1369,8 +1395,18 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         let client = CampusAIStreamClient { [weak self] event in
             guard let self = self else { return }
             switch event {
+            case .thinkingStarted:
+                self.beginThinkingSection()
+            case .thinking(let chunk):
+                self.appendThinkingMarkdown(chunk)
+            case .thinkingEnded:
+                self.finishThinkingSection()
             case .text(let chunk):
                 self.appendAssistantMarkdown(chunk)
+            case .toolCallStarted:
+                self.appendToolCallBlock(result: nil)
+            case .toolCallResult(let success):
+                self.appendToolCallBlock(result: success)
             case .status(let message):
                 self.statusLabel.stringValue = message
             case .finished(let error):
@@ -1378,23 +1414,87 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             }
         }
         activeClient = client
-        activeAssistantStart = transcriptView.textStorage?.length
+        activeThinkingMarkdown = ""
+        activeThinkingStart = nil
         activeAssistantMarkdown = ""
+        activeAssistantStart = nil
+        hasStartedFinalAnswer = false
         client.start(question: question, groupID: groupID, modelID: modelID,
                      thinkingMode: thinkingMode, cookies: cookies, aiFlow: aiFlow, referer: referer)
     }
 
+    private func beginThinkingSection() {
+        guard activeThinkingStart == nil else { return }
+        finishAssistantSection()
+        appendMarkdownBlock("\n\n**思考过程**\n\n")
+        activeThinkingMarkdown = ""
+        activeThinkingStart = transcriptView.textStorage?.length
+    }
+
+    private func appendThinkingMarkdown(_ chunk: String) {
+        if activeThinkingStart == nil { beginThinkingSection() }
+        activeThinkingMarkdown += chunk
+        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart)
+    }
+
+    private func finishThinkingSection() {
+        guard activeThinkingStart != nil else { return }
+        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart)
+        activeThinkingStart = nil
+        activeThinkingMarkdown = ""
+    }
+
+    private func beginFinalAnswerSection() {
+        finishThinkingSection()
+        guard !hasStartedFinalAnswer else { return }
+        appendMarkdownBlock("\n\n**正式回复**\n\n")
+        activeAssistantStart = transcriptView.textStorage?.length
+        activeAssistantMarkdown = ""
+        hasStartedFinalAnswer = true
+    }
+
     private func appendAssistantMarkdown(_ chunk: String) {
+        beginFinalAnswerSection()
         activeAssistantMarkdown += chunk
-        guard let storage = transcriptView.textStorage,
-              let start = activeAssistantStart, start <= storage.length else {
-            appendText(chunk)
-            return
+        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart)
+    }
+
+    private func finishAssistantSection() {
+        guard activeAssistantStart != nil else { return }
+        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart)
+        activeAssistantMarkdown = ""
+        activeAssistantStart = nil
+        hasStartedFinalAnswer = false
+    }
+
+    private func appendToolCallBlock(result: Bool?) {
+        finishThinkingSection()
+        finishAssistantSection()
+        let block: String
+        switch result {
+        case .none:
+            block = "\n\n> **工具调用**\n>\n> 正在调用智能体工具…\n\n"
+        case .some(true):
+            block = "\n\n> **工具调用完成**\n\n"
+        case .some(false):
+            block = "\n\n> **工具调用未完成**\n\n"
         }
+        appendMarkdownBlock(block)
+    }
+
+    private func appendMarkdownBlock(_ markdown: String) {
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.markdownAttributedString(
+            markdown, font: transcriptView.font ?? .systemFont(ofSize: 13)
+        ))
+        transcriptView.scrollToEndOfDocument(nil)
+    }
+
+    private func renderMarkdown(_ markdown: String, startingAt start: Int?) {
+        guard let storage = transcriptView.textStorage,
+              let start = start, start <= storage.length else { return }
         let currentRange = NSRange(location: start, length: storage.length - start)
         let rendered = CampusAITranscriptStyle.markdownAttributedString(
-            activeAssistantMarkdown,
-            font: transcriptView.font ?? .systemFont(ofSize: 13)
+            markdown, font: transcriptView.font ?? .systemFont(ofSize: 13)
         )
         storage.replaceCharacters(in: currentRange, with: rendered)
         transcriptView.scrollToEndOfDocument(nil)
@@ -1416,11 +1516,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         activeLookupTask = nil
         activeLookupSession?.invalidateAndCancel()
         activeLookupSession = nil
-        if !activeAssistantMarkdown.isEmpty {
-            appendAssistantMarkdown("")
-        }
+        finishThinkingSection()
+        if !activeAssistantMarkdown.isEmpty { renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart) }
+        activeThinkingStart = nil
+        activeThinkingMarkdown = ""
         activeAssistantStart = nil
         activeAssistantMarkdown = ""
+        hasStartedFinalAnswer = false
         sending = false
         activeClient = nil
         sendButton.title = "发送"

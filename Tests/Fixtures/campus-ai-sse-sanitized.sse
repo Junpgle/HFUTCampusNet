@@ -1,8 +1,10 @@
-data:{"type":"chat_meta","chat_id":"9000000000000000001"}
-
-data:{"type":"thinking","content":"SYNTHETIC_PRIVATE_REASONING"}
+data:{"type":"chat_meta","chat_id":"9000000000000000001","trace_id":"9000000000000000002"}
 
 data:{"type":"thinking_start"}
+
+data:{"type":"thinking","content":"SYNTHETIC_PRIVATE_REASONING","is_end":false}
+
+data:{"type":"thinking_end","is_end":false}
 
 data:{"type":"tool_call_start"}
 

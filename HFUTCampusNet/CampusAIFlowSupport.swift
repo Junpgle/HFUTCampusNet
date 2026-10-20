@@ -304,16 +304,13 @@ enum CampusAIChatSaveResponse {
     }
 }
 
-enum CampusAISSEStatus: Equatable {
-    case thinking
-    case toolStarted
-    case toolSucceeded
-    case toolFailed
-}
-
 enum CampusAISSEEvent: Equatable {
+    case thinkingStarted
+    case thinking(String)
+    case thinkingEnded
     case text(String)
-    case status(CampusAISSEStatus)
+    case toolCallStarted
+    case toolCallResult(success: Bool)
     case completed
     case failed
     case incomplete
@@ -402,12 +399,16 @@ struct CampusAISSEParser {
         case "text":
             if let content = object["content"] as? String { events.append(.text(content)) }
         case "thinking_start":
-            events.append(.status(.thinking))
+            events.append(.thinkingStarted)
+        case "thinking":
+            if let content = object["content"] as? String { events.append(.thinking(content)) }
+        case "thinking_end":
+            events.append(.thinkingEnded)
         case "tool_call_start":
-            events.append(.status(.toolStarted))
+            events.append(.toolCallStarted)
         case "tool_call_result":
             let call = object["tool_call"] as? [String: Any]
-            events.append(.status((call?["status"] as? String) == "success" ? .toolSucceeded : .toolFailed))
+            events.append(.toolCallResult(success: (call?["status"] as? String) == "success"))
         default:
             break
         }

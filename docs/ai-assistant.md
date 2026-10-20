@@ -10,8 +10,8 @@
 4. 当门户跳转到可识别的 CAS 账号、密码和图片验证码表单时，会显示原生登录控件。账号和密码预填 App 现有的统一身份认证设置；提交时仍由当前 CAS 页面校验并跳转。验证码从该页面已加载的图片读取，刷新按钮点击该页面自己的刷新控件。若表单结构、验证码图片或刷新控件无法安全识别，选择 **使用网页登录**，继续在 CAS 页面操作。二维码、短信或其他登录方式始终可在网页登录中使用。
 5. 到达目标智能体页后，App 会检查是否出现 AI 平台 Cookie，但这只表示发现会话 Cookie，不能证明服务端仍接受它。发送消息时由 `/chat/send` 的响应确认有效性；401/403 会提示重新从信息门户进入。
 6. 到达目标智能体页后，App 会自动查询该智能体的最近会话并填入会话 ID；查询期间发送的消息会等会话就绪后继续发送。若历史响应明确返回空列表，App 会在用户首次发送时按网页观察到的流程调用 `POST /api/af-api-agent/chat/save`，读取并校验响应中的 `data.groupId`，再发送 `/chat/send`。不会预先创建没有首条消息的空会话；如果历史响应格式异常，则停止并提示重试，不会误判为空列表。
-7. 点击 **历史会话** 可分页查看当前智能体的会话标题与时间；删除前会二次确认。删除成功后 App 重新查询列表；若删除了当前会话，会自动切换到仍存在的最近会话，或准备空历史状态。
-8. 可点击 **停止** 取消生成。聊天窗只显示最终回复和简化工具状态，不展示内部思考、SQL、原始工具输出或服务端错误详情。
+7. 点击 **历史会话** 可分页查看当前智能体的会话标题与时间；删除前会二次确认。删除成功后 App 重新查询列表；若删除了当前会话，会清空当前会话 ID 和本地显示内容，下次发送前重新查询。
+8. 可点击 **停止** 取消生成。思考流与正式回复分别显示为独立 Markdown 区块；工具调用用独立状态块展示，不显示原始工具输出、SQL 或服务端错误详情。
 
 用户提供的最终页面示例为 `https://aipt.hfut.edu.cn/agent-detail?id=1966078115428446208&after=6aaW6aG1`。其中 `after` 的语义尚未从校方接口确认，不将其视作 CAS 凭证或脱离信息门户使用的认证链接。
 
@@ -21,7 +21,7 @@
 - 原生 CAS 登录：只在 `https://cas.hfut.edu.cn/cas/login` 页面可见且可识别账号、密码、验证码和原始提交按钮时启用。验证码从当前页面已加载的图片经同源 canvas 读取；跨源画布、无匹配表单和不支持图片都会保留原网页。点击提交时回填页面原有控件并点击页面原有按钮，以保留隐藏字段、动态 service 和页面自己的会话状态。账号、密码复用 `SettingsManager` 当前已有字段，不另存一份；验证码只在当前面板内存中使用。
 - 请求：使用不自动附加 Cookie 的临时 URLSession，只发送 WebKit 中符合 AI API 域名/路径范围的 Cookie，并按已观察到的请求在 `aiflow` Header 中带当前 `AiFlow` Cookie 值。
 - 请求体：`text`、字符串形式的十进制 `groupId` 与 `aiLargeModelId`、`thinkingMode=balanced`、`debug=false`、`traceId`。使用 JSON 编码保留 64 位 ID 精度。
-- 响应：按 SSE 帧解析拆分到达的数据，支持 LF/CRLF、分片中文、结束帧和错误帧；没有 `is_end` 的断连会按未完成处理。只显示文本和简化工具状态，不解析或保留内部思考、SQL 或工具正文。
+- 响应：按 SSE 帧解析拆分到达的数据，支持 LF/CRLF、分片中文、结束帧和错误帧；没有 `is_end` 的断连会按未完成处理。最近的脱敏抓包观察到 `chat_meta`、`thinking_start`、多段 `thinking`、`thinking_end`、`text`，且 `is_end` 为布尔值。App 将 thinking 与正式文本分区渲染 Markdown；`chat_meta` 的值不进入界面。工具调用只展示状态块，不解析原始工具输出；这次响应样例没有工具调用事件，具体工具事件结构仍待验证。
 - 会话：Edge 的首次发送抓包观察到 `POST /api/af-api-agent/chat/save`，请求字段/类型为 `groupId:null`、`text:string`、`businessId:string`、`businessType:number`、`type:number`、`sender:number`、`title:string`；授权检查的数值为 `businessType=4`、`type=2`、`sender=1`。响应结构为 `status:number`、`data:object`，其中 `groupId:string`、`chatId:string`、`msg:string`；该次业务 `status=1`。同一首次发送链路随后出现 `/chat/send`。据此推断 `chat/save` 响应中的 `data.groupId` 是后续发送要使用的会话 ID；App 仅在状态成功且 ID 格式有效时使用，不生成或跨服务复用 ID。网页抓包没有比较两个请求中的 ID 值，App 内端到端是否被服务端接受仍需本机验证。App 使用首条问题作为 `title`，这是根据字段用途作出的实现选择，尚未验证平台对标题的长度或格式限制。
 - 历史会话：Edge 页面已观察到 `POST /api/af-api-agent/agent/getHistoryData`，请求体字段为 `pageNum:number`、`pageSize:number`、`type:number`、`topic:string`、`groupId:string`、`businessId:string`；本机网页请求确认使用 `pageNum=1`、`pageSize=20`、`type=2`、空 `topic/groupId`。响应结构含 `data.list`，记录含 `id`、`businessId` 和 `createTime`。App 按 `businessId` 匹配当前智能体并选择最近记录的 `id`；历史面板显示标题和时间，但不展示或持久化历史正文。智能体/模型 ID 存在 UserDefaults 中；聊天内容不另行持久化。WebKit 默认网站数据存储可能按服务器设置持久保存学校登录 Cookie；可从学校网页退出账号或清理 App 网站数据。
 - 历史管理：网页观察到 `POST /api/af-api-agent/agent/delHistoryData/{id}`，无请求体；成功响应为 `status=1`、`data=true`，随后网页重新调用历史查询。App 只显示历史标题和时间，不持久化对话内容；删除请求仅对有效的会话数字 ID 发出，并使用当前 WebKit 中按域名和路径筛选的 AI 平台 Cookie，不附带 CAS 票据。删除当前会话时，App 清空会话 ID 和本地显示内容；下次发送前重新查询最近会话。
@@ -34,7 +34,7 @@
 bash Tests/run-campus-ai-tests.sh
 ```
 
-测试覆盖 64 位 ID 编码与解析、历史分页请求/响应、删除路径和业务状态校验、Cookie 域名/路径/有效期筛选和 CAS Cookie 排除、CAS 登录页 host/path 校验、凭据 JSON 编码、验证码数据格式/大小边界、SSE 分片中文、CRLF、多行 data、结束/错误/超限处理。测试 fixture 仅含合成内容。
+测试覆盖 64 位 ID 编码与解析、历史分页请求/响应、删除路径和业务状态校验、Cookie 域名/路径/有效期筛选和 CAS Cookie 排除、CAS 登录页 host/path 校验、凭据 JSON 编码、验证码数据格式/大小边界、SSE 思考/正式文本分区、工具输出隔离、分片中文、CRLF、多行 data、结束/错误/超限处理。测试 fixture 仅含合成内容。
 
 ## 风险与限制
 
