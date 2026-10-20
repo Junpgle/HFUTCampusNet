@@ -180,15 +180,18 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private let groupField = NSTextField(string: "")
     private let promptField = NSTextField(string: "")
     private let transcriptView = NSTextView()
-    private let statusLabel = NSTextField(labelWithString: "先点击「网页登录」，完成学校 AI 平台的登录。")
+    private let statusLabel = NSTextField(labelWithString: "正在检查已有 CAS 会话…")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
-    private let loginButton = NSButton(title: "网页登录", target: nil, action: nil)
+    private let loginButton = NSButton(title: "重连 AI", target: nil, action: nil)
     private let backButton = NSButton(title: "返回聊天", target: nil, action: nil)
     private let transcriptScroll = NSScrollView()
     private var loginWebView: WKWebView!
     private var activeClient: CampusAIStreamClient?
     private var sending = false
     private var displayingLogin = false
+    private enum SSOStage { case idle, homepage, agentPage }
+    private var ssoStage: SSOStage = .idle
+    private var ssoAttempt = UUID()
 
     private init() {
         let w = NSWindow(
@@ -229,7 +232,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         loginButton.frame = NSRect(x: 750, y: 650, width: 105, height: 30)
         loginButton.autoresizingMask = [.minXMargin, .minYMargin]
         loginButton.target = self
-        loginButton.action = #selector(showLogin)
+        loginButton.action = #selector(reconnectAI)
         root.addSubview(loginButton)
 
         backButton.frame = NSRect(x: 860, y: 650, width: 100, height: 30)
@@ -277,7 +280,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         transcriptView.isSelectable = true
         transcriptView.font = .systemFont(ofSize: 13)
         transcriptView.textContainerInset = NSSize(width: 12, height: 12)
-        transcriptView.string = "欢迎使用校园 AI 助手。\n\n请先网页登录学校 AI 平台；首次使用时，建议在网页中打开目标智能体并建立会话。\n聊天记录仅保留在当前窗口内。\n\n"
+        transcriptView.string = "欢迎使用校园 AI 助手。\n\n正在尝试复用 App 的统一 CAS 登录状态。\n如果 CAS 会话失效，请先在 App 内完成统一认证，再点击「重连 AI」。\n聊天记录仅保留在当前窗口内。\n\n"
         transcriptScroll.documentView = transcriptView
         root.addSubview(transcriptScroll)
 
@@ -306,22 +309,76 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     public func showAssistant() {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        prepareAIFromCAS()
     }
 
-    @objc private func showLogin() {
-        guard CampusAIEndpoint.validID(agentField.stringValue) else {
-            statusLabel.stringValue = "请输入正确的智能体 ID。"
-            return
+    /// 使用 App 现有 CAS Cookie 进行 AI 服务自己的 SSO 认证，而不是将 CASTGC 当作 AiFlow。
+    private func prepareAIFromCAS() {
+        let attempt = UUID()
+        ssoAttempt = attempt
+        ssoStage = .idle
+        statusLabel.stringValue = "正在复用统一身份认证登录态…"
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        store.getAllCookies { [weak self] all in
+            guard let self = self, self.ssoAttempt == attempt else { return }
+            if self.hasAISession(all) {
+                self.statusLabel.stringValue = "已发现 AI 平台会话，可直接发送消息。"
+                return
+            }
+            let validCAS = all.contains {
+                ($0.name == "CASTGC" || $0.name == "TGC")
+                    && $0.domain.lowercased().contains("cas.hfut.edu.cn")
+                    && ($0.expiresDate.map { $0 > Date() } ?? true)
+            }
+            if validCAS {
+                self.loadAIHomepage()
+                return
+            }
+            // 旧版统一登录已将 CAS TGC 保存于 SettingsManager。
+            // 只在本机原始 CAS 域名恢复它，绝不跨域设置到 aipt.hfut.edu.cn。
+            let savedTGC = SettingsManager.shared.casTgcCookie ?? ""
+            guard !savedTGC.isEmpty else {
+                self.statusLabel.stringValue = "未找到统一 CAS 会话。请先在 App 内完成统一认证，再点击「重连 AI」。"
+                return
+            }
+            let props: [HTTPCookiePropertyKey: Any] = [
+                .domain: "cas.hfut.edu.cn",
+                .path: "/cas",
+                .name: "CASTGC",
+                .value: savedTGC,
+                .secure: "TRUE",
+                .discard: "TRUE"
+            ]
+            guard let restored = HTTPCookie(properties: props) else {
+                self.statusLabel.stringValue = "无法恢复 CAS 会话，请在 App 中重新统一登录。"
+                return
+            }
+            store.setCookie(restored) { [weak self] in
+                guard let self = self, self.ssoAttempt == attempt else { return }
+                self.loadAIHomepage()
+            }
         }
-        displayingLogin = true
-        loginWebView.isHidden = false
-        transcriptScroll.isHidden = true
-        backButton.isEnabled = true
-        let urlString = "https://aipt.hfut.edu.cn/agent-detail?id=\(agentField.stringValue)"
-        if let url = URL(string: urlString) {
-            loginWebView.load(URLRequest(url: url))
+    }
+
+    private func hasAISession(_ cookies: [HTTPCookie]) -> Bool {
+        CampusAIEndpoint.cookies(from: cookies).contains { cookie in
+            cookie.name == "AiFlow" && !cookie.value.isEmpty
         }
-        statusLabel.stringValue = "在页面中使用学校官方登录；完成后点击「返回聊天」。"
+    }
+
+    private func loadAIHomepage() {
+        ssoStage = .homepage
+        // 先访问网站主页，让目标服务自行申请并校验 CAS Service Ticket。
+        // 不能直接拿其他服务的 ST，也不能自行拼接 service/ticket。
+        statusLabel.stringValue = "已有 CAS 会话，正在为 AI 平台建立独立登录态…"
+        loginWebView.load(URLRequest(
+            url: URL(string: "https://aipt.hfut.edu.cn/")!,
+            cachePolicy: .reloadIgnoringLocalCacheData
+        ))
+    }
+
+    @objc private func reconnectAI() {
+        prepareAIFromCAS()
     }
 
     @objc private func showChat() {
@@ -329,7 +386,17 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         loginWebView.isHidden = true
         transcriptScroll.isHidden = false
         backButton.isEnabled = false
-        statusLabel.stringValue = "就绪。消息通过当前登录会话提交给学校 AI 智能体。"
+        statusLabel.stringValue = "正在检查 AI 会话…"
+        prepareAIFromCAS()
+    }
+
+    private func revealBrowserError(_ message: String) {
+        ssoStage = .idle
+        displayingLogin = true
+        loginWebView.isHidden = false
+        transcriptScroll.isHidden = true
+        backButton.isEnabled = true
+        statusLabel.stringValue = message
     }
 
     @objc private func sendMessage() {
@@ -366,7 +433,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 let cookies = CampusAIEndpoint.cookies(from: all)
                 guard let aiFlow = cookies.first(where: { $0.name == "AiFlow" })?.value,
                       !aiFlow.isEmpty else {
-                    self.complete("未找到学校 AI 会话，请先点击「网页登录」完成认证。")
+                    self.complete("AI 专属会话尚未建立。请检查 CAS 自动连接状态，必要时先在 App 中统一登录再重连 AI。")
+                    self.prepareAIFromCAS()
                     return
                 }
                 if !groupID.isEmpty {
@@ -458,15 +526,49 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        if displayingLogin {
-            statusLabel.stringValue = webView.url?.host == CampusAIEndpoint.host
-                ? "学校 AI 页面已打开。登录成功后点击「返回聊天」。"
-                : "请在学校官方页面完成身份认证，再返回聊天。"
+        guard let current = webView.url else { return }
+        // CAS 报错必须停止自动重试：ST 与 Service 绑定，不能复用其他服务的票据。
+        if current.host == "cas.hfut.edu.cn" {
+            webView.evaluateJavaScript("document.body ? document.body.innerText.slice(0, 2000) : ''") { [weak self] result, _ in
+                guard let self = self, let body = result as? String else { return }
+                if body.contains("不符合目标服务") || body.contains("INVALID_SERVICE") {
+                    self.revealBrowserError("CAS 票据与 AI 服务地址不匹配；请联系学校平台维护方检查 service 配置。")
+                } else if body.contains("登录") && (body.contains("密码") || body.contains("Password")) {
+                    self.revealBrowserError("CAS 会话可能已过期。请使用 App 原有的「统一身份认证同步」重新登录，然后重连 AI。")
+                }
+            }
+            return
+        }
+        guard current.host == CampusAIEndpoint.host else { return }
+        let stage = ssoStage
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
+            guard let self = self else { return }
+            if self.hasAISession(all) {
+                self.ssoStage = .idle
+                self.statusLabel.stringValue = "已复用 CAS 登录并建立 AI 会话，可发送消息。"
+                if self.displayingLogin {
+                    self.displayingLogin = false
+                    self.loginWebView.isHidden = true
+                    self.transcriptScroll.isHidden = false
+                    self.backButton.isEnabled = false
+                }
+            } else if stage == .homepage {
+                // 主页认证完成后再进入智能体页面，避免直接对深层路径申请票据。
+                self.ssoStage = .agentPage
+                let agent = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if CampusAIEndpoint.validID(agent),
+                   let url = URL(string: "https://aipt.hfut.edu.cn/agent-detail?id=\(agent)") {
+                    self.loginWebView.load(URLRequest(url: url))
+                }
+            } else if stage == .agentPage {
+                self.statusLabel.stringValue = "AI 页面已加载，但尚未产生 AiFlow 会话。请确认智能体已成功打开。"
+            }
         }
     }
 
     public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        statusLabel.stringValue = "网页登录失败：\(error.localizedDescription)"
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        statusLabel.stringValue = "AI 单点登录加载失败：\(error.localizedDescription)"
     }
 
     public func windowWillClose(_ notification: Notification) {
