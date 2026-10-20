@@ -23,7 +23,7 @@
 - 请求体：`text`、字符串形式的十进制 `groupId` 与 `aiLargeModelId`、`thinkingMode=balanced`、`debug=false`、`traceId`。使用 JSON 编码保留 64 位 ID 精度。
 - 响应：按 SSE 帧解析拆分到达的数据，支持 LF/CRLF、分片中文、结束帧和错误帧；没有 `is_end` 的断连会按未完成处理。只显示文本和简化工具状态，不解析或保留内部思考、SQL 或工具正文。
 - 会话：Edge 的首次发送抓包观察到 `POST /api/af-api-agent/chat/save`，请求字段/类型为 `groupId:null`、`text:string`、`businessId:string`、`businessType:number`、`type:number`、`sender:number`、`title:string`；授权检查的数值为 `businessType=4`、`type=2`、`sender=1`。响应结构为 `status:number`、`data:object`，其中 `groupId:string`、`chatId:string`、`msg:string`；该次业务 `status=1`。同一首次发送链路随后出现 `/chat/send`。据此推断 `chat/save` 响应中的 `data.groupId` 是后续发送要使用的会话 ID；App 仅在状态成功且 ID 格式有效时使用，不生成或跨服务复用 ID。网页抓包没有比较两个请求中的 ID 值，App 内端到端是否被服务端接受仍需本机验证。App 使用首条问题作为 `title`，这是根据字段用途作出的实现选择，尚未验证平台对标题的长度或格式限制。
-- 历史会话：Edge 页面已观察到 `POST /api/af-api-agent/agent/getHistoryData`，响应结构含 `data.list`，记录含 `id`、`businessId` 和 `createTime`。App 按 `businessId` 匹配当前智能体并选择最近记录的 `id`，不保存或展示历史会话标题/正文。请求体字段名和类型来自页面请求；`pageNum=1`、`pageSize=20`、空 `groupId/topic`、`type=1` 的默认值仍是实现推断，须在 App 的 WebKit 会话中实测。智能体/模型 ID 存在 UserDefaults 中；聊天内容不另行持久化。WebKit 默认网站数据存储可能按服务器设置持久保存学校登录 Cookie；可从学校网页退出账号或清理 App 网站数据。
+- 历史会话：Edge 页面已观察到 `POST /api/af-api-agent/agent/getHistoryData`，请求体字段为 `pageNum:number`、`pageSize:number`、`type:number`、`topic:string`、`groupId:string`、`businessId:string`；本机网页请求确认使用 `pageNum=1`、`pageSize=20`、`type=2`、空 `topic/groupId`。响应结构含 `data.list`，记录含 `id`、`businessId` 和 `createTime`。App 按 `businessId` 匹配当前智能体并选择最近记录的 `id`，不保存或展示历史会话标题/正文。智能体/模型 ID 存在 UserDefaults 中；聊天内容不另行持久化。WebKit 默认网站数据存储可能按服务器设置持久保存学校登录 Cookie；可从学校网页退出账号或清理 App 网站数据。
 
 ## 自动化测试
 

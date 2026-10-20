@@ -72,7 +72,7 @@ struct CampusAIFlowSupportTests {
                "history lookup should request the first page")
         expect(payload["groupId"] as? String == "" && payload["topic"] as? String == "",
                "history lookup should not filter to an unselected group or topic")
-        expect(payload["type"] as? Int == 1, "history lookup should include the inferred agent history type")
+        expect(payload["type"] as? Int == 2, "history lookup should use the website's observed agent history type")
         expect(CampusAIRequestBuilder.historyBody(agentID: "bad") == nil,
                "invalid agent IDs should not produce a history request")
 

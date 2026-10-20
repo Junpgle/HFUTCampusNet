@@ -70,15 +70,14 @@ enum CampusAIEndpoint {
 enum CampusAIRequestBuilder {
     static func historyBody(agentID: String) -> Data? {
         guard CampusAIEndpoint.validID(agentID) else { return nil }
-        // The page's POST /agent/getHistoryData uses these fields. Pagination/filter defaults
-        // are inferred from the observed request shape and need a live App-session check.
+        // These fields and enum values match the observed website POST /agent/getHistoryData request.
         let payload: [String: Any] = [
             "businessId": agentID,
             "groupId": "",
             "pageNum": 1,
             "pageSize": 20,
             "topic": "",
-            "type": 1
+            "type": 2
         ]
         return try? JSONSerialization.data(withJSONObject: payload)
     }
