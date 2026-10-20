@@ -320,15 +320,18 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         statusLabel.stringValue = "正在复用统一身份认证登录态…"
         let store = WKWebsiteDataStore.default().httpCookieStore
         store.getAllCookies { [weak self] all in
+            DispatchQueue.main.async { [weak self] in
             guard let self = self, self.ssoAttempt == attempt else { return }
             if self.hasAISession(all) {
                 self.statusLabel.stringValue = "已发现 AI 平台会话，可直接发送消息。"
                 return
             }
-            let validCAS = all.contains {
-                ($0.name == "CASTGC" || $0.name == "TGC")
-                    && $0.domain.lowercased().contains("cas.hfut.edu.cn")
-                    && ($0.expiresDate.map { $0 > Date() } ?? true)
+            let validCAS = all.contains { cookie in
+                let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                return (cookie.name == "CASTGC" || cookie.name == "TGC")
+                    && (domain == "cas.hfut.edu.cn" || domain == "hfut.edu.cn")
+                    && "/cas/login".hasPrefix(cookie.path)
+                    && (cookie.expiresDate.map { $0 > Date() } ?? true)
             }
             if validCAS {
                 self.loadAIHomepage()
@@ -354,8 +357,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 return
             }
             store.setCookie(restored) { [weak self] in
-                guard let self = self, self.ssoAttempt == attempt else { return }
-                self.loadAIHomepage()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.ssoAttempt == attempt else { return }
+                    self.loadAIHomepage()
+                }
+            }
             }
         }
     }
@@ -542,6 +548,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         guard current.host == CampusAIEndpoint.host else { return }
         let stage = ssoStage
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
+            DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if self.hasAISession(all) {
                 self.ssoStage = .idle
@@ -562,6 +569,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 }
             } else if stage == .agentPage {
                 self.statusLabel.stringValue = "AI 页面已加载，但尚未产生 AiFlow 会话。请确认智能体已成功打开。"
+            }
             }
         }
     }
