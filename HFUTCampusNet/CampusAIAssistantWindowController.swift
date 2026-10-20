@@ -26,8 +26,12 @@ private enum CampusAIEndpoint {
     static func cookies(from all: [HTTPCookie]) -> [HTTPCookie] {
         all.filter { cookie in
             let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let path = "/api/af-api-agent/chat/send"
+            // 不要把 CAS 等其他路径的 Cookie 扩大范围发送给 AI-Flow。
+            let pathMatches = path.hasPrefix(cookie.path)
+            let notExpired = cookie.expiresDate.map { $0 > Date() } ?? true
             return (domain == host || domain == "hfut.edu.cn")
-                && (cookie.expiresDate == nil || cookie.expiresDate! > Date())
+                && pathMatches && notExpired
         }
     }
 }
