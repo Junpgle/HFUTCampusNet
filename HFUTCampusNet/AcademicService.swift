@@ -609,8 +609,12 @@ public class AcademicService: NSObject, URLSessionDelegate {
             guard !courseName.isEmpty else { continue }
             let courseCode = raw["courseCode"] as? String
             let examDate = ((raw["examDate"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let startInt = (raw["startTime"] as? Int) ?? 0
-            let endInt = (raw["endTime"] as? Int) ?? 0
+            guard let startInt = Self.examTimeValue(raw["startTime"]),
+                  let endInt = Self.examTimeValue(raw["endTime"]),
+                  Self.isValidExamTimeValue(startInt),
+                  Self.isValidExamTimeValue(endInt) else {
+                continue
+            }
             let startStr = String(format: "%02d:%02d", startInt / 100, startInt % 100)
             let endStr = String(format: "%02d:%02d", endInt / 100, endInt % 100)
             let dateTimeStr = "\(examDate) \(startStr)~\(endStr)"
@@ -1201,7 +1205,62 @@ public class AcademicService: NSObject, URLSessionDelegate {
     private static func isValidExamDateTime(_ str: String) -> Bool {
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = #"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}~\d{2}:\d{2}$"#
-        return trimmed.range(of: pattern, options: .regularExpression) != nil
+        guard trimmed.range(of: pattern, options: .regularExpression) != nil else { return false }
+        let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+        guard parts.count == 2 else { return false }
+        let timeParts = parts[1].split(separator: "~", omittingEmptySubsequences: false)
+        guard timeParts.count == 2,
+              let startMinutes = Self.examMinutes(String(timeParts[0])),
+              let endMinutes = Self.examMinutes(String(timeParts[1])),
+              endMinutes >= startMinutes else {
+            return false
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = CourseCalendarHelper.beijingCalendar
+        formatter.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.isLenient = false
+        return formatter.date(from: "\(parts[0]) \(timeParts[0])") != nil
+            && formatter.date(from: "\(parts[0]) \(timeParts[1])") != nil
+    }
+
+    private static func examTimeValue(_ value: Any?) -> Int? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value = Int(trimmed) {
+                return value
+            }
+            guard let minutes = Self.examMinutes(trimmed) else { return nil }
+            return (minutes / 60) * 100 + (minutes % 60)
+        }
+        guard let number = value as? NSNumber else { return nil }
+        let doubleValue = number.doubleValue
+        guard doubleValue.isFinite,
+              (0...2359).contains(doubleValue),
+              doubleValue.rounded(.towardZero) == doubleValue else {
+            return nil
+        }
+        return Int(doubleValue)
+    }
+
+    private static func examMinutes(_ value: String) -> Int? {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              (1...2).contains(parts[0].count),
+              parts[1].count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0..<24).contains(hour),
+              (0..<60).contains(minute) else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+
+    private static func isValidExamTimeValue(_ value: Int) -> Bool {
+        (0..<24).contains(value / 100) && (0..<60).contains(value % 100)
     }
 
     private static func extractTableRows(from html: String) -> [[String]] {
