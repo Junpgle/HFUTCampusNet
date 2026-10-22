@@ -5,6 +5,20 @@ import WebKit
 public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     public static let shared = UnifiedLoginWebViewController()
 
+    public static func clearCASLoginCookies() {
+        let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+        cookieStore.getAllCookies { cookies in
+            for cookie in cookies {
+                let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                let name = cookie.name.uppercased()
+                let isCASDomain = domain == "cas.hfut.edu.cn" || domain == "hfut.edu.cn"
+                if isCASDomain && (name == "CASTGC" || name == "TGC") {
+                    cookieStore.delete(cookie)
+                }
+            }
+        }
+    }
+
     private var webView: WKWebView!
     private var casLoginCoordinator: HFUTCASLoginCoordinator!
     private var progressIndicator: NSProgressIndicator!
