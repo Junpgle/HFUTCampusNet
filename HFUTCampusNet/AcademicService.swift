@@ -12,6 +12,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
     public private(set) var lastErrorMessage: String?
 
     private var monitorTimer: Timer?
+    private var pendingSyncCompletions: [(Result<AcademicDataSnapshot, Error>) -> Void] = []
     private var isMonitoring = false
     private var isPausedForSleep = false
     private var monitorGeneration = 0
@@ -208,11 +209,25 @@ public class AcademicService: NSObject, URLSessionDelegate {
         silent: Bool = false,
         completion: ((Result<AcademicDataSnapshot, Error>) -> Void)? = nil
     ) {
-        guard !isSyncing else { return }
+        if isSyncing {
+            if let completion {
+                pendingSyncCompletions.append(completion)
+            }
+            return
+        }
         isSyncing = true
+        pendingSyncCompletions = completion.map { [$0] } ?? []
         lastErrorMessage = nil
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .academicDataDidUpdate, object: self.latestData)
+        }
+
+        let finishSync: (Result<AcademicDataSnapshot, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.isSyncing = false
+            let completions = self.pendingSyncCompletions
+            self.pendingSyncCompletions.removeAll(keepingCapacity: false)
+            completions.forEach { $0(result) }
         }
 
         let group = DispatchGroup()
@@ -280,9 +295,9 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 self.lastErrorMessage = lastErr?.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: prev)
                 if let err = lastErr {
-                    completion?(.failure(err))
+                    finishSync(.failure(err))
                 } else {
-                    completion?(.success(prev))
+                    finishSync(.success(prev))
                 }
                 return
             }
@@ -291,7 +306,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                let err = lastErr {
                 self.lastErrorMessage = err.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: nil)
-                completion?(.failure(err))
+                finishSync(.failure(err))
                 return
             }
 
@@ -315,7 +330,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
             self.detectAndNotifyNewGrades(oldSnapshot: oldSnapshot, newSnapshot: newSnapshot)
 
             self.saveCachedData(newSnapshot)
-            completion?(.success(newSnapshot))
+            finishSync(.success(newSnapshot))
         }
     }
 
