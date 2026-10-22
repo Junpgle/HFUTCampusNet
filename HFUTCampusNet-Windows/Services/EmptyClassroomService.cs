@@ -144,21 +144,22 @@ public sealed class EmptyClassroomService
 
     public void SetNextDayStudyRoom(ClassroomOccupationItem room)
     {
-        SettingsManager.Shared.NextDayStudyRoom = new StudyRoomSelectionRecord
-        {
-            RoomId = room.RoomId,
-            RoomName = room.RoomName,
-            CampusId = room.CampusId,
-            BuildingName = room.BuildingName,
-            DateString = room.DateString
-        };
-        SettingsManager.Shared.Save();
-        AppEvents.RaiseEmptyClassroomUpdated();
+        SetNextDayStudyRoom(room, (StudyCampus)room.CampusId, room.BuildingCode, room.BuildingName, room.DateString);
     }
 
     public void SetNextDayStudyRoom(ClassroomOccupationItem room, StudyCampus? campus = null, string? buildingCode = null, string? buildingName = null, string? dateString = null)
     {
-        SetCurrentStudyRoom(room, campus, buildingCode, buildingName);
+        SettingsManager.Shared.NextDayStudyRoom = new StudyRoomSelectionRecord
+        {
+            RoomId = room.RoomId,
+            RoomName = room.RoomName,
+            CampusId = (int)(campus ?? (StudyCampus)room.CampusId),
+            BuildingName = buildingName ?? room.BuildingName,
+            BuildingCode = buildingCode ?? room.BuildingCode,
+            DateString = string.IsNullOrWhiteSpace(dateString) ? room.DateString : dateString
+        };
+        SettingsManager.Shared.Save();
+        AppEvents.RaiseEmptyClassroomUpdated();
     }
 
     public List<ClassroomOccupationItem> RecommendedTodayAllDayFreeRooms(int limit = 6)
