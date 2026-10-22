@@ -21,6 +21,7 @@ public class UpdateChecker {
     public private(set) var availableUpdate: GitHubReleaseInfo?
     public private(set) var isChecking: Bool = false
     private var pendingManualFeedback: Bool = false
+    private var pendingCheckCompletions: [(Result<GitHubReleaseInfo?, Error>) -> Void] = []
 
     private init() {}
 
@@ -35,6 +36,9 @@ public class UpdateChecker {
     /// 检查 GitHub Releases 最新版本
     /// - Parameter manual: 是否为用户手动点击触发（手动触发会弹窗提示“已是最新”或错误；自动后台检查仅在发现新版本时提醒）
     public func checkForUpdates(manual: Bool = true, completion: ((Result<GitHubReleaseInfo?, Error>) -> Void)? = nil) {
+        if let completion {
+            pendingCheckCompletions.append(completion)
+        }
         if isChecking {
             if manual { pendingManualFeedback = true }
             return
@@ -42,10 +46,29 @@ public class UpdateChecker {
         isChecking = true
         pendingManualFeedback = manual
 
+        let finish: (Result<GitHubReleaseInfo?, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            let completions = self.pendingCheckCompletions
+            self.pendingCheckCompletions.removeAll(keepingCapacity: false)
+            self.isChecking = false
+            self.pendingManualFeedback = false
+            completions.forEach { $0(result) }
+        }
+
         let latestUrlStr = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
         guard let url = URL(string: latestUrlStr) else {
-            isChecking = false
-            pendingManualFeedback = false
+            let error = NSError(
+                domain: "UpdateChecker",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "无效的 GitHub Releases 地址"]
+            )
+            let showManual = pendingManualFeedback
+            DispatchQueue.main.async {
+                finish(.failure(error))
+                if showManual {
+                    self.showErrorAlert(message: error.localizedDescription)
+                }
+            }
             return
         }
 
@@ -59,9 +82,7 @@ public class UpdateChecker {
             if let error = error {
                 DispatchQueue.main.async {
                     let showManual = manual || self.pendingManualFeedback
-                    self.isChecking = false
-                    self.pendingManualFeedback = false
-                    completion?(.failure(error))
+                    finish(.failure(error))
                     if showManual {
                         self.showErrorAlert(message: "无法连接到 GitHub 检查更新，请检查网络连接。\n(\(error.localizedDescription))")
                     }
@@ -73,7 +94,7 @@ public class UpdateChecker {
 
             // 如果 /releases/latest 返回 404（例如仓库仅有 Pre-release 或暂未发布 Release），尝试拉取 /releases 列表
             if httpStatus == 404 {
-                self.fetchReleasesListFallback(manual: manual || self.pendingManualFeedback, completion: completion)
+                self.fetchReleasesListFallback(manual: manual || self.pendingManualFeedback, completion: finish)
                 return
             }
 
@@ -82,10 +103,8 @@ public class UpdateChecker {
                   let releaseInfo = self.parseReleaseJSON(json) else {
                 DispatchQueue.main.async {
                     let showManual = manual || self.pendingManualFeedback
-                    self.isChecking = false
-                    self.pendingManualFeedback = false
                     let err = NSError(domain: "UpdateChecker", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: "GitHub API 响应异常 (HTTP \(httpStatus))"])
-                    completion?(.failure(err))
+                    finish(.failure(err))
                     if showManual {
                         self.showErrorAlert(message: "获取版本信息失败 (HTTP \(httpStatus))，请稍后再试。")
                     }
@@ -95,9 +114,7 @@ public class UpdateChecker {
 
             DispatchQueue.main.async {
                 let showManual = manual || self.pendingManualFeedback
-                self.isChecking = false
-                self.pendingManualFeedback = false
-                self.handleReleaseResult(releaseInfo, manual: showManual, completion: completion)
+                self.handleReleaseResult(releaseInfo, manual: showManual, completion: finish)
             }
         }.resume()
     }
@@ -112,8 +129,6 @@ public class UpdateChecker {
             )
             DispatchQueue.main.async {
                 let showManual = manual || self.pendingManualFeedback
-                self.isChecking = false
-                self.pendingManualFeedback = false
                 completion?(.failure(error))
                 if showManual {
                     self.showErrorAlert(message: error.localizedDescription)
@@ -130,8 +145,6 @@ public class UpdateChecker {
             guard let self = self else { return }
             DispatchQueue.main.async {
                 let showManual = manual || self.pendingManualFeedback
-                self.isChecking = false
-                self.pendingManualFeedback = false
 
                 func fail(_ error: Error, message: String) {
                     completion?(.failure(error))
@@ -178,10 +191,10 @@ public class UpdateChecker {
 
                 guard let first = list.first else {
                     // 仓库尚未发布任何 Release，视为当前已是最新
+                    completion?(.success(nil))
                     if showManual {
                         self.showUpToDateAlert(latestVersion: self.currentVersion)
                     }
-                    completion?(.success(nil))
                     return
                 }
 
