@@ -614,6 +614,8 @@ public class CourseScheduleService {
                     lessons: parsedLessons
                 )
                 completion(.success(schedule))
+            } catch let syncError as CourseSyncError {
+                completion(.failure(syncError))
             } catch {
                 completion(.failure(CourseSyncError.invalidResponse))
             }
@@ -710,6 +712,10 @@ public class CourseScheduleService {
                 weekday: weekday
             )
             courseItems.append(item)
+        }
+
+        guard !courseItems.isEmpty else {
+            throw CourseSyncError.emptySchedule
         }
 
         return courseItems.sorted {
