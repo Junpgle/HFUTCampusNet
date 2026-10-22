@@ -270,6 +270,11 @@ public final class LibrarySearchService: NSObject, URLSessionDelegate {
             completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
             return
         }
+        let user = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !user.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "缺少当前读者学号，请先在偏好设置中保存学号再加入书架"])))
+            return
+        }
         guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerBook/insert") else { return }
 
         var req = URLRequest(url: url)
@@ -286,7 +291,6 @@ public final class LibrarySearchService: NSObject, URLSessionDelegate {
             "isbn": item.isbn,
             "classNo": item.classNo
         ]
-        let user = SettingsManager.shared.portalUsername.isEmpty ? "2024218441" : SettingsManager.shared.portalUsername
         let payload: [String: Any] = [
             "book": bookObj,
             "sourceType": "1",
