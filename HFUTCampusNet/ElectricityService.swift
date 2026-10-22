@@ -487,7 +487,19 @@ public class ElectricityService {
 
     /// 离线/校外模式下通过慧新易校查询校园网流量与余额 (feeitemid=281)
     public func fetchSchoolNetInfoFromHuiXin(completion: ((_ flow: String?, _ balance: String?) -> Void)? = nil) {
+        let requestedUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        func isCurrentAccount() -> Bool {
+            SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == requestedUsername
+        }
+        func completeWithoutResult() {
+            DispatchQueue.main.async { completion?(nil, nil) }
+        }
+
         func query(token: String, allowRetry: Bool) {
+            guard isCurrentAccount() else {
+                completeWithoutResult()
+                return
+            }
             var urlComponents = URLComponents(string: "http://121.251.19.62/charge/feeitem/getThirdData")!
             urlComponents.queryItems = [
                 URLQueryItem(name: "feeitemid", value: "281"),
@@ -506,23 +518,33 @@ public class ElectricityService {
             request.httpBody = body.data(using: .utf8)
 
             URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+                guard isCurrentAccount() else {
+                    completeWithoutResult()
+                    return
+                }
                 let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
                 let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 let jsonCode = json?["code"] as? Int
 
                 if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403 {
-                    SettingsManager.shared.huixinAuthToken = nil
+                    if SettingsManager.shared.huixinAuthToken == token {
+                        SettingsManager.shared.huixinAuthToken = nil
+                    }
                     if allowRetry {
                         self?.obtainHuiXinToken { res in
+                            guard isCurrentAccount() else {
+                                completeWithoutResult()
+                                return
+                            }
                             switch res {
                             case .success(let newToken):
                                 query(token: newToken, allowRetry: false)
                             case .failure:
-                                completion?(nil, nil)
+                                completeWithoutResult()
                             }
                         }
                     } else {
-                        DispatchQueue.main.async { completion?(nil, nil) }
+                        completeWithoutResult()
                     }
                     return
                 }
@@ -561,6 +583,10 @@ public class ElectricityService {
                 }
 
                 DispatchQueue.main.async {
+                    guard isCurrentAccount() else {
+                        completion?(nil, nil)
+                        return
+                    }
                     completion?(cleanFlow, cleanFee)
                 }
             }.resume()
@@ -570,11 +596,15 @@ public class ElectricityService {
             query(token: token, allowRetry: true)
         } else {
             obtainHuiXinToken { result in
+                guard isCurrentAccount() else {
+                    completeWithoutResult()
+                    return
+                }
                 switch result {
                 case .success(let token):
                     query(token: token, allowRetry: false)
                 case .failure:
-                    completion?(nil, nil)
+                    completeWithoutResult()
                 }
             }
         }
