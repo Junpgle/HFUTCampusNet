@@ -276,9 +276,14 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         request.setValue("http://172.18.3.3/", forHTTPHeaderField: "Referer")
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 
-        let task = session.dataTask(with: request) { data, response, error in
+        let task = session.dataTask(with: request) { _, response, error in
             if let error = error {
                 completion(false, "注销失败: \(error.localizedDescription)")
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                completion(false, "注销失败（HTTP \(status)）")
                 return
             }
             completion(true, "已成功注销校园网设备")
