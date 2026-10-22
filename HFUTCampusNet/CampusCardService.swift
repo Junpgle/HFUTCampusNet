@@ -5,6 +5,8 @@ public class CampusCardService {
     public static let shared = CampusCardService()
 
     public private(set) var latestData: CampusCardData?
+    private let stateLock = NSLock()
+    private var dataGeneration = 0
 
     private let cacheURL: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -25,30 +27,71 @@ public class CampusCardService {
         self.latestData = cached
     }
 
-    private func saveCachedData(_ data: CampusCardData) {
-        self.latestData = data
+    private func saveCachedData(_ data: CampusCardData, generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard dataGeneration == generation else { return false }
+        latestData = data
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: cacheURL, options: .atomic)
         }
+        return true
     }
 
     public func clearCache() {
-        self.latestData = nil
+        stateLock.lock()
+        dataGeneration &+= 1
+        latestData = nil
         try? FileManager.default.removeItem(at: cacheURL)
+        stateLock.unlock()
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .campusCardDidUpdate, object: nil)
         }
     }
 
+    private func isCurrentGeneration(_ generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return dataGeneration == generation
+    }
+
+    private func clearHuixinToken(generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard dataGeneration == generation else { return false }
+        SettingsManager.shared.huixinAuthToken = nil
+        return true
+    }
+
+    private func cachedTransactions(account: String, generation: Int) -> [CampusCardTransaction] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard dataGeneration == generation, latestData?.cardAccount == account else { return [] }
+        return latestData?.transactions ?? []
+    }
+
+    private static func cancelledError() -> NSError {
+        NSError(domain: "cn.edu.hfut.card", code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次校园卡同步已取消"])
+    }
+
     /// 拉取校园卡余额与近期消费账单（自动复用或静默获取慧新易校 Token）
     public func fetchData(completion: ((Result<CampusCardData, Error>) -> Void)? = nil) {
+        stateLock.lock()
+        let generation = dataGeneration
+        stateLock.unlock()
+
         if let token = SettingsManager.shared.huixinAuthToken, !token.isEmpty {
-            executeCardQuery(token: token, allowRetry: true, completion: completion)
+            executeCardQuery(token: token, allowRetry: true, generation: generation, completion: completion)
         } else {
             ElectricityService.shared.obtainHuiXinToken { [weak self] result in
+                guard let self, self.isCurrentGeneration(generation) else {
+                    DispatchQueue.main.async { completion?(.failure(Self.cancelledError())) }
+                    return
+                }
                 switch result {
                 case .success(let token):
-                    self?.executeCardQuery(token: token, allowRetry: false, completion: completion)
+                    self.executeCardQuery(token: token, allowRetry: false, generation: generation, completion: completion)
                 case .failure(let err):
                     DispatchQueue.main.async { completion?(.failure(err)) }
                 }
@@ -60,8 +103,13 @@ public class CampusCardService {
         token: String,
         allowRetry: Bool,
         useLegacyEndpoint: Bool = false,
+        generation: Int,
         completion: ((Result<CampusCardData, Error>) -> Void)?
     ) {
+        guard isCurrentGeneration(generation) else {
+            DispatchQueue.main.async { completion?(.failure(Self.cancelledError())) }
+            return
+        }
         let authHeader = token.lowercased().hasPrefix("bearer ") ? token : "bearer \(token)"
         let cardURLString = useLegacyEndpoint
             ? "http://121.251.19.62/berserker-app/ykt/tsm/queryCard"
@@ -75,6 +123,10 @@ public class CampusCardService {
 
         URLSession.shared.dataTask(with: cardReq) { [weak self] data, response, error in
             guard let self = self else { return }
+            guard self.isCurrentGeneration(generation) else {
+                DispatchQueue.main.async { completion?(.failure(Self.cancelledError())) }
+                return
+            }
 
             if let error = error {
                 DispatchQueue.main.async { completion?(.failure(error)) }
@@ -86,12 +138,19 @@ public class CampusCardService {
             let jsonCode = json?["code"] as? Int ?? httpStatus
 
             if httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403 {
-                SettingsManager.shared.huixinAuthToken = nil
+                guard self.clearHuixinToken(generation: generation) else {
+                    DispatchQueue.main.async { completion?(.failure(Self.cancelledError())) }
+                    return
+                }
                 if allowRetry {
                     ElectricityService.shared.obtainHuiXinToken { retryRes in
+                        guard self.isCurrentGeneration(generation) else {
+                            DispatchQueue.main.async { completion?(.failure(Self.cancelledError())) }
+                            return
+                        }
                         switch retryRes {
                         case .success(let newToken):
-                            self.executeCardQuery(token: newToken, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint, completion: completion)
+                            self.executeCardQuery(token: newToken, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint, generation: generation, completion: completion)
                         case .failure(let err):
                             DispatchQueue.main.async { completion?(.failure(err)) }
                         }
@@ -110,7 +169,7 @@ public class CampusCardService {
                 ?? (json?["data"] as? [[String: Any]])
             guard let firstCard = cards?.first else {
                 if !useLegacyEndpoint {
-                    self.executeCardQuery(token: token, allowRetry: false, useLegacyEndpoint: true, completion: completion)
+                    self.executeCardQuery(token: token, allowRetry: false, useLegacyEndpoint: true, generation: generation, completion: completion)
                     return
                 }
                 let err = NSError(domain: "cn.edu.hfut.card", code: -2, userInfo: [NSLocalizedDescriptionKey: "未能解析到校园一卡通账户信息"])
@@ -139,10 +198,8 @@ public class CampusCardService {
             let unsettleRMB = Double(unsettleFen) / 100.0
 
             // 分页同步历史流水，并与本地归档合并，避免接口分页上限或短暂失败缩短已有历史。
-            self.fetchTransactions(authHeader: authHeader, page: 1, size: 150, accumulated: []) { fetchedTransactions in
-                let previousTransactions = self.latestData?.cardAccount == account
-                    ? (self.latestData?.transactions ?? [])
-                    : []
+            self.fetchTransactions(authHeader: authHeader, generation: generation, page: 1, size: 150, accumulated: []) { fetchedTransactions in
+                let previousTransactions = self.cachedTransactions(account: account, generation: generation)
                 let transactions = self.mergeTransactions(previousTransactions + fetchedTransactions)
                 let cardData = CampusCardData(
                     cardAccount: account,
@@ -156,7 +213,10 @@ public class CampusCardService {
                 )
 
                 DispatchQueue.main.async {
-                    self.saveCachedData(cardData)
+                    guard self.saveCachedData(cardData, generation: generation) else {
+                        completion?(.failure(Self.cancelledError()))
+                        return
+                    }
                     self.checkLowBalanceWarning(cardData)
                     NotificationCenter.default.post(name: .campusCardDidUpdate, object: cardData)
                     completion?(.success(cardData))
@@ -167,11 +227,16 @@ public class CampusCardService {
 
     private func fetchTransactions(
         authHeader: String,
+        generation: Int,
         page: Int,
         size: Int,
         accumulated: [CampusCardTransaction],
         completion: @escaping ([CampusCardTransaction]) -> Void
     ) {
+        guard isCurrentGeneration(generation) else {
+            completion(accumulated)
+            return
+        }
         // 防止异常分页元数据造成无限请求；正常情况下按接口总页数提前结束。
         let maximumPages = 100
         guard page <= maximumPages,
@@ -196,6 +261,10 @@ public class CampusCardService {
 
         URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
             guard let self = self else { return }
+            guard self.isCurrentGeneration(generation) else {
+                completion(accumulated)
+                return
+            }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let dataObj = json["data"] as? [String: Any],
@@ -245,6 +314,7 @@ public class CampusCardService {
             } else {
                 self.fetchTransactions(
                     authHeader: authHeader,
+                    generation: generation,
                     page: page + 1,
                     size: size,
                     accumulated: combined,
