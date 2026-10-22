@@ -943,10 +943,11 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         AcademicService.shared.syncAll(silent: true)
     }
 
-    private func handleAccountSwitchIfNeeded() {
-        let currentU = SettingsManager.shared.portalUsername
-        guard !initialUsername.isEmpty, currentU != initialUsername else { return }
-        initialUsername = currentU
+    private static func invalidateAccountScopedData(previousUsername: String, previousStudentID: String) {
+        let previousUser = previousUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentUser = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !previousUser.isEmpty, currentUser != previousUser else { return }
+
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil
@@ -958,15 +959,32 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         StudentPortraitEatService.shared.clearCache()
         SettingsManager.shared.uniAppJwt = nil
         SettingsManager.shared.jxglstuDefaultPasswordCache = nil
-        if SettingsManager.shared.courseStudentId == initialStdId {
+        if SettingsManager.shared.courseStudentId == previousStudentID {
             SettingsManager.shared.courseStudentId = ""
-            courseStudentIdField?.stringValue = ""
-            initialStdId = ""
         }
         CampusCardService.shared.clearCache()
         AcademicService.shared.clearCache()
         LibraryBorrowManager.shared.clearCache()
+    }
+
+    public func handleExternalAccountSwitch(previousUsername: String, previousStudentID: String) {
+        Self.invalidateAccountScopedData(
+            previousUsername: previousUsername,
+            previousStudentID: previousStudentID
+        )
+        initialUsername = SettingsManager.shared.portalUsername
+        let currentStdId = SettingsManager.shared.courseStudentId
+        initialStdId = currentStdId
+        usernameField?.stringValue = initialUsername
+        casPasswordField?.stringValue = SettingsManager.shared.casPassword
+        courseStudentIdField?.stringValue = currentStdId
         updateCourseStatusDisplay()
+    }
+
+    private func handleAccountSwitchIfNeeded() {
+        let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentUsername != initialUsername.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        handleExternalAccountSwitch(previousUsername: initialUsername, previousStudentID: initialStdId)
     }
 
     private func saveCredentials(checkDormInvalidation: Bool = true) {

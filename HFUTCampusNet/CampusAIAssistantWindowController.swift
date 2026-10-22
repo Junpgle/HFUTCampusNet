@@ -207,6 +207,14 @@ private struct CampusAIPendingLookupSend {
     let navigationID: UUID
 }
 
+private struct CampusAIPendingCASCredentials {
+    let username: String
+    let password: String
+    let previousUsername: String
+    let previousStudentID: String
+    let navigationID: UUID
+}
+
 public final class CampusAIAssistantWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSWindowDelegate, NSPopoverDelegate {
     public static let shared = CampusAIAssistantWindowController()
 
@@ -248,6 +256,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var historyDeleteSession: URLSession?
     private var historyDeleteRequestID: UUID?
     private var pendingLookupSend: CampusAIPendingLookupSend?
+    private var pendingCASCredentials: CampusAIPendingCASCredentials?
     private var activeSendRequestID: UUID?
     private var emptyHistoryAgentID: String?
     private var emptyHistoryNavigationID: UUID?
@@ -524,6 +533,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         emptyHistoryNavigationID = nil
         groupField.stringValue = ""
         portalNavigationID = UUID()
+        pendingCASCredentials = nil
         portalSessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         automaticNavigationAttempts.removeAll(keepingCapacity: true)
         displayingLogin = true
@@ -655,6 +665,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func showCASWebLoginFallback(_ message: String) {
+        pendingCASCredentials = nil
         nativeCASFormReady = false
         casProbeToken = UUID()
         captchaRefreshToken = nil
@@ -665,6 +676,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     @objc private func showCASWebLogin() {
+        pendingCASCredentials = nil
         preferWebLoginForCurrentCASPage = true
         casLoginPanel.isHidden = true
         loginWebView.isHidden = false
@@ -709,10 +721,25 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
 
-        // Match the existing unified-login behavior by updating its existing credential fields.
-        SettingsManager.shared.portalUsername = username
-        SettingsManager.shared.casPassword = password
-        portalSessionUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUsername.isEmpty else {
+            casLoginPanel.setStatus("学号不能为空，请填写后重试。")
+            return
+        }
+        let previousUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard portalSessionUsername == previousUsername else {
+            casLoginPanel.setStatus("账号设置已变化，请重新打开信息门户登录流程后重试。")
+            return
+        }
+        let navigationID = portalNavigationID
+        pendingCASCredentials = CampusAIPendingCASCredentials(
+            username: normalizedUsername,
+            password: password,
+            previousUsername: previousUsername,
+            previousStudentID: SettingsManager.shared.courseStudentId,
+            navigationID: navigationID
+        )
+        portalSessionUsername = normalizedUsername
         nativeCASFormReady = false
         preferWebLoginForCurrentCASPage = false
         casProbeToken = UUID()
@@ -722,10 +749,15 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         loginWebView.isHidden = false
         loginWebView.evaluateJavaScript(script) { [weak self] result, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.displayingLogin else { return }
+                guard let self = self, self.displayingLogin,
+                      self.portalNavigationID == navigationID,
+                      self.pendingCASCredentials?.navigationID == navigationID,
+                      self.pendingCASCredentials?.username == normalizedUsername else { return }
                 if result as? Bool == true {
                     self.statusLabel.stringValue = "已通过 CAS 页面提交登录，正在等待学校认证结果…"
                 } else if HFUTCASLoginSupport.isLoginPage(self.loginWebView.url) {
+                    self.pendingCASCredentials = nil
+                    self.portalSessionUsername = previousUsername
                     self.nativeCASFormReady = true
                     self.casLoginPanel.isHidden = false
                     self.loginWebView.isHidden = true
@@ -1835,6 +1867,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard (error as NSError).code != NSURLErrorCancelled else { return }
+        resetPendingCASCredentialsAfterFailedLogin(in: webView)
         statusLabel.stringValue = "学校登录页面连接失败，请检查网络后重试。"
     }
 
@@ -1850,6 +1883,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         )
 
         if HFUTCASLoginSupport.isLoginPage(current) {
+            resetPendingCASCredentialsAfterFailedLogin(in: webView)
             inspectCASLoginPage(webView)
         } else {
             nativeCASFormReady = false
@@ -1935,11 +1969,45 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                       self.portalSessionUsername == username,
                       webView === self.loginWebView,
                       webView.url == pageURL,
-                      SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == username,
+                      !username.isEmpty,
+                      !HFUTCASLoginSupport.isLoginPage(pageURL),
                       let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) else { return }
+
+                if let pending = self.pendingCASCredentials,
+                   pending.navigationID == navigationID,
+                   pending.username == username {
+                    let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard currentUsername == pending.previousUsername else {
+                        self.pendingCASCredentials = nil
+                        if currentUsername == username {
+                            SettingsManager.shared.casTgcCookie = tgc
+                        }
+                        return
+                    }
+                    SettingsManager.shared.portalUsername = pending.username
+                    SettingsManager.shared.casPassword = pending.password
+                    SettingsWindowController.shared.handleExternalAccountSwitch(
+                        previousUsername: pending.previousUsername,
+                        previousStudentID: pending.previousStudentID
+                    )
+                    self.portalSessionUsername = pending.username
+                    self.pendingCASCredentials = nil
+                    SettingsManager.shared.casTgcCookie = tgc
+                    return
+                }
+
+                guard SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == username else { return }
                 SettingsManager.shared.casTgcCookie = tgc
             }
         }
+    }
+
+    private func resetPendingCASCredentialsAfterFailedLogin(in webView: WKWebView) {
+        guard webView === loginWebView,
+              pendingCASCredentials?.navigationID == portalNavigationID,
+              HFUTCASLoginSupport.isLoginPage(webView.url) else { return }
+        pendingCASCredentials = nil
+        portalSessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func startAutomaticNavigation(_ step: CampusAIEntryNavigationStep, in webView: WKWebView, at url: URL) {
