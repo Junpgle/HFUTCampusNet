@@ -193,11 +193,14 @@ public sealed class CourseScheduleService
         SyncSchedule(callback);
     }
 
-    public void ApplyCustomSchedule(CourseScheduleData schedule)
+    public void ApplyCustomSchedule(CourseScheduleData schedule, long? expectedAccountGeneration = null)
     {
         CourseLesson.EnrichLessons(schedule.Lessons);
         lock (_scheduleStateLock)
         {
+            if (expectedAccountGeneration.HasValue &&
+                expectedAccountGeneration.Value != AccountSessionManager.Generation)
+                return;
             _scheduleGeneration++;
             CurrentSchedule = schedule;
             SaveCache();
@@ -205,7 +208,12 @@ public sealed class CourseScheduleService
         AppEvents.RaiseCourseScheduleUpdated();
     }
 
-    public CourseScheduleData? ApplyDatumJSONString(string jsonString, string studentId, string semesterId, string bizTypeId)
+    public CourseScheduleData? ApplyDatumJSONString(
+        string jsonString,
+        string studentId,
+        string semesterId,
+        string bizTypeId,
+        long? expectedAccountGeneration = null)
     {
         try
         {
@@ -217,6 +225,9 @@ public sealed class CourseScheduleService
             CourseScheduleData schedule;
             lock (_scheduleStateLock)
             {
+                if (expectedAccountGeneration.HasValue &&
+                    expectedAccountGeneration.Value != AccountSessionManager.Generation)
+                    return null;
                 _scheduleGeneration++;
                 if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
                 if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
@@ -686,6 +697,8 @@ public sealed class AcademicService
     private readonly HttpClient _client;
     private Timer? _timer;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
+    private readonly object _stateLock = new();
+    private long _cacheGeneration;
 
     private AcademicService()
     {
@@ -719,11 +732,15 @@ public sealed class AcademicService
 
     public void ClearCache()
     {
-        LatestData = null;
-        try { if (File.Exists(_cacheFile)) File.Delete(_cacheFile); } catch { }
-        SettingsManager.Shared.NotifiedGradeIds.Clear();
-        SettingsManager.Shared.UnreadGradeIds.Clear();
-        SettingsManager.Shared.Save();
+        lock (_stateLock)
+        {
+            _cacheGeneration++;
+            LatestData = null;
+            try { if (File.Exists(_cacheFile)) File.Delete(_cacheFile); } catch { }
+            SettingsManager.Shared.NotifiedGradeIds.Clear();
+            SettingsManager.Shared.UnreadGradeIds.Clear();
+            SettingsManager.Shared.Save();
+        }
         AppEvents.RaiseAcademicDataUpdated();
     }
 
@@ -744,6 +761,12 @@ public sealed class AcademicService
                 return;
             }
 
+            long generation;
+            lock (_stateLock)
+            {
+                generation = _cacheGeneration;
+            }
+
             try
             {
                 // 通道 1：合工大教务移动端 (UniApp JWT 主源)
@@ -753,6 +776,11 @@ public sealed class AcademicService
                 var eamsWebTask = FetchFromEamsWebAsync();
 
                 await Task.WhenAll(uniAppTask, eamsWebTask);
+                if (!IsCurrentCacheGeneration(generation))
+                {
+                    callback?.Invoke(false);
+                    return;
+                }
 
                 var (uniGrades, uniExams) = await uniAppTask;
                 var (webGrades, webExams, webProgram, webBooks, webSurveys) = await eamsWebTask;
@@ -761,45 +789,70 @@ public sealed class AcademicService
                 var mergedGrades = MergeGrades(uniGrades, webGrades);
                 var mergedExams = MergeExams(uniExams, webExams);
 
-                var prevSnapshot = LatestData;
-
-                // 若网络完全无响应且已有旧缓存，保留旧缓存
-                if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null && webBooks.Count == 0)
+                bool staleGeneration = false;
+                bool retainedCachedGrades = false;
+                lock (_stateLock)
                 {
-                    if (prevSnapshot != null && prevSnapshot.AllGrades.Count > 0)
+                    if (generation != _cacheGeneration)
                     {
-                        callback?.Invoke(true);
-                        return;
+                        staleGeneration = true;
+                    }
+                    else
+                    {
+                        var prevSnapshot = LatestData;
+
+                        // 若网络完全无响应且已有旧缓存，保留旧缓存
+                        if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null && webBooks.Count == 0 &&
+                            prevSnapshot != null && prevSnapshot.AllGrades.Count > 0)
+                        {
+                            retainedCachedGrades = true;
+                        }
+                        if (!retainedCachedGrades)
+                        {
+                            var studentId = SettingsManager.Shared.CourseStudentId;
+                            if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
+                            if (string.IsNullOrEmpty(studentId)) studentId = "178506";
+
+                            var newSnapshot = new AcademicDataSnapshot
+                            {
+                                StudentId = studentId,
+                                AllGrades = mergedGrades.Count > 0 ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
+                                Exams = mergedExams.Count > 0 ? mergedExams : (prevSnapshot?.Exams ?? new()),
+                                ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
+                                Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
+                                Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
+                                LastGradesSyncTime = DateTime.Now,
+                                LastExamsSyncTime = DateTime.Now
+                            };
+
+                            // 出分静默通知检测
+                            CheckNewGradesNotification(newSnapshot.AllGrades);
+
+                            LatestData = newSnapshot;
+                            SaveCache();
+                        }
                     }
                 }
-
-                var studentId = SettingsManager.Shared.CourseStudentId;
-                if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
-                if (string.IsNullOrEmpty(studentId)) studentId = "178506";
-
-                var newSnapshot = new AcademicDataSnapshot
+                if (staleGeneration)
                 {
-                    StudentId = studentId,
-                    AllGrades = mergedGrades.Count > 0 ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
-                    Exams = mergedExams.Count > 0 ? mergedExams : (prevSnapshot?.Exams ?? new()),
-                    ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
-                    Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
-                    Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
-                    LastGradesSyncTime = DateTime.Now,
-                    LastExamsSyncTime = DateTime.Now
-                };
-
-                // 出分静默通知检测
-                CheckNewGradesNotification(newSnapshot.AllGrades);
-
-                LatestData = newSnapshot;
-                SaveCache();
+                    callback?.Invoke(false);
+                    return;
+                }
+                if (retainedCachedGrades)
+                {
+                    callback?.Invoke(true);
+                    return;
+                }
                 AppEvents.RaiseAcademicDataUpdated();
                 callback?.Invoke(true);
             }
             catch (Exception ex)
             {
-                if (LatestData != null) LatestData.LastErrorMessage = ex.Message;
+                lock (_stateLock)
+                {
+                    if (generation == _cacheGeneration && LatestData != null)
+                        LatestData.LastErrorMessage = ex.Message;
+                }
                 callback?.Invoke(false);
             }
             finally
@@ -1090,16 +1143,29 @@ public sealed class AcademicService
         }
     }
 
-    public void ApplyWebGradeAndExamHtml(string? gradeHtml, string? examHtml)
+    public void ApplyWebGradeAndExamHtml(
+        string? gradeHtml,
+        string? examHtml,
+        long? expectedAccountGeneration = null)
     {
         try
         {
+            if (expectedAccountGeneration.HasValue &&
+                expectedAccountGeneration.Value != AccountSessionManager.Generation)
+                return;
+            long generation;
+            AcademicDataSnapshot? prevSnapshot;
+            lock (_stateLock)
+            {
+                generation = _cacheGeneration;
+                prevSnapshot = LatestData;
+            }
+
             var webGrades = !string.IsNullOrWhiteSpace(gradeHtml) ? ParseGradesHtml(gradeHtml) : new List<GradeItem>();
             var webExams = !string.IsNullOrWhiteSpace(examHtml) ? ParseExamsHtml(examHtml) : new List<ExamItem>();
 
             if (webGrades.Count == 0 && webExams.Count == 0) return;
 
-            var prevSnapshot = LatestData;
             var mergedGrades = MergeGrades(prevSnapshot?.AllGrades ?? new(), webGrades);
             var mergedExams = MergeExams(prevSnapshot?.Exams ?? new(), webExams);
 
@@ -1119,12 +1185,26 @@ public sealed class AcademicService
                 LastExamsSyncTime = DateTime.Now
             };
 
-            CheckNewGradesNotification(newSnapshot.AllGrades);
-            LatestData = newSnapshot;
-            SaveCache();
+            lock (_stateLock)
+            {
+                if (generation != _cacheGeneration ||
+                    (expectedAccountGeneration.HasValue &&
+                     expectedAccountGeneration.Value != AccountSessionManager.Generation)) return;
+                CheckNewGradesNotification(newSnapshot.AllGrades);
+                LatestData = newSnapshot;
+                SaveCache();
+            }
             AppEvents.RaiseAcademicDataUpdated();
         }
         catch { }
+    }
+
+    private bool IsCurrentCacheGeneration(long generation)
+    {
+        lock (_stateLock)
+        {
+            return generation == _cacheGeneration;
+        }
     }
 
     public static List<GradeItem> ParseGradesHtml(string html)

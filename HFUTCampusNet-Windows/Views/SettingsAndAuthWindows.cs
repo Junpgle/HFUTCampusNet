@@ -694,12 +694,19 @@ public class SettingsWindow : Window
     private void SaveSettings()
     {
         var s = SettingsManager.Shared;
+        var previousPortalUsername = (s.PortalUsername ?? string.Empty).Trim();
+        var nextPortalUsername = _portalUsernameBox.Text.Trim();
+        if (!string.Equals(previousPortalUsername, nextPortalUsername, StringComparison.Ordinal))
+        {
+            AccountSessionManager.InvalidateForAccountSwitch(nextPortalUsername);
+        }
+
         var previousDormCampus = s.DormCampus;
         var previousDormBuilding = s.DormBuilding;
         var previousDormRoom = s.DormRoom;
         var previousDormEndNumber = s.DormEndNumber;
 
-        s.PortalUsername = _portalUsernameBox.Text.Trim();
+        s.PortalUsername = nextPortalUsername;
         s.PortalPassword = _portalPasswordBox.Password;
         s.CasPassword = _casPasswordBox.Password;
         s.AutoLoginPortal = _autoLoginCheck.IsChecked == true;
@@ -970,6 +977,11 @@ public class UnifiedLoginWebWindow : Window
     private static UnifiedLoginWebWindow? _shared;
     public static UnifiedLoginWebWindow Shared => _shared ??= new UnifiedLoginWebWindow();
 
+    public static void ClearAuthCookiesForAccountSwitch()
+    {
+        try { _shared?._webView.CoreWebView2?.CookieManager.DeleteAllCookies(); } catch { }
+    }
+
     private readonly WebView2 _webView;
     private readonly TextBlock _statusText;
     private readonly TextBlock _statusDetailText;
@@ -977,6 +989,7 @@ public class UnifiedLoginWebWindow : Window
     private readonly TextBlock[] _stepStatusLabels = new TextBlock[4];
     private readonly StepStatus[] _stepStatuses = new StepStatus[4];
     private readonly Button[] _themeButtons = new Button[4];
+    private long _accountSessionGenerationAtStart;
     private Border _topBar = null!;
     private Border _bottomBar = null!;
     private readonly string[] _stepNames =
@@ -1251,6 +1264,7 @@ public class UnifiedLoginWebWindow : Window
     public async void ShowWindow()
     {
         _hasInterceptedAuth = false;
+        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
         _progressBar.Visibility = Visibility.Visible;
         _statusText.Text = "正在打开统一身份认证登录页...";
         _statusDetailText.Text = "登录成功后，应用将自动同步课表、宿舍电费及校园网自服务";
@@ -1263,6 +1277,7 @@ public class UnifiedLoginWebWindow : Window
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
+        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
         _webView.CoreWebView2.Navigate("https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Fcas.hfut.edu.cn%2Fcas%2Flogin");
     }
 
@@ -1276,6 +1291,7 @@ public class UnifiedLoginWebWindow : Window
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
         _progressBar.Visibility = Visibility.Collapsed;
         if (!e.IsSuccess)
         {
@@ -1349,22 +1365,26 @@ public class UnifiedLoginWebWindow : Window
     public async Task CheckCookiesAndCompleteAsync(bool force = false)
     {
         if (_hasInterceptedAuth && !force) return;
+        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
         if (_webView.CoreWebView2 == null) return;
 
         try
         {
             var cookieList = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn");
+            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
             var tgcCookie = cookieList.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             
             // 兜底查根域名
             if (tgcCookie == null)
             {
                 var allCasCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn/cas/login");
+                if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
                 tgcCookie = allCasCookies.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             }
 
             // 同时检查教务 Cookie
             var jxCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("http://jxglstu.hfut.edu.cn");
+            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
             var sessionCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SESSION", StringComparison.OrdinalIgnoreCase));
             var srvidCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SRVID", StringComparison.OrdinalIgnoreCase));
             if (sessionCookie != null && !string.IsNullOrWhiteSpace(sessionCookie.Value))
@@ -1485,6 +1505,11 @@ public class LoginWebWindow : Window
 {
     private static LoginWebWindow? _shared;
     public static LoginWebWindow Shared => _shared ??= new LoginWebWindow();
+
+    public static void ClearAuthCookiesForAccountSwitch()
+    {
+        try { _shared?._webView.CoreWebView2?.CookieManager.DeleteAllCookies(); } catch { }
+    }
 
     private readonly WebView2 _webView;
     private readonly TextBlock _statusText;
@@ -1838,10 +1863,18 @@ public class CourseLoginWebWindow : Window
     private static CourseLoginWebWindow? _shared;
     public static CourseLoginWebWindow Shared => _shared ??= new CourseLoginWebWindow();
 
+    public static void ClearAuthCookiesForAccountSwitch()
+    {
+        try { _shared?._webView.CoreWebView2?.CookieManager.DeleteAllCookies(); } catch { }
+    }
+
     private readonly WebView2 _webView;
     private readonly TextBlock _statusText;
     private readonly Border _topBar;
     private readonly List<Button> _themeButtons = new();
+    private long _accountSessionGenerationAtStart;
+    private string? _pendingCasUsername;
+    private string? _pendingCasPassword;
 
     public CourseLoginWebWindow()
     {
@@ -1987,12 +2020,16 @@ public class CourseLoginWebWindow : Window
     public async void ShowWindow()
     {
         _isExtracting = false;
+        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
+        _pendingCasUsername = null;
+        _pendingCasPassword = null;
         if (WindowState == WindowState.Minimized)
             WindowState = WindowState.Normal;
         Show();
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
+        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
         _statusText.Text = "请登录教务系统（如已登录将自动同步课表与考试）...";
         // 对齐 Mac 端：直接导航至课表页，教务系统会自动无缝重定向到统一认证登录，登录后携票据自动跳回
         _webView.CoreWebView2.Navigate("http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
@@ -2004,6 +2041,8 @@ public class CourseLoginWebWindow : Window
     {
         try
         {
+            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+
             string raw = e.TryGetWebMessageAsString();
             if (string.IsNullOrWhiteSpace(raw))
             {
@@ -2040,9 +2079,18 @@ public class CourseLoginWebWindow : Window
                 {
                     string u = root.TryGetProperty("username", out var uE) ? uE.GetString() ?? "" : "";
                     string p = root.TryGetProperty("password", out var pE) ? pE.GetString() ?? "" : "";
-                    if (!string.IsNullOrWhiteSpace(u)) SettingsManager.Shared.PortalUsername = u.Trim();
-                    if (!string.IsNullOrWhiteSpace(p)) SettingsManager.Shared.CasPassword = p.Trim();
-                    SettingsManager.Shared.Save();
+                    bool submitted = root.TryGetProperty("submitted", out var submittedElem) &&
+                        submittedElem.ValueKind == JsonValueKind.True;
+                    if (!submitted) return;
+                    if (!string.IsNullOrWhiteSpace(u)) _pendingCasUsername = u.Trim();
+                    if (!string.IsNullOrWhiteSpace(p)) _pendingCasPassword = p.Trim();
+                    return;
+                }
+
+                if (typeStr == "casLoginFailed")
+                {
+                    _pendingCasUsername = null;
+                    _pendingCasPassword = null;
                     return;
                 }
 
@@ -2050,6 +2098,8 @@ public class CourseLoginWebWindow : Window
                 {
                     return;
                 }
+
+                CommitPendingCasCredentialsAfterAuthentication();
             }
             else
             {
@@ -2079,7 +2129,8 @@ public class CourseLoginWebWindow : Window
                 if (root.TryGetProperty("datum", out var dElem) && !string.IsNullOrWhiteSpace(dElem.GetString()))
                 {
                     string datum = dElem.GetString()!;
-                    schedule = CourseScheduleService.Shared.ApplyDatumJSONString(datum, stdId, semId, bizId);
+                    schedule = CourseScheduleService.Shared.ApplyDatumJSONString(
+                        datum, stdId, semId, bizId, _accountSessionGenerationAtStart);
                 }
 
                 // 2. 兜底：通过页内 DOM 表格解析出的 lessons 数组还原
@@ -2127,7 +2178,7 @@ public class CourseLoginWebWindow : Window
                             LastSyncTime = DateTime.Now,
                             Lessons = parsedDomLessons
                         };
-                        CourseScheduleService.Shared.ApplyCustomSchedule(schedule);
+                        CourseScheduleService.Shared.ApplyCustomSchedule(schedule, _accountSessionGenerationAtStart);
                     }
                 }
 
@@ -2137,7 +2188,8 @@ public class CourseLoginWebWindow : Window
                 // 立即就地应用同源提取到的成绩单和考场排考
                 if (!string.IsNullOrWhiteSpace(gradeHtml) || !string.IsNullOrWhiteSpace(examHtml))
                 {
-                    AcademicService.Shared.ApplyWebGradeAndExamHtml(gradeHtml, examHtml);
+                    AcademicService.Shared.ApplyWebGradeAndExamHtml(
+                        gradeHtml, examHtml, _accountSessionGenerationAtStart);
                 }
 
                 if (schedule != null && schedule.Lessons.Count > 0)
@@ -2176,8 +2228,34 @@ public class CourseLoginWebWindow : Window
         }
     }
 
+    private void CommitPendingCasCredentialsAfterAuthentication()
+    {
+        var username = _pendingCasUsername;
+        var password = _pendingCasPassword;
+        _pendingCasUsername = null;
+        _pendingCasPassword = null;
+        if (username == null && password == null) return;
+
+        var settings = SettingsManager.Shared;
+        var previousUsername = (settings.PortalUsername ?? string.Empty).Trim();
+        var currentUsername = username ?? previousUsername;
+        if (!string.Equals(previousUsername, currentUsername, StringComparison.Ordinal))
+        {
+            AccountSessionManager.InvalidateForAccountSwitch(
+                currentUsername,
+                preserveCourseWebViewCookies: true
+            );
+        }
+
+        settings.PortalUsername = currentUsername;
+        if (password != null) settings.CasPassword = password;
+        settings.Save();
+        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
+    }
+
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
         if (!e.IsSuccess) return;
 
         string currentUrl = _webView.Source?.ToString() ?? "";
@@ -2210,25 +2288,36 @@ public class CourseLoginWebWindow : Window
                             var u = document.getElementById('username') || document.getElementById('u') || document.querySelector('input[name=""username""]') || document.querySelector('input[type=""text""]');
                             var p = document.getElementById('pwd') || document.querySelector('input[type=""password""]:not([type=""hidden""])') || document.querySelector('input[type=""password""]') || document.querySelector('input.password');
 
-                            function reportCreds() {{
+                            function reportCreds(submitted) {{
                                 var uVal = u ? u.value.trim() : '';
                                 var pVal = p ? p.value : '';
                                 if ((uVal !== '' || pVal !== '') && window.chrome && window.chrome.webview) {{
-                                    window.chrome.webview.postMessage(JSON.stringify({{ type: 'casCredentials', username: uVal, password: pVal }}));
+                                    window.chrome.webview.postMessage(JSON.stringify({{ type: 'casCredentials', username: uVal, password: pVal, submitted: submitted === true }}));
                                 }}
                             }}
 
                             if (u && !u._hfutBound) {{
                                 u._hfutBound = true;
-                                u.addEventListener('input', reportCreds);
-                                u.addEventListener('change', reportCreds);
-                                u.addEventListener('blur', reportCreds);
+                                u.addEventListener('input', function() {{ reportCreds(false); }});
+                                u.addEventListener('change', function() {{ reportCreds(false); }});
+                                u.addEventListener('blur', function() {{ reportCreds(false); }});
                             }}
                             if (p && !p._hfutBound) {{
                                 p._hfutBound = true;
-                                p.addEventListener('input', reportCreds);
-                                p.addEventListener('change', reportCreds);
-                                p.addEventListener('blur', reportCreds);
+                                p.addEventListener('input', function() {{ reportCreds(false); }});
+                                p.addEventListener('change', function() {{ reportCreds(false); }});
+                                p.addEventListener('blur', function() {{ reportCreds(false); }});
+                            }}
+
+                            var btn = document.getElementById('sb2') || document.querySelector('.button-submit') || document.querySelector('input[type=""submit""]');
+                            if (btn && !btn._hfutCredentialBound) {{
+                                btn._hfutCredentialBound = true;
+                                btn.addEventListener('click', function() {{ reportCreds(true); }}, true);
+                            }}
+                            var form = (u && u.form) || (p && p.form) || document.querySelector('form');
+                            if (form && !form._hfutCredentialBound) {{
+                                form._hfutCredentialBound = true;
+                                form.addEventListener('submit', function() {{ reportCreds(true); }}, true);
                             }}
 
                             if (u && !u.value) {{
@@ -2241,13 +2330,14 @@ public class CourseLoginWebWindow : Window
                                 clearInterval(timer);
                                 // 自动提交登录（若无错误信息且无验证码拦截）
                                 setTimeout(function() {{
-                                    reportCreds();
                                     var errU = document.getElementById('errorusername');
                                     var errP = document.getElementById('errorpassword');
                                     var errG = document.getElementById('error');
                                     var hasErr = (errU && errU.innerText.trim() !== '') || (errP && errP.innerText.trim() !== '') || (errG && errG.innerText.trim() !== '');
                                     var needCode = (typeof isCodeShow !== 'undefined' && isCodeShow) || (typeof isDynamicVercode !== 'undefined' && isDynamicVercode);
-                                    var btn = document.getElementById('sb2') || document.querySelector('.button-submit') || document.querySelector('input[type=""submit""]');
+                                    if (hasErr && window.chrome && window.chrome.webview) {{
+                                        window.chrome.webview.postMessage(JSON.stringify({{ type: 'casLoginFailed' }}));
+                                    }}
                                     if (!hasErr && !needCode && u && u.value && p && p.value && btn) {{
                                         btn.click();
                                     }}
@@ -2264,14 +2354,18 @@ public class CourseLoginWebWindow : Window
         if (currentUrl.Contains("neusoft-sso"))
         {
             _statusText.Text = "🎉 信息门户认证通过！正在建立教务系统会话...";
+            CommitPendingCasCredentialsAfterAuthentication();
             await SyncAllCookiesAsync();
+            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
             return;
         }
 
         // 3. 若处于教务系统其它页面（例如首页），平滑导航前往课表页，同时记录 Cookie
         if (currentUrl.Contains("eams5-student"))
         {
+            CommitPendingCasCredentialsAfterAuthentication();
             await SyncAllCookiesAsync();
+            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
 
             // 从重定向 URL 提取真实 studentId
             var matchId = Regex.Match(currentUrl, @"/for-std/course-table/info/(\d+)");
@@ -2299,6 +2393,7 @@ public class CourseLoginWebWindow : Window
             {
                 _statusText.Text = "🎉 教务会话已就绪！正在前往学生课表页...";
                 await Task.Delay(500);
+                if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
                 _webView.CoreWebView2.Navigate("http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
                 return;
             }
@@ -2316,6 +2411,8 @@ public class CourseLoginWebWindow : Window
     {
         try
         {
+            long accountGeneration = _accountSessionGenerationAtStart;
+            if (accountGeneration != AccountSessionManager.Generation) return;
             if (_webView.CoreWebView2 == null) return;
 
             string? sessionVal = null;
@@ -2335,6 +2432,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync(url);
+                    if (accountGeneration != AccountSessionManager.Generation) return;
                     foreach (var c in cookies)
                     {
                         if (c.Name.Equals("SESSION", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(c.Value))
@@ -2354,6 +2452,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync(url);
+                    if (accountGeneration != AccountSessionManager.Generation) return;
                     var tgc = cookies.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase) || c.Name.Equals("TGC", StringComparison.OrdinalIgnoreCase));
                     if (tgc != null && !string.IsNullOrWhiteSpace(tgc.Value))
                     {
@@ -2370,6 +2469,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var rawDocCookie = await _webView.ExecuteScriptAsync("document.cookie");
+                    if (accountGeneration != AccountSessionManager.Generation) return;
                     if (!string.IsNullOrWhiteSpace(rawDocCookie) && rawDocCookie != "null")
                     {
                         var clean = rawDocCookie.Trim('"');
@@ -2382,6 +2482,7 @@ public class CourseLoginWebWindow : Window
                 catch { }
             }
 
+            if (accountGeneration != AccountSessionManager.Generation) return;
             if (!string.IsNullOrEmpty(sessionVal))
             {
                 var cookieHeader = !string.IsNullOrEmpty(srvidVal)
@@ -2403,6 +2504,8 @@ public class CourseLoginWebWindow : Window
 
     public async Task TriggerInPageExtractionAsync()
     {
+        long accountGeneration = _accountSessionGenerationAtStart;
+        if (accountGeneration != AccountSessionManager.Generation) return;
         if (_webView.CoreWebView2 == null) return;
         if (_isExtracting) return;
         _isExtracting = true;
@@ -2410,6 +2513,11 @@ public class CourseLoginWebWindow : Window
 
         // 1. 同步 Cookie 至 SettingsManager
         await SyncAllCookiesAsync();
+        if (accountGeneration != AccountSessionManager.Generation)
+        {
+            _isExtracting = false;
+            return;
+        }
 
         // 2. 双引擎页内提取：引擎 1 (官方 API) + 引擎 2 (DOM 视觉扫描)
         try
@@ -2759,6 +2867,7 @@ public class CourseLoginWebWindow : Window
                 })()";
 
                 string pollRes = await _webView.ExecuteScriptAsync(pollJs);
+                if (accountGeneration != AccountSessionManager.Generation) return;
                 if (string.IsNullOrWhiteSpace(pollRes) || pollRes == "\"\"" || pollRes == "null")
                     continue;
 
@@ -2790,6 +2899,7 @@ public class CourseLoginWebWindow : Window
 
                     if (!string.IsNullOrWhiteSpace(derivedPwd))
                     {
+                        if (accountGeneration != AccountSessionManager.Generation) return;
                         SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
                         SettingsManager.Shared.Save();
                     }
@@ -2801,7 +2911,8 @@ public class CourseLoginWebWindow : Window
                         string semId = resElem.TryGetProperty("semId", out var smElem) ? smElem.GetString() ?? "" : "";
                         string bizId = resElem.TryGetProperty("bizId", out var bElem) ? bElem.GetString() ?? "" : "";
 
-                        schedule = CourseScheduleService.Shared.ApplyDatumJSONString(datum, stdId, semId, bizId);
+                        schedule = CourseScheduleService.Shared.ApplyDatumJSONString(
+                            datum, stdId, semId, bizId, accountGeneration);
                     }
                     else if (engine == "dom" && resElem.TryGetProperty("lessons", out var lesArr) && lesArr.ValueKind == JsonValueKind.Array)
                     {
@@ -2860,17 +2971,18 @@ public class CourseLoginWebWindow : Window
                                 LastSyncTime = DateTime.Now,
                                 Lessons = allParsedLessons
                             };
-                            CourseScheduleService.Shared.ApplyCustomSchedule(schedule);
+                            CourseScheduleService.Shared.ApplyCustomSchedule(schedule, accountGeneration);
                         }
                     }
 
                     // 立即在 UI 线程同步 Cookie
                     await SyncAllCookiesAsync();
+                    if (accountGeneration != AccountSessionManager.Generation) return;
 
                     // 立即就地应用同源提取到的成绩单和考场排考
                     if (!string.IsNullOrWhiteSpace(gradeHtml) || !string.IsNullOrWhiteSpace(examHtml))
                     {
-                        AcademicService.Shared.ApplyWebGradeAndExamHtml(gradeHtml, examHtml);
+                        AcademicService.Shared.ApplyWebGradeAndExamHtml(gradeHtml, examHtml, accountGeneration);
                     }
 
                     if (schedule != null && schedule.Lessons.Count > 0)

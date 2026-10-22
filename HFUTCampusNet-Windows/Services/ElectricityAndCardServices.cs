@@ -163,6 +163,27 @@ public sealed class ElectricityService
         }
     }
 
+    public void ClearAccountScopedCache()
+    {
+        lock (_stateLock)
+        {
+            _requestGeneration++;
+            LatestData = null;
+            try
+            {
+                if (File.Exists(_cacheFilePath))
+                    File.Delete(_cacheFilePath);
+            }
+            catch { }
+        }
+        lock (_tokenStateLock)
+        {
+            _tokenRequestGeneration++;
+        }
+
+        AppEvents.InvokeOnUI(AppEvents.RaiseDormElectricityUpdated);
+    }
+
     public void FetchData(Action<ElectricityData?, string?>? completion = null)
     {
         _ = Task.Run(async () =>
