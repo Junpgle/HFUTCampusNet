@@ -194,6 +194,7 @@ public final class StudentPortraitEatService {
     public private(set) var lastErrorMessage: String?
     private let stateLock = NSLock()
     private var syncing = false
+    private var syncGeneration = 0
     private var pendingSyncCompletions: [(Result<StudentPortraitEatData, Error>) -> Void] = []
     private let cacheURL: URL = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -216,11 +217,21 @@ public final class StudentPortraitEatService {
     }
 
     public func clearCache() {
-        latestData = nil
+        stateLock.lock()
+        syncGeneration &+= 1
         SettingsManager.shared.ehallAuthToken = nil
+        latestData = nil
+        lastErrorMessage = nil
+        syncing = false
+        let completions = pendingSyncCompletions
+        pendingSyncCompletions.removeAll(keepingCapacity: false)
         try? FileManager.default.removeItem(at: cacheURL)
+        stateLock.unlock()
+
+        let cancellation = Self.error("账号已切换，本次学生画像同步已取消", code: NSURLErrorCancelled)
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .studentPortraitDidUpdate, object: nil)
+            completions.forEach { $0(.failure(cancellation)) }
         }
     }
 
@@ -236,11 +247,23 @@ public final class StudentPortraitEatService {
         }
         syncing = true
         pendingSyncCompletions = completion.map { [$0] } ?? []
+        let generation = syncGeneration
         stateLock.unlock()
 
         let finish: (Result<StudentPortraitEatData, Error>) -> Void = { [weak self] result in
             guard let self else { return }
+            let encodedData: Data?
+            if case .success(let data) = result {
+                encodedData = try? JSONEncoder().encode(data)
+            } else {
+                encodedData = nil
+            }
+
             self.stateLock.lock()
+            guard self.syncGeneration == generation else {
+                self.stateLock.unlock()
+                return
+            }
             if case .success(let data) = result {
                 self.latestData = data
                 self.lastErrorMessage = nil
@@ -250,13 +273,11 @@ public final class StudentPortraitEatService {
             self.syncing = false
             let completions = self.pendingSyncCompletions
             self.pendingSyncCompletions.removeAll(keepingCapacity: false)
+            if let encodedData {
+                try? encodedData.write(to: self.cacheURL, options: .atomic)
+            }
             self.stateLock.unlock()
 
-            if case .success(let data) = result {
-                if let encoded = try? JSONEncoder().encode(data) {
-                    try? encoded.write(to: self.cacheURL, options: .atomic)
-                }
-            }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .studentPortraitDidUpdate, object: self.latestData)
                 completions.forEach { $0(result) }
@@ -268,28 +289,39 @@ public final class StudentPortraitEatService {
                 guard let self else { return }
                 if case .failure(let error) = result,
                    (error as NSError).code == 401 || (error as NSError).code == 403 {
-                    SettingsManager.shared.ehallAuthToken = nil
-                    self.authorizeAndFetch(finish: finish)
+                    guard self.setEhallAuthToken(nil, forGeneration: generation) else { return }
+                    self.authorizeAndFetch(generation: generation, finish: finish)
                 } else {
                     finish(result)
                 }
             }
         } else {
-            authorizeAndFetch(finish: finish)
+            authorizeAndFetch(generation: generation, finish: finish)
         }
     }
 
-    private func authorizeAndFetch(finish: @escaping (Result<StudentPortraitEatData, Error>) -> Void) {
+    private func authorizeAndFetch(
+        generation: Int,
+        finish: @escaping (Result<StudentPortraitEatData, Error>) -> Void
+    ) {
         obtainEhallToken { [weak self] tokenResult in
             guard let self else { return }
             switch tokenResult {
             case .failure(let error):
                 finish(.failure(error))
             case .success(let token):
-                SettingsManager.shared.ehallAuthToken = token
+                guard self.setEhallAuthToken(token, forGeneration: generation) else { return }
                 self.fetchReport(token: token, completion: finish)
             }
         }
+    }
+
+    private func setEhallAuthToken(_ token: String?, forGeneration generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard syncGeneration == generation else { return false }
+        SettingsManager.shared.ehallAuthToken = token
+        return true
     }
 
     private func obtainEhallToken(completion: @escaping (Result<String, Error>) -> Void) {
