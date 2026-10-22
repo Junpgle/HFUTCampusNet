@@ -229,7 +229,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-7).ToString("yyyy-MM-dd");
+                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
                 return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).Sum(r => r.DeltaMB);
             }
         }
@@ -241,7 +241,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-7).ToString("yyyy-MM-dd");
+                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
                 var records = FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.DeltaMB) : 0.0;
             }
@@ -268,7 +268,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-7).ToString("yyyy-MM-dd");
+                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
                 var records = ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0 && r.CostRMB > 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.CostRMB) : 1.20;
             }
@@ -347,7 +347,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = DateTime.Now.Date.AddDays(-days).ToString("yyyy-MM-dd");
+            var cutoff = DateTime.Now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd");
             return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
@@ -358,7 +358,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = DateTime.Now.Date.AddDays(-days).ToString("yyyy-MM-dd");
+            var cutoff = DateTime.Now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd");
             return ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
