@@ -479,10 +479,25 @@ public sealed class CourseScheduleService
                     }
 
                     int? weekIndex = slot.TryGetProperty("weekIndex", out var wiElem) && wiElem.ValueKind == JsonValueKind.Number ? wiElem.GetInt32() : null;
-                    int weekday = slot.TryGetProperty("weekday", out var wdElem) && wdElem.ValueKind == JsonValueKind.Number ? wdElem.GetInt32() : 1;
+                    string dateStr = slot.TryGetProperty("date", out var dtElem) ? dtElem.GetString() ?? "" : "";
+                    int weekday;
+                    if (slot.TryGetProperty("weekday", out var wdElem)
+                        && wdElem.ValueKind == JsonValueKind.Number
+                        && wdElem.TryGetInt32(out var parsedWeekday)
+                        && parsedWeekday is >= 1 and <= 7)
+                    {
+                        weekday = parsedWeekday;
+                    }
+                    else if (CourseCalendarHelper.ParseDate(dateStr, "00:00") is DateTime lessonDate)
+                    {
+                        weekday = CourseCalendarHelper.Weekday(lessonDate);
+                    }
+                    else
+                    {
+                        weekday = 1;
+                    }
                     int startTime = slot.TryGetProperty("startTime", out var stElem) && stElem.ValueKind == JsonValueKind.Number ? stElem.GetInt32() : 800;
                     int endTime = slot.TryGetProperty("endTime", out var etElem) && etElem.ValueKind == JsonValueKind.Number ? etElem.GetInt32() : 940;
-                    string dateStr = slot.TryGetProperty("date", out var dtElem) ? dtElem.GetString() ?? "" : "";
 
                     list.Add(new CourseLesson
                     {
