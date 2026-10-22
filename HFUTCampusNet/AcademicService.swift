@@ -308,7 +308,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
             // 合并考试安排（去重并保留字段最完整的一条）
             let mergedExams = self.mergeExams(uniAppExams: uniAppExams, eamsExams: eamsExams)
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty,
+            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty && eamsSurveys.isEmpty,
                let prev = self.latestData, !prev.allGrades.isEmpty {
                 // 如果本次网络完全失败且已有本地缓存，保留本地缓存
                 self.lastErrorMessage = lastErr?.localizedDescription
@@ -321,7 +321,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 return
             }
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty,
+            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty && eamsSurveys.isEmpty,
                let err = lastErr {
                 self.lastErrorMessage = err.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: nil)
