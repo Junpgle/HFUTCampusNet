@@ -199,6 +199,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         loginSessionUsernameAtStart = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         loginSessionStudentIdAtStart = SettingsManager.shared.courseStudentId
         electricitySyncFailure = nil
+        casLoginCoordinator.resetPendingCredentials()
         casLoginCoordinator.setEnabled(true)
         updateStep(index: 0, text: "1. 统一身份认证", status: .waiting)
         updateStep(index: 1, text: "2. 教务课表同步", status: .waiting)
@@ -453,6 +454,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
               self.syncSessionToken == sessionToken,
               !isSyncingAll else { return }
         isSyncingAll = true
+        casLoginCoordinator.commitPendingCredentials()
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."

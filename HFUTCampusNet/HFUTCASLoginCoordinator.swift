@@ -13,6 +13,7 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
     private var formReady = false
     private var probeToken = UUID()
     private var refreshToken: UUID?
+    private var pendingCredentials: (username: String, password: String)?
 
     var onStatus: ((String) -> Void)?
 
@@ -48,9 +49,28 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
         if !value {
             probeToken = UUID()
             refreshToken = nil
+            pendingCredentials = nil
             formReady = false
             panel.isHidden = true
         }
+    }
+
+    func resetPendingCredentials() {
+        pendingCredentials = nil
+    }
+
+    @discardableResult
+    func commitPendingCredentials() -> (previousUsername: String, currentUsername: String)? {
+        guard let credentials = pendingCredentials else { return nil }
+        pendingCredentials = nil
+
+        let settings = SettingsManager.shared
+        let previousUsername = settings.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentUsername = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentUsername.isEmpty else { return nil }
+        settings.portalUsername = currentUsername
+        settings.casPassword = credentials.password
+        return (previousUsername, currentUsername)
     }
 
     func blockCurrentPage() {
@@ -208,8 +228,7 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
             panel.setStatus("无法准备当前 CAS 表单提交，请切换到网页登录。")
             return
         }
-        SettingsManager.shared.portalUsername = username
-        SettingsManager.shared.casPassword = password
+        pendingCredentials = (username, password)
         formReady = false
         preferWebLogin = false
         probeToken = UUID()
@@ -225,6 +244,7 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
                     self.panel.setStatus(message)
                     self.onStatus?(message)
                 } else if HFUTCASLoginSupport.isLoginPage(webView.url) {
+                    self.pendingCredentials = nil
                     self.formReady = true
                     self.panel.isHidden = false
                     webView.isHidden = true

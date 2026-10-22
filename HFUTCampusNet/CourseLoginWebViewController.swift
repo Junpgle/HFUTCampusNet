@@ -12,6 +12,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     private var isSyncing: Bool = false
     private var sessionToken: UUID = UUID()
     private var sessionUsername = ""
+    private var sessionStudentID = ""
 
     private init() {
         let window = NSWindow(
@@ -104,12 +105,14 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
 
         progressIndicator.startAnimation(nil)
+        casLoginCoordinator.resetPendingCredentials()
         casLoginCoordinator.setEnabled(true)
         statusLabel.stringValue = "请登录教务系统（如已登录将自动同步课表）..."
         statusLabel.textColor = .secondaryLabelColor
         isSyncing = false
         sessionToken = UUID()
         sessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionStudentID = SettingsManager.shared.courseStudentId
         webView.load(request)
     }
 
@@ -253,6 +256,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
         // 检查是否到达课表页面
         if urlStr.contains("/for-std/course-table/info/") || urlStr.contains("/for-std/course-table") {
+            commitAuthenticatedCredentialsIfNeeded()
             triggerAutoExtraction()
         } else if HFUTCASLoginSupport.isCASHost(currentURL) {
             statusLabel.stringValue = "请使用 CAS 原生登录面板输入验证码并继续。"
@@ -264,6 +268,18 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             statusLabel.stringValue = "已加载，如已登录可点击右下角「从当前页读取课表」"
             statusLabel.textColor = .secondaryLabelColor
         }
+    }
+
+    private func commitAuthenticatedCredentialsIfNeeded() {
+        guard let change = casLoginCoordinator.commitPendingCredentials() else { return }
+        if change.currentUsername != change.previousUsername {
+            SettingsWindowController.shared.handleExternalAccountSwitch(
+                previousUsername: change.previousUsername,
+                previousStudentID: sessionStudentID
+            )
+        }
+        sessionUsername = change.currentUsername
+        sessionStudentID = SettingsManager.shared.courseStudentId
     }
 
     private func triggerAutoExtraction() {
