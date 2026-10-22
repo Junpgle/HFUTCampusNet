@@ -21,7 +21,9 @@ if [ -z "$APP_MARKETING_VERSION" ]; then
     fi
 fi
 APP_MARKETING_VERSION="${APP_MARKETING_VERSION#v}"
-if [[ ! "$APP_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "$APP_MARKETING_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-+].*)?$ ]]; then
+    APP_MARKETING_VERSION="${BASH_REMATCH[1]}"
+else
     APP_MARKETING_VERSION="2.2.0"
 fi
 
