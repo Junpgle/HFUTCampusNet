@@ -86,7 +86,7 @@ public struct LibraryPublicStats {
 }
 
 /// 校内图书检索服务（直接调用合工大 OPAC 原生 API，返回结构化 JSON，并支持收藏、书架、预约）
-public final class LibrarySearchService: NSObject, URLSessionDelegate {
+public final class LibrarySearchService: NSObject {
     public static let shared = LibrarySearchService()
 
     private let searchAPI = "https://lib.hfut.edu.cn/svc/circulate/collectionSearch/getCollectionSearch"
@@ -97,17 +97,7 @@ public final class LibrarySearchService: NSObject, URLSessionDelegate {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10.0
         config.timeoutIntervalForResource = 15.0
-        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }
-
-    // 允许学校自签或老旧加密套件握手
-    public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let trust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-            return
-        }
-        completionHandler(.performDefaultHandling, nil)
+        session = URLSession(configuration: config)
     }
 
     /// 执行校内图书检索
