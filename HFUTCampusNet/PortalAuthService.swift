@@ -133,6 +133,15 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         CampusNetworkClient.shared.clearManualLogout()
         let user = (username ?? SettingsManager.shared.portalUsername).trimmingCharacters(in: .whitespacesAndNewlines)
         let pass = (password ?? SettingsManager.shared.portalPassword).trimmingCharacters(in: .whitespacesAndNewlines)
+        let tracksSavedCredentials =
+            SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == user &&
+            SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) == pass
+        func credentialsAreStillCurrent() -> Bool {
+            !tracksSavedCredentials || (
+                SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == user &&
+                SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) == pass
+            )
+        }
 
         guard !user.isEmpty else {
             completion(false, "学号/账号不能为空")
@@ -145,6 +154,10 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
         // 先自检：如果当前已经在在线状态且学号匹配，直接返回成功！
         self.checkStatus { status in
+            guard credentialsAreStillCurrent() else {
+                completion(false, "账号或密码已更改，本次登录已取消")
+                return
+            }
             if case .online(let uid, _, _, _, _) = status,
                (uid == user || uid == "校园网用户") {
                 completion(true, "当前设备已认证在线（学号: \(uid)），网络通畅！")
@@ -152,11 +165,20 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
             }
 
             // 执行 POST 认证请求
-            self.doPostLogin(user: user, pass: pass, completion: completion)
+            self.doPostLogin(
+                user: user,
+                pass: pass,
+                validateSavedCredentials: tracksSavedCredentials,
+                completion: completion)
         }
     }
 
-    private func doPostLogin(user: String, pass: String, completion: @escaping (Bool, String) -> Void) {
+    private func doPostLogin(
+        user: String,
+        pass: String,
+        validateSavedCredentials: Bool,
+        completion: @escaping (Bool, String) -> Void
+    ) {
         let pid = "2"
         let calg = "12345678"
         let tmpchar = "\(pid)\(pass)\(calg)"
@@ -188,6 +210,12 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         request.httpBody = postData
 
         let task = session.dataTask(with: request) { data, response, error in
+            if validateSavedCredentials,
+               (SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) != user ||
+                SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) != pass) {
+                completion(false, "账号或密码已更改，本次登录已取消")
+                return
+            }
             if let error = error {
                 completion(false, "网络请求错误: \(error.localizedDescription)")
                 return
@@ -218,6 +246,12 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
                 // 延时再次确认当前状态
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                     self.checkStatus { status in
+                        if validateSavedCredentials,
+                           (SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) != user ||
+                            SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) != pass) {
+                            completion(false, "账号或密码已更改，本次登录已取消")
+                            return
+                        }
                         switch status {
                         case .online:
                             completion(true, "登录成功！网络已连通")
