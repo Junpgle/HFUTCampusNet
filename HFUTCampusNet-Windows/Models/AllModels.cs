@@ -1780,8 +1780,20 @@ public sealed class StudyRoomSelectionRecord
         get
         {
             var today = EmptyClassroomService.TodayDateString();
-            return EmptyClassroomService.Shared.CachedRooms.FirstOrDefault(r => r.RoomId == RoomId && (r.DateString == today || r.DateString == DateString))
-                ?? EmptyClassroomService.Shared.CachedRooms.FirstOrDefault(r => r.RoomId == RoomId);
+            var matchingRooms = EmptyClassroomService.Shared.CachedRooms
+                .Where(r => r.RoomId == RoomId)
+                .ToList();
+            if (CampusId != 0)
+            {
+                matchingRooms = matchingRooms.Where(r => r.CampusId == CampusId).ToList();
+            }
+            else if (matchingRooms.Select(r => r.CampusId).Distinct().Count() > 1)
+            {
+                return null;
+            }
+
+            return matchingRooms.FirstOrDefault(r => r.DateString == today || r.DateString == DateString)
+                ?? matchingRooms.FirstOrDefault();
         }
     }
 
