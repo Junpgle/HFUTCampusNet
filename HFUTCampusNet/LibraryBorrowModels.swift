@@ -73,10 +73,11 @@ public struct CampusBorrowedBook: Codable, Identifiable, Equatable {
         guard !isReturned, !dueDate.isEmpty else { return nil }
         let dateStr = String(dueDate.prefix(10))
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        let calendar = CourseCalendarHelper.beijingCalendar
         formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone.current
+        formatter.timeZone = calendar.timeZone
         guard let due = formatter.date(from: dateStr) else { return nil }
-        let calendar = Calendar.current
         let startOfToday = calendar.startOfDay(for: Date())
         let startOfDue = calendar.startOfDay(for: due)
         let components = calendar.dateComponents([.day], from: startOfToday, to: startOfDue)
