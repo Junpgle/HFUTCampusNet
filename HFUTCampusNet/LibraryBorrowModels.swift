@@ -569,13 +569,16 @@ public final class LibraryBorrowManager {
 
                 let allBooks = accumulated + parsedBooks
                 DispatchQueue.main.async {
-                    guard self.isCurrentSyncGeneration(generation) else {
+                    self.stateLock.lock()
+                    guard self.syncGeneration == generation else {
+                        self.stateLock.unlock()
                         completion(.failure(Self.cancelledError()))
                         return
                     }
                     self.books = allBooks
                     self.recordSync()
                     self.saveToStorage()
+                    self.stateLock.unlock()
                     completion(.success(allBooks))
                 }
             } catch {
