@@ -884,7 +884,8 @@ public sealed class AcademicService
                         var prevSnapshot = LatestData;
 
                         // 若网络完全无响应且已有旧缓存，保留旧缓存
-                        if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null && webBooks.Count == 0 &&
+                        if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null &&
+                            webBooks.Count == 0 && webSurveys.Count == 0 &&
                             prevSnapshot != null && prevSnapshot.AllGrades.Count > 0)
                         {
                             retainedCachedGrades = true;
