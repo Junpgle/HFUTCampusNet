@@ -865,6 +865,8 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
         searchGeneration &+= 1
         let generation = searchGeneration
         isSearching = true
+        searchResults.removeAll(keepingCapacity: true)
+        resultTableView.reloadData()
         searchStatusLabel.stringValue = "正在通过校内 OPAC 引擎检索「\(keyword)」全校馆藏与借阅状态…"
         resultEmptyLabel.stringValue = "正在检索全校图书…"
         resultEmptyLabel.isHidden = false

@@ -135,13 +135,22 @@ public final class LibrarySearchService: NSObject {
             return
         }
 
-        session.dataTask(with: req) { data, _, error in
+        session.dataTask(with: req) { data, response, error in
             if let error = error {
                 DispatchQueue.main.async { completion(.failure(error)) }
                 return
             }
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let message = statusCode >= 0 ? "图书检索请求失败 (HTTP \(statusCode))" : "图书检索响应状态无效"
+                let responseError = NSError(domain: "LibrarySearch", code: statusCode, userInfo: [NSLocalizedDescriptionKey: message])
+                DispatchQueue.main.async { completion(.failure(responseError)) }
+                return
+            }
             guard let data = data else {
-                DispatchQueue.main.async { completion(.success([])) }
+                let responseError = NSError(domain: "LibrarySearch", code: -2, userInfo: [NSLocalizedDescriptionKey: "图书检索响应为空"])
+                DispatchQueue.main.async { completion(.failure(responseError)) }
                 return
             }
 
@@ -150,7 +159,8 @@ public final class LibrarySearchService: NSObject {
                       let dataObj = json["data"] as? [String: Any],
                       let innerData = dataObj["data"] as? [String: Any],
                       let rows = innerData["rows"] as? [[String: Any]] else {
-                    DispatchQueue.main.async { completion(.success([])) }
+                    let responseError = NSError(domain: "LibrarySearch", code: -3, userInfo: [NSLocalizedDescriptionKey: "图书检索响应格式异常"])
+                    DispatchQueue.main.async { completion(.failure(responseError)) }
                     return
                 }
 
