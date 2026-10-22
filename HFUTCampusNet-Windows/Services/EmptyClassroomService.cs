@@ -679,7 +679,10 @@ public sealed class EmptyClassroomService
                     AddSnapshotOrKeepCache(campusId, tomorrow, await tomorrowTask, allResults);
                 }
 
-                if (allResults.Count > 0)
+                var hasCompleteSnapshot = campusesToSync.Any(campusId =>
+                    IsCampusSnapshotComplete(campusId, today)
+                    || IsCampusSnapshotComplete(campusId, tomorrow));
+                if (allResults.Count > 0 || hasCompleteSnapshot)
                 {
                     // 将新拉取校区的数据合并进 CachedRooms，替换旧的该校区数据
                     var merged = CachedRooms.Where(r => !campusesToSync.Contains(r.CampusId)).ToList();
