@@ -105,9 +105,19 @@ public class UpdateChecker {
     private func fetchReleasesListFallback(manual: Bool, completion: ((Result<GitHubReleaseInfo?, Error>) -> Void)?) {
         let listUrlStr = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases?per_page=5"
         guard let url = URL(string: listUrlStr) else {
+            let error = NSError(
+                domain: "UpdateChecker",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "无效的 GitHub Releases 列表地址"]
+            )
             DispatchQueue.main.async {
+                let showManual = manual || self.pendingManualFeedback
                 self.isChecking = false
                 self.pendingManualFeedback = false
+                completion?(.failure(error))
+                if showManual {
+                    self.showErrorAlert(message: error.localizedDescription)
+                }
             }
             return
         }
@@ -123,33 +133,69 @@ public class UpdateChecker {
                 self.isChecking = false
                 self.pendingManualFeedback = false
 
-                if let error = error {
+                func fail(_ error: Error, message: String) {
                     completion?(.failure(error))
                     if showManual {
-                        self.showErrorAlert(message: "无法连接到 GitHub 检查更新：\(error.localizedDescription)")
+                        self.showErrorAlert(message: message)
                     }
+                }
+
+                if let error = error {
+                    fail(error, message: "无法连接到 GitHub 检查更新：\(error.localizedDescription)")
                     return
                 }
 
                 let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard httpStatus == 200, let data = data,
-                      let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                    if showManual {
-                        self.showUpToDateAlert(latestVersion: self.currentVersion)
-                    }
-                    completion?(.success(nil))
+                guard httpStatus == 200 else {
+                    let error = NSError(
+                        domain: "UpdateChecker",
+                        code: httpStatus,
+                        userInfo: [NSLocalizedDescriptionKey: "GitHub Releases 列表请求失败 (HTTP \(httpStatus))"]
+                    )
+                    fail(error, message: "获取 Release 列表失败 (HTTP \(httpStatus))，请稍后再试。")
                     return
                 }
 
-                if let first = list.first, let releaseInfo = self.parseReleaseJSON(first) {
-                    self.handleReleaseResult(releaseInfo, manual: showManual, completion: completion)
-                } else {
+                guard let data = data else {
+                    let error = NSError(
+                        domain: "UpdateChecker",
+                        code: -2,
+                        userInfo: [NSLocalizedDescriptionKey: "GitHub Releases 列表响应为空"]
+                    )
+                    fail(error, message: "GitHub Releases 列表响应为空，请稍后再试。")
+                    return
+                }
+
+                guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                    let error = NSError(
+                        domain: "UpdateChecker",
+                        code: -3,
+                        userInfo: [NSLocalizedDescriptionKey: "GitHub Releases 列表响应格式异常"]
+                    )
+                    fail(error, message: "GitHub Releases 列表响应格式异常，请稍后再试。")
+                    return
+                }
+
+                guard let first = list.first else {
                     // 仓库尚未发布任何 Release，视为当前已是最新
                     if showManual {
                         self.showUpToDateAlert(latestVersion: self.currentVersion)
                     }
                     completion?(.success(nil))
+                    return
                 }
+
+                guard let releaseInfo = self.parseReleaseJSON(first) else {
+                    let error = NSError(
+                        domain: "UpdateChecker",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: "GitHub Release 条目缺少有效版本信息"]
+                    )
+                    fail(error, message: "GitHub Release 信息格式异常，请稍后再试。")
+                    return
+                }
+
+                self.handleReleaseResult(releaseInfo, manual: showManual, completion: completion)
             }
         }.resume()
     }
