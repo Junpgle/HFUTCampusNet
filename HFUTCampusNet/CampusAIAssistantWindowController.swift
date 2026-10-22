@@ -193,6 +193,7 @@ private final class CampusAIWeakScriptMessageHandler: NSObject, WKScriptMessageH
 }
 
 private struct CampusAIPendingLookupSend {
+    let sendRequestID: UUID
     let question: String
     let agentID: String
     let modelID: String
@@ -247,6 +248,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var historyDeleteSession: URLSession?
     private var historyDeleteRequestID: UUID?
     private var pendingLookupSend: CampusAIPendingLookupSend?
+    private var activeSendRequestID: UUID?
     private var emptyHistoryAgentID: String?
     private var emptyHistoryNavigationID: UUID?
     private var sending = false
@@ -264,6 +266,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private var automaticNavigationAttempts = Set<String>()
     // 完整 SSO 跳转由信息门户及其注册应用发起；本客户端不构造 ST/service。
     private var portalNavigationID = UUID()
+    private var assistantViewRequestID = UUID()
 
     private init() {
         let w = NSWindow(
@@ -461,18 +464,23 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     public func showAssistant() {
+        let requestID = UUID()
+        assistantViewRequestID = requestID
+        let navigationID = portalNavigationID
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self = self,
+                      self.assistantViewRequestID == requestID,
+                      self.portalNavigationID == navigationID else { return }
                 if self.hasAISession(cookies) {
                     self.displayChat(status: "检测到 AI 平台会话，正在自动准备最近会话…")
                     let agentID = self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                     self.prepareRecentGroupIfNeeded(
                         agentID: agentID, allCookies: cookies,
                         referer: self.aiRefererURL(for: agentID),
-                        navigationID: self.portalNavigationID
+                        navigationID: navigationID
                     )
                 } else {
                     self.openInformationPortal()
@@ -487,6 +495,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func displayChat(status: String) {
+        assistantViewRequestID = UUID()
         displayingLogin = false
         nativeCASFormReady = false
         preferWebLoginForCurrentCASPage = false
@@ -503,6 +512,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     // 让学校信息门户发起 AI 应用的 SSO 跳转，不能自行猜测 CAS service 值。
     private func openInformationPortal() {
+        assistantViewRequestID = UUID()
         closeHistoryPopover()
         if sending {
             activeClient?.cancel()
@@ -538,10 +548,14 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     @objc private func showChat() {
+        let requestID = UUID()
+        assistantViewRequestID = requestID
         let navigationID = portalNavigationID
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.portalNavigationID == navigationID else { return }
+                guard let self = self,
+                      self.assistantViewRequestID == requestID,
+                      self.portalNavigationID == navigationID else { return }
                 let hasSession = self.hasAISession(cookies)
                 self.displayChat(status: hasSession
                     ? "检测到 AI 平台会话，正在自动准备最近会话…"
@@ -818,8 +832,11 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
 
+        assistantViewRequestID = UUID()
         defaults.set(agentID, forKey: "campus_ai_agent_id")
         defaults.set(modelID, forKey: "campus_ai_model_id")
+        let sendRequestID = UUID()
+        activeSendRequestID = sendRequestID
         let thinkingMode = selectedThinkingMode()
         activeThinkingMarkdown = ""
         activeThinkingStart = nil
@@ -840,7 +857,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
             DispatchQueue.main.async {
-                guard let self = self, self.sending else { return }
+                guard let self = self, self.sending,
+                      self.activeSendRequestID == sendRequestID else { return }
                 let cookies = CampusAIEndpoint.cookies(from: all, requestPath: CampusAIEndpoint.chatSendPath)
                 let saveCookies = CampusAIEndpoint.cookies(from: all, requestPath: CampusAIEndpoint.chatSavePath)
                 guard let aiFlow = CampusAIEndpoint.aiFlowCookie(from: cookies)?.value else {
@@ -857,6 +875,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     if self.activeLookupTask != nil { self.cancelGroupLookup() }
                     let referer = self.aiRefererURL(for: agentID)
                     let pending = CampusAIPendingLookupSend(
+                        sendRequestID: sendRequestID,
                         question: question, agentID: agentID, modelID: modelID,
                         thinkingMode: thinkingMode, attachments: attachments,
                         allCookies: all,
@@ -864,7 +883,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         referer: referer, navigationID: self.portalNavigationID
                     )
                     if attachments.isEmpty {
-                        self.startStreaming(question: question, groupID: currentGroupID,
+                        self.startStreaming(sendRequestID: sendRequestID,
+                                            question: question, groupID: currentGroupID,
                                             modelID: modelID, thinkingMode: thinkingMode,
                                             cookies: cookies, aiFlow: aiFlow,
                                             referer: referer)
@@ -874,6 +894,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 } else {
                     let referer = self.aiRefererURL(for: agentID)
                     self.pendingLookupSend = CampusAIPendingLookupSend(
+                        sendRequestID: sendRequestID,
                         question: question, agentID: agentID, modelID: modelID,
                         thinkingMode: thinkingMode, attachments: attachments,
                         allCookies: all,
@@ -906,6 +927,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             return
         }
 
+        assistantViewRequestID = UUID()
         if sending {
             activeClient?.cancel()
             cancelGroupLookup()
@@ -1368,7 +1390,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                             return
                         }
                         if pending.attachments.isEmpty {
-                            self.startStreaming(question: pending.question, groupID: selectedGroupID,
+                            self.startStreaming(sendRequestID: pending.sendRequestID,
+                                                question: pending.question, groupID: selectedGroupID,
                                                 modelID: pending.modelID, thinkingMode: pending.thinkingMode,
                                                 cookies: pending.cookies,
                                                 aiFlow: pending.aiFlow, referer: pending.referer)
@@ -1409,7 +1432,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func createSessionAndSend(_ pending: CampusAIPendingLookupSend) {
-        guard sending, pendingLookupSend?.navigationID == pending.navigationID,
+        guard sending, activeSendRequestID == pending.sendRequestID,
+              pendingLookupSend?.sendRequestID == pending.sendRequestID,
+              pendingLookupSend?.navigationID == pending.navigationID,
               pending.navigationID == portalNavigationID,
               pending.agentID == agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) else {
             complete("智能体页面已变化，未创建会话；请重新发送。")
@@ -1469,6 +1494,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             session.finishTasksAndInvalidate()
             DispatchQueue.main.async {
                 guard let self = self, self.activeLookupID == lookupID,
+                      self.activeSendRequestID == pending.sendRequestID,
                       self.portalNavigationID == pending.navigationID,
                       self.pendingLookupSend?.agentID == pending.agentID else { return }
                 self.activeLookupID = nil
@@ -1481,7 +1507,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 }
                 self.groupField.stringValue = groupID
                 self.pendingLookupSend = nil
-                self.startStreaming(question: pending.question, groupID: groupID,
+                self.startStreaming(sendRequestID: pending.sendRequestID,
+                                    question: pending.question, groupID: groupID,
                                     modelID: pending.modelID, thinkingMode: pending.thinkingMode,
                                     cookies: pending.cookies,
                                     aiFlow: pending.aiFlow, referer: pending.referer)
@@ -1514,7 +1541,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     }
 
     private func prepareAttachmentsAndSend(_ pending: CampusAIPendingLookupSend, existingGroupID: String?) {
-        guard sending, pending.navigationID == portalNavigationID,
+        guard sending, activeSendRequestID == pending.sendRequestID,
+              pending.navigationID == portalNavigationID,
               pending.agentID == agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
               !pending.attachments.isEmpty else {
             complete("智能体页面已变化，附件未发送；请重新发送。")
@@ -1530,11 +1558,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             referer: pending.referer,
             onProgress: { [weak self] message in
                 guard let self = self, self.sending,
+                      self.activeSendRequestID == pending.sendRequestID,
                       self.portalNavigationID == pending.navigationID else { return }
                 self.statusLabel.stringValue = message
             },
             completion: { [weak self] result in
                 guard let self = self, self.sending,
+                      self.activeSendRequestID == pending.sendRequestID,
                       self.portalNavigationID == pending.navigationID,
                       self.agentField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == pending.agentID else { return }
                 self.activeAttachmentClient = nil
@@ -1543,6 +1573,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     self.groupField.stringValue = identifiers.groupID
                     self.statusLabel.stringValue = "附件已登记，正在发送问题…"
                     self.startStreaming(
+                        sendRequestID: pending.sendRequestID,
                         question: messageText,
                         groupID: identifiers.groupID,
                         modelID: pending.modelID,
@@ -1578,12 +1609,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
             ?? CampusAIEndpoint.agentReferer(agentID: agentID)
     }
 
-    private func startStreaming(question: String, groupID: String, modelID: String,
+    private func startStreaming(sendRequestID: UUID, question: String, groupID: String, modelID: String,
                                 thinkingMode: CampusAIThinkingMode,
                                 cookies: [HTTPCookie], aiFlow: String, referer: URL?) {
         statusLabel.stringValue = "已连接，等待智能体回复…"
         let client = CampusAIStreamClient { [weak self] event in
-            guard let self = self else { return }
+            guard let self = self,
+                  self.activeSendRequestID == sendRequestID else { return }
             switch event {
             case .thinkingStarted:
                 self.beginThinkingSection()
@@ -1700,6 +1732,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
 
     private func complete(_ error: String?) {
         guard sending else { return }
+        activeSendRequestID = nil
         activeAttachmentClient?.cancel()
         activeAttachmentClient = nil
         pendingLookupSend = nil
