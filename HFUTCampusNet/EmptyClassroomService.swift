@@ -7,6 +7,8 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
     private static let uniAppBaseURL = "https://jwglapp.hfut.edu.cn"
     private static let rsaPublicKeyBase64 = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCFY5N+9UX+0BF+xz1svFguI4CIDvmQTfINkOZ1HOO3ltBNHGQTUirUPQTyEph/+q/l8b16YYw3I2fyTH6y15s3tHf5jMei+R/20jFRGo5udwVJUwq/RozKQIRzCtPYkXG4YWBnHKhXalZ5K2fhd5i/QtB016nVugH/7eiBDWbKVwIDAQAB"
+    private static let roomPageSize = 350
+    private static let maximumRoomPages = 50
 
     public private(set) var allBuildings: [ClassroomBuilding] = []
     /// 内存缓存：key 为 "\(campus.rawValue)|\(dateString)|\(buildingIdsKey)"
@@ -1056,7 +1058,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                         let freshRooms = pageRooms.filter { knownIds.insert($0.id).inserted }
                         accumulated.append(contentsOf: freshRooms)
 
-                        guard pageRooms.count == 350 else {
+                        guard pageRooms.count == Self.roomPageSize else {
                             let sortedRooms = accumulated.sorted { a, b in
                                 if a.buildingPrefix != b.buildingPrefix {
                                     return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
@@ -1072,7 +1074,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                             return
                         }
 
-                        guard !freshRooms.isEmpty, page < 50 else {
+                        guard !freshRooms.isEmpty, page < Self.maximumRoomPages else {
                             let estimate = CampusDiningEstimate.calculate(campus: campus, dateString: dateString, rooms: accumulated, isComplete: false)
                             completion(.success(estimate))
                             return
@@ -1193,6 +1195,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         allowRetry: Bool,
         currentPage: Int = 1,
         cacheResult: Bool = true,
+        accumulatedRooms: [EmptyClassroomItem] = [],
         completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
     ) {
         guard let url = URL(string: "\(Self.uniAppBaseURL)/eams-micro-server/api/v1/room/place/rooms") else {
@@ -1209,7 +1212,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             "currentPage": currentPage,
             "date": dateString,
             "campusAssoc": campus.rawValue,
-            "pageSize": 350
+            "pageSize": Self.roomPageSize
         ]
         if !buildingIds.isEmpty {
             bodyDict["buildingIds"] = buildingIds
@@ -1237,7 +1240,31 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                let data = data,
                let root = try? JSONDecoder().decode(RoomsResponseRoot.self, from: data),
                let rooms = root.data?.data {
-                let sortedRooms = rooms.sorted { a, b in
+                if cacheResult, rooms.count == Self.roomPageSize {
+                    guard currentPage < Self.maximumRoomPages else {
+                        completion(.failure(NSError(
+                            domain: "EmptyClassroom",
+                            code: -3,
+                            userInfo: [NSLocalizedDescriptionKey: "空教室数据超过分页上限，未保存不完整结果"]
+                        )))
+                        return
+                    }
+                    self.requestRoomsWithToken(
+                        token: token,
+                        dateString: dateString,
+                        campus: campus,
+                        buildingIds: buildingIds,
+                        cacheKey: cacheKey,
+                        allowRetry: true,
+                        currentPage: currentPage + 1,
+                        cacheResult: true,
+                        accumulatedRooms: accumulatedRooms + rooms,
+                        completion: completion
+                    )
+                    return
+                }
+
+                let sortedRooms = (accumulatedRooms + rooms).sorted { a, b in
                     if a.buildingPrefix != b.buildingPrefix {
                         return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
                     }
@@ -1275,6 +1302,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                             allowRetry: false,
                             currentPage: currentPage,
                             cacheResult: cacheResult,
+                            accumulatedRooms: accumulatedRooms,
                             completion: completion
                         )
                     case .failure(let err):
