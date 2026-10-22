@@ -454,8 +454,12 @@ public sealed class EmptyClassroomService
         }
     }
 
-    public async Task<string?> EnsureValidTokenAsync(bool forceRelogin = false)
+    public async Task<string?> EnsureValidTokenAsync(
+        bool forceRelogin = false,
+        long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
         long tokenGeneration;
         lock (_tokenGenerationLock)
         {
@@ -465,34 +469,28 @@ public sealed class EmptyClassroomService
         await _tokenLock.WaitAsync();
         try
         {
-            if (!IsCurrentTokenGeneration(tokenGeneration))
+            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                 return null;
 
-            if (!forceRelogin)
+            string? savedJwt = null;
+            string? username = null;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
-                lock (_tokenGenerationLock)
-                {
-                    if (_tokenGeneration != tokenGeneration)
-                        return null;
+                savedJwt = SettingsManager.Shared.UniAppJwt?.Trim();
+                username = SettingsManager.Shared.PortalUsername?.Trim();
+                if (string.IsNullOrEmpty(username)) username = SettingsManager.Shared.CasUsername?.Trim();
+                if (string.IsNullOrEmpty(username)) username = SettingsManager.Shared.CourseStudentId?.Trim();
+            })) return null;
 
-                    var savedJwt = SettingsManager.Shared.UniAppJwt?.Trim();
-                    if (!string.IsNullOrEmpty(savedJwt))
-                    {
-                        return savedJwt;
-                    }
-                }
-            }
-
-            var username = SettingsManager.Shared.PortalUsername?.Trim();
-            if (string.IsNullOrEmpty(username)) username = SettingsManager.Shared.CasUsername?.Trim();
-            if (string.IsNullOrEmpty(username)) username = SettingsManager.Shared.CourseStudentId?.Trim();
+            if (!forceRelogin && !string.IsNullOrEmpty(savedJwt)) return savedJwt;
 
             if (string.IsNullOrEmpty(username))
             {
                 return null;
             }
 
-            var candidatePasswords = await ResolveCandidatePasswordsAsync();
+            var candidatePasswords = await ResolveCandidatePasswordsAsync(accountGeneration);
+            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration)) return null;
             if (candidatePasswords.Count == 0)
             {
                 return null;
@@ -500,7 +498,7 @@ public sealed class EmptyClassroomService
 
             foreach (var rawPwd in candidatePasswords)
             {
-                if (!IsCurrentTokenGeneration(tokenGeneration))
+                if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                     return null;
 
                 var encryptedPwd = RsaEncrypt(rawPwd, RsaPublicKeyBase64);
@@ -525,11 +523,15 @@ public sealed class EmptyClassroomService
                             {
                                 lock (_tokenGenerationLock)
                                 {
-                                    if (_tokenGeneration != tokenGeneration)
+                                    if (_tokenGeneration != tokenGeneration ||
+                                        !AccountSessionManager.IsGenerationCurrent(accountGeneration))
                                         return null;
 
-                                    SettingsManager.Shared.UniAppJwt = token;
-                                    SettingsManager.Shared.Save();
+                                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                                    {
+                                        SettingsManager.Shared.UniAppJwt = token;
+                                        SettingsManager.Shared.Save();
+                                    })) return null;
                                     return token;
                                 }
                             }
@@ -555,36 +557,43 @@ public sealed class EmptyClassroomService
         }
     }
 
-    private bool IsCurrentTokenGeneration(long tokenGeneration)
+    private bool IsCurrentTokenGeneration(long tokenGeneration, long accountGeneration)
     {
         lock (_tokenGenerationLock)
         {
-            return _tokenGeneration == tokenGeneration;
+            return _tokenGeneration == tokenGeneration &&
+                AccountSessionManager.IsGenerationCurrent(accountGeneration);
         }
     }
 
-    private async Task<List<string>> ResolveCandidatePasswordsAsync()
+    private async Task<List<string>> ResolveCandidatePasswordsAsync(long accountGeneration)
     {
         var list = new List<string>();
+        string? casPwd = null;
+        string? portalPwd = null;
+        string? cached = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            casPwd = SettingsManager.Shared.CasPassword?.Trim();
+            portalPwd = SettingsManager.Shared.PortalPassword?.Trim();
+            cached = SettingsManager.Shared.JxglstuDefaultPasswordCache?.Trim();
+        })) return list;
 
         // 1. 教务 UniApp 密码主源为统一身份认证 CAS 密码
-        var casPwd = SettingsManager.Shared.CasPassword?.Trim();
         if (!string.IsNullOrEmpty(casPwd) && !list.Contains(casPwd))
         {
             list.Add(casPwd);
         }
 
         // 2. 辅源：门户/校园网密码
-        var portalPwd = SettingsManager.Shared.PortalPassword?.Trim();
         if (!string.IsNullOrEmpty(portalPwd) && !list.Contains(portalPwd))
         {
             list.Add(portalPwd);
         }
 
         // 3. 兜底备选：若之前缓存过教务默认密码
-        if (!string.IsNullOrEmpty(SettingsManager.Shared.JxglstuDefaultPasswordCache))
+        if (!string.IsNullOrEmpty(cached))
         {
-            var cached = SettingsManager.Shared.JxglstuDefaultPasswordCache.Trim();
             if (!list.Contains(cached))
             {
                 list.Add(cached);
@@ -593,11 +602,15 @@ public sealed class EmptyClassroomService
         else
         {
             // 若尚未推导过且前序密码可能未设置，尝试从教务网页端推导默认密码兜底
-            var derived = await FetchJxglstuDefaultPasswordAsync();
+            var derived = await FetchJxglstuDefaultPasswordAsync(accountGeneration);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return list;
             if (!string.IsNullOrEmpty(derived))
             {
-                SettingsManager.Shared.JxglstuDefaultPasswordCache = derived;
-                SettingsManager.Shared.Save();
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                {
+                    SettingsManager.Shared.JxglstuDefaultPasswordCache = derived;
+                    SettingsManager.Shared.Save();
+                })) return list;
                 if (!list.Contains(derived))
                 {
                     list.Add(derived);
@@ -608,13 +621,15 @@ public sealed class EmptyClassroomService
         return list;
     }
 
-    private async Task<string?> FetchJxglstuDefaultPasswordAsync()
+    private async Task<string?> FetchJxglstuDefaultPasswordAsync(long accountGeneration)
     {
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
         try
         {
             var stdId = SettingsManager.Shared.CourseStudentId?.Trim();
-            var cookie = await CourseScheduleService.Shared.EnsureSessionAsync();
-            if (string.IsNullOrEmpty(cookie))
+            var cookie = await CourseScheduleService.Shared.EnsureSessionAsync(
+                expectedAccountGeneration: accountGeneration);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(cookie))
             {
                 return null;
             }
@@ -630,6 +645,7 @@ public sealed class EmptyClassroomService
                     tableReq.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
                     tableReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
                     using var tableRes = await _client.SendAsync(tableReq);
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
                     if (tableRes.IsSuccessStatusCode)
                     {
                         var tHtml = await tableRes.Content.ReadAsStringAsync();
@@ -637,8 +653,11 @@ public sealed class EmptyClassroomService
                         if (m.Success)
                         {
                             stdId = m.Groups[1].Value;
-                            SettingsManager.Shared.CourseStudentId = stdId;
-                            SettingsManager.Shared.Save();
+                            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                            {
+                                SettingsManager.Shared.CourseStudentId = stdId;
+                                SettingsManager.Shared.Save();
+                            })) return null;
                         }
                     }
                 }
@@ -648,13 +667,17 @@ public sealed class EmptyClassroomService
             if (string.IsNullOrEmpty(stdId)) return null;
 
             var derived = await RequestDefaultPasswordFromInfoAsync(stdId, cleanCookie);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
             if (!string.IsNullOrEmpty(derived))
             {
                 return derived;
             }
 
             // 若第一次解析失败可能是 session 过期，强制刷新 session 重试一次
-            var refreshedCookie = await CourseScheduleService.Shared.EnsureSessionAsync(forceRefresh: true);
+            var refreshedCookie = await CourseScheduleService.Shared.EnsureSessionAsync(
+                forceRefresh: true,
+                expectedAccountGeneration: accountGeneration);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
             if (!string.IsNullOrEmpty(refreshedCookie) && refreshedCookie != cookie)
             {
                 var cleanRefreshed = refreshedCookie.Contains("SESSION=") ? refreshedCookie : $"SESSION={refreshedCookie}";

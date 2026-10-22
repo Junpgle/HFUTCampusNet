@@ -292,6 +292,7 @@ public class SettingsWindow : Window
         var bindHuixinBtn = CreateSecondaryButton("⚡ 一键绑定慧新生活 (电费/一卡通)", () =>
         {
             SaveSettings();
+            var accountGeneration = AccountSessionManager.Generation;
             _cookieStatusBlock.Text = "⏳ 正在通过保存的学号与密码请求慧新生活授权 Token...";
             ElectricityService.Shared.ObtainHuiXinToken((token, err) =>
             {
@@ -299,8 +300,11 @@ public class SettingsWindow : Window
                 {
                     if (!string.IsNullOrWhiteSpace(token))
                     {
-                        SettingsManager.Shared.HuixinAuthToken = token;
-                        SettingsManager.Shared.Save();
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            SettingsManager.Shared.HuixinAuthToken = token;
+                            SettingsManager.Shared.Save();
+                        })) return;
                         ElectricityService.Shared.FetchData();
                         CampusCardService.Shared.FetchData();
                         AppEvents.RaiseAuthStatusUpdated();
@@ -706,9 +710,13 @@ public class SettingsWindow : Window
         var previousDormRoom = s.DormRoom;
         var previousDormEndNumber = s.DormEndNumber;
 
-        s.PortalUsername = nextPortalUsername;
-        s.PortalPassword = _portalPasswordBox.Password;
-        s.CasPassword = _casPasswordBox.Password;
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            s.PortalUsername = nextPortalUsername;
+            s.PortalPassword = _portalPasswordBox.Password;
+            s.CasPassword = _casPasswordBox.Password;
+        })) return;
         s.AutoLoginPortal = _autoLoginCheck.IsChecked == true;
 
         if (_campusCombo.SelectedItem is ComboBoxItem cItem && cItem.Tag != null)
@@ -1277,7 +1285,7 @@ public class UnifiedLoginWebWindow : Window
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
-        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _webView.CoreWebView2.Navigate("https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Fcas.hfut.edu.cn%2Fcas%2Flogin");
     }
 
@@ -1291,7 +1299,7 @@ public class UnifiedLoginWebWindow : Window
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _progressBar.Visibility = Visibility.Collapsed;
         if (!e.IsSuccess)
         {
@@ -1365,42 +1373,47 @@ public class UnifiedLoginWebWindow : Window
     public async Task CheckCookiesAndCompleteAsync(bool force = false)
     {
         if (_hasInterceptedAuth && !force) return;
-        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+        var accountGeneration = _accountSessionGenerationAtStart;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
 
         try
         {
             var cookieList = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn");
-            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
             var tgcCookie = cookieList.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             
             // 兜底查根域名
             if (tgcCookie == null)
             {
                 var allCasCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn/cas/login");
-                if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                 tgcCookie = allCasCookies.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             }
 
             // 同时检查教务 Cookie
             var jxCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("http://jxglstu.hfut.edu.cn");
-            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
             var sessionCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SESSION", StringComparison.OrdinalIgnoreCase));
             var srvidCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SRVID", StringComparison.OrdinalIgnoreCase));
-            if (sessionCookie != null && !string.IsNullOrWhiteSpace(sessionCookie.Value))
-            {
-                var cookieHeader = srvidCookie != null && !string.IsNullOrWhiteSpace(srvidCookie.Value)
+            var sessionHeader = sessionCookie != null && !string.IsNullOrWhiteSpace(sessionCookie.Value)
+                ? srvidCookie != null && !string.IsNullOrWhiteSpace(srvidCookie.Value)
                     ? $"SESSION={sessionCookie.Value}; SRVID={srvidCookie.Value}"
-                    : $"SESSION={sessionCookie.Value}";
-                SettingsManager.Shared.CourseSessionCookie = cookieHeader;
-                SettingsManager.Shared.Save();
-            }
+                    : $"SESSION={sessionCookie.Value}"
+                : null;
+            var tgcValue = tgcCookie != null && !string.IsNullOrWhiteSpace(tgcCookie.Value)
+                ? tgcCookie.Value
+                : null;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                if (sessionHeader != null) SettingsManager.Shared.CourseSessionCookie = sessionHeader;
+                if (tgcValue != null) SettingsManager.Shared.CasTgcCookie = tgcValue;
+                if (sessionHeader != null || tgcValue != null) SettingsManager.Shared.Save();
+            })) return;
 
-            if (tgcCookie != null && !string.IsNullOrWhiteSpace(tgcCookie.Value))
+            if (tgcValue != null)
             {
                 _hasInterceptedAuth = true;
-                SettingsManager.Shared.CasTgcCookie = tgcCookie.Value;
-                SettingsManager.Shared.Save();
                 AppEvents.RaiseAuthStatusUpdated();
 
                 _statusText.Text = "✅ 已捕获统一认证凭证 (CASTGC)！正在换取慧新生活与教务授权...";
@@ -1414,18 +1427,24 @@ public class UnifiedLoginWebWindow : Window
                 {
                     try
                     {
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                         await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                         ElectricityService.Shared.FetchData();
                         CampusCardService.Shared.FetchData();
-                        await CourseScheduleService.Shared.ExchangeCasTicketForEamsSessionAsync(tgcCookie.Value);
+                        await CourseScheduleService.Shared.ExchangeCasTicketForEamsSessionAsync(tgcValue, accountGeneration);
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                         AppEvents.InvokeOnUI(() =>
                         {
                             UpdateStep(1, StepStatus.Success);
                             UpdateStep(2, StepStatus.InProgress);
                         });
-                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
-                        CourseScheduleService.Shared.SyncSchedule();
-                        AcademicService.Shared.SyncAll(silent: false);
+                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                            forceRelogin: true,
+                            expectedAccountGeneration: accountGeneration);
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        CourseScheduleService.Shared.SyncSchedule(expectedAccountGeneration: accountGeneration);
+                        AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
                         EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
                         AppEvents.RaiseAuthStatusUpdated();
                     }
@@ -1515,6 +1534,7 @@ public class LoginWebWindow : Window
     private readonly TextBlock _statusText;
     private readonly Border _topBar;
     private readonly List<Button> _themeButtons = new();
+    private long _accountSessionGenerationAtStart;
 
     public LoginWebWindow()
     {
@@ -1643,12 +1663,14 @@ public class LoginWebWindow : Window
 
     public async void ShowWindow()
     {
+        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
         if (WindowState == WindowState.Minimized)
             WindowState = WindowState.Normal;
         Show();
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _statusText.Text = "正在连接校园网自服务系统，若已保存账号密码将自动填充...";
         _webView.CoreWebView2.Navigate("https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
     }
@@ -1658,6 +1680,7 @@ public class LoginWebWindow : Window
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         if (!e.IsSuccess) return;
 
         string currentUrl = _webView.Source?.ToString() ?? "";
@@ -1718,19 +1741,22 @@ public class LoginWebWindow : Window
 
         // 离开登录页后，延迟短暂时间等待仪表盘 DOM 渲染完成后自动提取
         await Task.Delay(500);
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         await ExtractDashboardData(manual: false);
     }
 
     private async Task ExtractDashboardData(bool manual = false)
     {
+        long accountGeneration = _accountSessionGenerationAtStart;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
 
         var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://xywzz.hfut.edu.cn:8443");
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         var jsession = cookies.FirstOrDefault(c => c.Name.Equals("JSESSIONID", StringComparison.OrdinalIgnoreCase));
         if (jsession != null && !string.IsNullOrWhiteSpace(jsession.Value))
         {
-            SettingsManager.Shared.SessionCookie = $"JSESSIONID={jsession.Value}";
-            SettingsManager.Shared.Save();
+            if (!CampusNetworkClient.Shared.TrySetSessionCookie($"JSESSIONID={jsession.Value}", accountGeneration)) return;
             AppEvents.RaiseAuthStatusUpdated();
         }
 
@@ -1793,6 +1819,7 @@ public class LoginWebWindow : Window
                     return JSON.stringify(res);
                 })();";
             var rawDom = await _webView.ExecuteScriptAsync(domScript);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
             if (!string.IsNullOrWhiteSpace(rawDom) && rawDom != "null")
             {
                 string jsonDom = rawDom;
@@ -1806,7 +1833,7 @@ public class LoginWebWindow : Window
                 string? a = root.TryGetProperty("avail", out var aE) ? aE.GetString() : null;
                 string? b = root.TryGetProperty("bal", out var bE) ? bE.GetString() : null;
                 string? p = root.TryGetProperty("prot", out var pE) ? pE.GetString() : null;
-                if (CampusNetworkClient.Shared.ApplyExplicitDashboardData(u, a, b, p))
+                if (CampusNetworkClient.Shared.ApplyExplicitDashboardData(u, a, b, p, accountGeneration))
                 {
                     _statusText.Text = "✅ 成功提取自服务流量与余额！正在自动返回...";
                     await Task.Delay(1200);
@@ -1819,6 +1846,7 @@ public class LoginWebWindow : Window
 
         // 2. 备用 HTML 正则提取
         string rawHtml = await _webView.ExecuteScriptAsync("document.documentElement.outerHTML");
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         if (!string.IsNullOrWhiteSpace(rawHtml) && rawHtml != "null")
         {
             string fullHtml = "";
@@ -1831,7 +1859,7 @@ public class LoginWebWindow : Window
                 fullHtml = rawHtml.Trim('"');
             }
 
-            if (CampusNetworkClient.Shared.ApplyParsedDashboardHTML(fullHtml))
+            if (CampusNetworkClient.Shared.ApplyParsedDashboardHTML(fullHtml, accountGeneration))
             {
                 _statusText.Text = "✅ 成功提取自服务流量与在线设备！正在自动返回...";
                 await Task.Delay(1200);
@@ -2029,7 +2057,7 @@ public class CourseLoginWebWindow : Window
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
-        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _statusText.Text = "请登录教务系统（如已登录将自动同步课表与考试）...";
         // 对齐 Mac 端：直接导航至课表页，教务系统会自动无缝重定向到统一认证登录，登录后携票据自动跳回
         _webView.CoreWebView2.Navigate("http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
@@ -2041,7 +2069,7 @@ public class CourseLoginWebWindow : Window
     {
         try
         {
-            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
 
             string raw = e.TryGetWebMessageAsString();
             if (string.IsNullOrWhiteSpace(raw))
@@ -2119,8 +2147,11 @@ public class CourseLoginWebWindow : Window
 
                 if (!string.IsNullOrWhiteSpace(derivedPwd))
                 {
-                    SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
-                    SettingsManager.Shared.Save();
+                    if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+                    {
+                        SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
+                        SettingsManager.Shared.Save();
+                    })) return;
                 }
 
                 CourseScheduleData? schedule = null;
@@ -2163,18 +2194,27 @@ public class CourseLoginWebWindow : Window
 
                     if (parsedDomLessons.Count > 0)
                     {
-                        if (!string.IsNullOrEmpty(stdId)) SettingsManager.Shared.CourseStudentId = stdId;
-                        if (!string.IsNullOrEmpty(semId)) SettingsManager.Shared.CourseSemesterId = semId;
-                        if (!string.IsNullOrEmpty(bizId)) SettingsManager.Shared.CourseBizTypeId = bizId;
-                        SettingsManager.Shared.Save();
+                        string effectiveStdId = string.Empty;
+                        string effectiveSemId = string.Empty;
+                        string effectiveBizId = string.Empty;
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            if (!string.IsNullOrEmpty(stdId)) SettingsManager.Shared.CourseStudentId = stdId;
+                            if (!string.IsNullOrEmpty(semId)) SettingsManager.Shared.CourseSemesterId = semId;
+                            if (!string.IsNullOrEmpty(bizId)) SettingsManager.Shared.CourseBizTypeId = bizId;
+                            SettingsManager.Shared.Save();
+                            effectiveStdId = SettingsManager.Shared.CourseStudentId;
+                            effectiveSemId = SettingsManager.Shared.CourseSemesterId;
+                            effectiveBizId = SettingsManager.Shared.CourseBizTypeId;
+                        })) return;
 
                         int.TryParse(semId, out int sIdNum);
                         schedule = new CourseScheduleData
                         {
-                            StudentId = !string.IsNullOrEmpty(stdId) ? stdId : SettingsManager.Shared.CourseStudentId,
-                            SemesterId = !string.IsNullOrEmpty(semId) ? semId : SettingsManager.Shared.CourseSemesterId,
+                            StudentId = effectiveStdId,
+                            SemesterId = effectiveSemId,
                             SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
-                            BizTypeId = !string.IsNullOrEmpty(bizId) ? bizId : SettingsManager.Shared.CourseBizTypeId,
+                            BizTypeId = effectiveBizId,
                             LastSyncTime = DateTime.Now,
                             Lessons = parsedDomLessons
                         };
@@ -2200,9 +2240,12 @@ public class CourseLoginWebWindow : Window
                     {
                         try
                         {
-                            await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
+                            await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                                forceRelogin: true,
+                                expectedAccountGeneration: _accountSessionGenerationAtStart);
+                            if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
                             EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
-                            AcademicService.Shared.SyncAll(silent: false);
+                            AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: _accountSessionGenerationAtStart);
                         }
                         catch { }
                     });
@@ -2247,15 +2290,19 @@ public class CourseLoginWebWindow : Window
             );
         }
 
-        settings.PortalUsername = currentUsername;
-        if (password != null) settings.CasPassword = password;
-        settings.Save();
-        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            settings.PortalUsername = currentUsername;
+            if (password != null) settings.CasPassword = password;
+            settings.Save();
+        })) return;
+        _accountSessionGenerationAtStart = accountGeneration;
     }
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         if (!e.IsSuccess) return;
 
         string currentUrl = _webView.Source?.ToString() ?? "";
@@ -2356,7 +2403,7 @@ public class CourseLoginWebWindow : Window
             _statusText.Text = "🎉 信息门户认证通过！正在建立教务系统会话...";
             CommitPendingCasCredentialsAfterAuthentication();
             await SyncAllCookiesAsync();
-            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
             return;
         }
 
@@ -2365,14 +2412,17 @@ public class CourseLoginWebWindow : Window
         {
             CommitPendingCasCredentialsAfterAuthentication();
             await SyncAllCookiesAsync();
-            if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
 
             // 从重定向 URL 提取真实 studentId
             var matchId = Regex.Match(currentUrl, @"/for-std/course-table/info/(\d+)");
             if (matchId.Success)
             {
-                SettingsManager.Shared.CourseStudentId = matchId.Groups[1].Value;
-                SettingsManager.Shared.Save();
+                if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+                {
+                    SettingsManager.Shared.CourseStudentId = matchId.Groups[1].Value;
+                    SettingsManager.Shared.Save();
+                })) return;
             }
 
             if (!string.IsNullOrEmpty(SettingsManager.Shared.CourseSessionCookie))
@@ -2381,9 +2431,14 @@ public class CourseLoginWebWindow : Window
                 {
                     try
                     {
-                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
+                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                            forceRelogin: true,
+                            expectedAccountGeneration: _accountSessionGenerationAtStart);
+                        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
                         EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true, null);
-                        AcademicService.Shared.SyncAll(silent: false, null);
+                        AcademicService.Shared.SyncAll(
+                            silent: false,
+                            expectedAccountGeneration: _accountSessionGenerationAtStart);
                     }
                     catch { }
                 });
@@ -2393,7 +2448,7 @@ public class CourseLoginWebWindow : Window
             {
                 _statusText.Text = "🎉 教务会话已就绪！正在前往学生课表页...";
                 await Task.Delay(500);
-                if (_accountSessionGenerationAtStart != AccountSessionManager.Generation) return;
+                if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
                 _webView.CoreWebView2.Navigate("http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
                 return;
             }
@@ -2412,7 +2467,7 @@ public class CourseLoginWebWindow : Window
         try
         {
             long accountGeneration = _accountSessionGenerationAtStart;
-            if (accountGeneration != AccountSessionManager.Generation) return;
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
             if (_webView.CoreWebView2 == null) return;
 
             string? sessionVal = null;
@@ -2432,7 +2487,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync(url);
-                    if (accountGeneration != AccountSessionManager.Generation) return;
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                     foreach (var c in cookies)
                     {
                         if (c.Name.Equals("SESSION", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(c.Value))
@@ -2452,7 +2507,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync(url);
-                    if (accountGeneration != AccountSessionManager.Generation) return;
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                     var tgc = cookies.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase) || c.Name.Equals("TGC", StringComparison.OrdinalIgnoreCase));
                     if (tgc != null && !string.IsNullOrWhiteSpace(tgc.Value))
                     {
@@ -2469,7 +2524,7 @@ public class CourseLoginWebWindow : Window
                 try
                 {
                     var rawDocCookie = await _webView.ExecuteScriptAsync("document.cookie");
-                    if (accountGeneration != AccountSessionManager.Generation) return;
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                     if (!string.IsNullOrWhiteSpace(rawDocCookie) && rawDocCookie != "null")
                     {
                         var clean = rawDocCookie.Trim('"');
@@ -2482,21 +2537,21 @@ public class CourseLoginWebWindow : Window
                 catch { }
             }
 
-            if (accountGeneration != AccountSessionManager.Generation) return;
-            if (!string.IsNullOrEmpty(sessionVal))
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
-                var cookieHeader = !string.IsNullOrEmpty(srvidVal)
-                    ? $"SESSION={sessionVal}; SRVID={srvidVal}"
-                    : $"SESSION={sessionVal}";
-                SettingsManager.Shared.CourseSessionCookie = cookieHeader;
-            }
+                if (!string.IsNullOrEmpty(sessionVal))
+                {
+                    var cookieHeader = !string.IsNullOrEmpty(srvidVal)
+                        ? $"SESSION={sessionVal}; SRVID={srvidVal}"
+                        : $"SESSION={sessionVal}";
+                    SettingsManager.Shared.CourseSessionCookie = cookieHeader;
+                }
 
-            if (!string.IsNullOrEmpty(tgcVal))
-            {
-                SettingsManager.Shared.CasTgcCookie = tgcVal;
-            }
+                if (!string.IsNullOrEmpty(tgcVal))
+                    SettingsManager.Shared.CasTgcCookie = tgcVal;
 
-            SettingsManager.Shared.Save();
+                SettingsManager.Shared.Save();
+            })) return;
             AppEvents.RaiseAuthStatusUpdated();
         }
         catch { }
@@ -2505,7 +2560,7 @@ public class CourseLoginWebWindow : Window
     public async Task TriggerInPageExtractionAsync()
     {
         long accountGeneration = _accountSessionGenerationAtStart;
-        if (accountGeneration != AccountSessionManager.Generation) return;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
         if (_isExtracting) return;
         _isExtracting = true;
@@ -2513,7 +2568,7 @@ public class CourseLoginWebWindow : Window
 
         // 1. 同步 Cookie 至 SettingsManager
         await SyncAllCookiesAsync();
-        if (accountGeneration != AccountSessionManager.Generation)
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
         {
             _isExtracting = false;
             return;
@@ -2867,7 +2922,7 @@ public class CourseLoginWebWindow : Window
                 })()";
 
                 string pollRes = await _webView.ExecuteScriptAsync(pollJs);
-                if (accountGeneration != AccountSessionManager.Generation) return;
+                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                 if (string.IsNullOrWhiteSpace(pollRes) || pollRes == "\"\"" || pollRes == "null")
                     continue;
 
@@ -2899,9 +2954,11 @@ public class CourseLoginWebWindow : Window
 
                     if (!string.IsNullOrWhiteSpace(derivedPwd))
                     {
-                        if (accountGeneration != AccountSessionManager.Generation) return;
-                        SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
-                        SettingsManager.Shared.Save();
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
+                            SettingsManager.Shared.Save();
+                        })) return;
                     }
 
                     if (engine == "api")
@@ -2977,7 +3034,7 @@ public class CourseLoginWebWindow : Window
 
                     // 立即在 UI 线程同步 Cookie
                     await SyncAllCookiesAsync();
-                    if (accountGeneration != AccountSessionManager.Generation) return;
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
 
                     // 立即就地应用同源提取到的成绩单和考场排考
                     if (!string.IsNullOrWhiteSpace(gradeHtml) || !string.IsNullOrWhiteSpace(examHtml))
@@ -2994,9 +3051,12 @@ public class CourseLoginWebWindow : Window
                         {
                             try
                             {
-                                await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
+                                await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                                    forceRelogin: true,
+                                    expectedAccountGeneration: accountGeneration);
+                                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                                 EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
-                                AcademicService.Shared.SyncAll(silent: false);
+                                AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
                             }
                             catch { }
                         });
@@ -3032,7 +3092,7 @@ public class CourseLoginWebWindow : Window
             {
                 if (ok)
                 {
-                    AcademicService.Shared.SyncAll(silent: false);
+                    AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
                     _statusText.Text = "🎉 课表与考试数据同步成功！";
                     Task.Delay(1200).ContinueWith(_ => AppEvents.InvokeOnUI(Hide));
                 }

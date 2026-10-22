@@ -186,12 +186,17 @@ public sealed class ElectricityService
 
     public void FetchData(Action<ElectricityData?, string?>? completion = null)
     {
+        var accountGeneration = AccountSessionManager.Generation;
         _ = Task.Run(async () =>
         {
             var (data, err) = await FetchDataAsync();
-            if (completion != null)
+            if (completion != null && AccountSessionManager.IsGenerationCurrent(accountGeneration))
             {
-                AppEvents.InvokeOnUI(() => completion(data, err));
+                AppEvents.InvokeOnUI(() =>
+                {
+                    if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                        completion(data, err);
+                });
             }
         });
     }
@@ -201,6 +206,9 @@ public sealed class ElectricityService
     /// </summary>
     public async Task<(ElectricityData? Data, string? ErrorMessage)> FetchDataAsync()
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+            return (null, StaleRequestMessage);
         var dorm = DormIdentity.Capture(SettingsManager.Shared);
         long generation;
         lock (_stateLock)
@@ -213,28 +221,31 @@ public sealed class ElectricityService
             return (null, "尚未配置宿舍楼栋与房间号，请在「设置」中填写您的宿舍信息");
         }
 
-        var token = SettingsManager.Shared.HuixinAuthToken;
+        string? token = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            token = SettingsManager.Shared.HuixinAuthToken))
+            return (null, StaleRequestMessage);
         if (!string.IsNullOrWhiteSpace(token))
         {
-            var (firstData, firstErr, isConfigErr) = await ExecuteFeeQueryAsync(token!, generation, dorm);
+            var (firstData, firstErr, isConfigErr) = await ExecuteFeeQueryAsync(token!, generation, dorm, accountGeneration);
             if (firstData != null)
             {
                 return (firstData, null);
             }
-            if (!IsCurrentRequest(generation, dorm))
+            if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage);
 
             // Token 可能失效，尝试通过已保存学号密码静默重新登录
             var (newToken, loginErr) = await ObtainHuiXinTokenAsync(
-                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, tokenValue));
-            if (!IsCurrentRequest(generation, dorm))
+                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, accountGeneration, tokenValue));
+            if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage);
             if (!string.IsNullOrWhiteSpace(newToken))
             {
-                var (retryData, retryErr, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm);
+                var (retryData, retryErr, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm, accountGeneration);
                 if (retryData != null)
                     return (retryData, null);
-                if (!IsCurrentRequest(generation, dorm))
+                if (!IsCurrentRequest(generation, dorm, accountGeneration))
                     return (null, StaleRequestMessage);
                 return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : retryErr);
             }
@@ -244,26 +255,31 @@ public sealed class ElectricityService
         else
         {
             var (newToken, loginErr) = await ObtainHuiXinTokenAsync(
-                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, tokenValue));
-            if (!IsCurrentRequest(generation, dorm))
+                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, accountGeneration, tokenValue));
+            if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage);
             if (string.IsNullOrWhiteSpace(newToken))
             {
                 return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
             }
-            var (data, err, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm);
+            var (data, err, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm, accountGeneration);
             return (data, err);
         }
     }
 
     public void ObtainHuiXinToken(Action<string?, string?>? completion)
     {
+        var accountGeneration = AccountSessionManager.Generation;
         _ = Task.Run(async () =>
         {
             var (token, err) = await ObtainHuiXinTokenAsync();
-            if (completion != null)
+            if (completion != null && AccountSessionManager.IsGenerationCurrent(accountGeneration))
             {
-                AppEvents.InvokeOnUI(() => completion(token, err));
+                AppEvents.InvokeOnUI(() =>
+                {
+                    if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                        completion(token, err);
+                });
             }
         });
     }
@@ -276,15 +292,24 @@ public sealed class ElectricityService
 
     internal async Task<(string? Token, string? ErrorMessage)> ObtainHuiXinTokenAsync(Func<string, bool>? tryPersistToken)
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+            return (null, "账号已切换");
         long tokenGeneration;
         lock (_tokenStateLock)
         {
             tokenGeneration = _tokenRequestGeneration;
         }
 
-        var username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
-        var portalPwd = (SettingsManager.Shared.PortalPassword ?? string.Empty).Trim();
-        var casPwd = (SettingsManager.Shared.CasPassword ?? string.Empty).Trim();
+        string username = string.Empty;
+        string portalPwd = string.Empty;
+        string casPwd = string.Empty;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
+            portalPwd = (SettingsManager.Shared.PortalPassword ?? string.Empty).Trim();
+            casPwd = (SettingsManager.Shared.CasPassword ?? string.Empty).Trim();
+        })) return (null, "账号已切换");
 
         var candidates = new List<string>();
         if (!string.IsNullOrEmpty(portalPwd))
@@ -325,7 +350,8 @@ public sealed class ElectricityService
                     {
                         lock (_tokenStateLock)
                         {
-                            if (tokenGeneration != _tokenRequestGeneration)
+                            if (tokenGeneration != _tokenRequestGeneration ||
+                                !AccountSessionManager.IsGenerationCurrent(accountGeneration))
                                 return (null, "授权结果已过期，请重新操作");
 
                             if (tryPersistToken != null)
@@ -335,7 +361,9 @@ public sealed class ElectricityService
                             }
                             else
                             {
-                                SettingsManager.Shared.HuixinAuthToken = accessToken;
+                                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                                    SettingsManager.Shared.HuixinAuthToken = accessToken))
+                                    return (null, "授权结果已过期，请重新操作");
                             }
                         }
                         return (accessToken, null);
@@ -354,9 +382,10 @@ public sealed class ElectricityService
     private async Task<(ElectricityData? Data, string? ErrorMessage, bool IsRoomConfigError)> ExecuteFeeQueryAsync(
         string token,
         long generation,
-        DormIdentity dorm)
+        DormIdentity dorm,
+        long accountGeneration)
     {
-        if (!IsCurrentRequest(generation, dorm))
+        if (!IsCurrentRequest(generation, dorm, accountGeneration))
             return (null, StaleRequestMessage, false);
 
         var campus = dorm.Campus;
@@ -415,19 +444,19 @@ public sealed class ElectricityService
             req.Headers.TryAddWithoutValidation("Authorization", authHeader);
             req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
             using var resp = await _httpClient.SendAsync(req);
-            if (!IsCurrentRequest(generation, dorm))
+            if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage, false);
 
             int statusCode = (int)resp.StatusCode;
             if (statusCode == 401 || statusCode == 403)
             {
-                ClearExpiredTokenIfCurrent(token, generation, dorm);
+                ClearExpiredTokenIfCurrent(token, generation, dorm, accountGeneration);
                 return (null, "登录凭据已过期", false);
             }
 
             var respBytes = await resp.Content.ReadAsByteArrayAsync();
             var respText = Encoding.UTF8.GetString(respBytes);
-            if (!IsCurrentRequest(generation, dorm))
+            if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage, false);
 
             using var doc = JsonDocument.Parse(respText);
@@ -442,7 +471,7 @@ public sealed class ElectricityService
                 codeElem.TryGetInt32(out int jsonCode) &&
                 (jsonCode == 401 || jsonCode == 403))
             {
-                ClearExpiredTokenIfCurrent(token, generation, dorm);
+                ClearExpiredTokenIfCurrent(token, generation, dorm, accountGeneration);
                 return (null, "登录凭据已过期", false);
             }
 
@@ -544,7 +573,7 @@ public sealed class ElectricityService
                 RawDetails = stringMap
             };
 
-            if (!await CommitFetchedDataAsync(elecData, generation, dorm).ConfigureAwait(false))
+            if (!await CommitFetchedDataAsync(elecData, generation, dorm, accountGeneration).ConfigureAwait(false))
                 return (null, StaleRequestMessage, false);
 
             return (elecData, null, false);
@@ -555,61 +584,66 @@ public sealed class ElectricityService
         }
     }
 
-    private bool IsCurrentRequest(long generation, DormIdentity dorm)
+    private bool IsCurrentRequest(long generation, DormIdentity dorm, long accountGeneration)
     {
         lock (_stateLock)
         {
-            return IsCurrentRequestLocked(generation, dorm);
+            return IsCurrentRequestLocked(generation, dorm, accountGeneration);
         }
     }
 
-    private bool IsCurrentRequestLocked(long generation, DormIdentity dorm) =>
-        _requestGeneration == generation && dorm.Matches(SettingsManager.Shared);
+    private bool IsCurrentRequestLocked(long generation, DormIdentity dorm, long accountGeneration) =>
+        _requestGeneration == generation &&
+        AccountSessionManager.IsGenerationCurrent(accountGeneration) &&
+        dorm.Matches(SettingsManager.Shared);
 
-    private void ClearExpiredTokenIfCurrent(string token, long generation, DormIdentity dorm)
+    private void ClearExpiredTokenIfCurrent(string token, long generation, DormIdentity dorm, long accountGeneration)
     {
         lock (_stateLock)
         {
-            if (IsCurrentRequestLocked(generation, dorm) &&
-                string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+            if (!IsCurrentRequestLocked(generation, dorm, accountGeneration)) return;
+            AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
-                SettingsManager.Shared.HuixinAuthToken = null;
-            }
+                if (string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+                    SettingsManager.Shared.HuixinAuthToken = null;
+            });
         }
     }
 
-    private bool TryPersistTokenForCurrentRequest(long generation, DormIdentity dorm, string token)
+    private bool TryPersistTokenForCurrentRequest(long generation, DormIdentity dorm, long accountGeneration, string token)
     {
         lock (_stateLock)
         {
-            if (!IsCurrentRequestLocked(generation, dorm))
+            if (!IsCurrentRequestLocked(generation, dorm, accountGeneration))
                 return false;
 
-            SettingsManager.Shared.HuixinAuthToken = token;
-            return true;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                SettingsManager.Shared.HuixinAuthToken = token);
         }
     }
 
-    private Task<bool> CommitFetchedDataAsync(ElectricityData data, long generation, DormIdentity dorm)
+    private Task<bool> CommitFetchedDataAsync(ElectricityData data, long generation, DormIdentity dorm, long accountGeneration)
     {
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         AppEvents.InvokeOnUI(() =>
         {
             try
             {
-                bool committed;
+                bool committed = false;
                 lock (_stateLock)
                 {
-                    committed = IsCurrentRequestLocked(generation, dorm);
-                    if (committed)
+                    if (IsCurrentRequestLocked(generation, dorm, accountGeneration))
                     {
-                        SaveCachedData(data);
-                        if (data.BalanceRMB.HasValue)
+                        committed = AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                         {
-                            CampusHistoryManager.Shared.RecordElectricity(data.BalanceRMB.Value, data.RemainingKWh);
-                        }
-                        CheckLowBalanceWarning(data);
-                        AppEvents.RaiseDormElectricityUpdated();
+                            SaveCachedData(data);
+                            if (data.BalanceRMB.HasValue)
+                            {
+                                CampusHistoryManager.Shared.RecordElectricity(data.BalanceRMB.Value, data.RemainingKWh);
+                            }
+                            CheckLowBalanceWarning(data);
+                            AppEvents.RaiseDormElectricityUpdated();
+                        });
                     }
                 }
                 completion.TrySetResult(committed);
@@ -660,31 +694,37 @@ public sealed class ElectricityService
     /// </summary>
     public async Task<(string? Flow, string? Balance)> FetchSchoolNetInfoFromHuiXinAsync()
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return (null, null);
         long tokenGeneration;
         lock (_tokenStateLock)
         {
             tokenGeneration = _tokenRequestGeneration;
         }
 
-        var token = SettingsManager.Shared.HuixinAuthToken;
+        string? token = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            token = SettingsManager.Shared.HuixinAuthToken))
+            return (null, null);
         if (string.IsNullOrWhiteSpace(token))
         {
             var (newToken, _) = await ObtainHuiXinTokenAsync(
-                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, tokenValue));
-            if (!IsCurrentTokenGeneration(tokenGeneration) || string.IsNullOrWhiteSpace(newToken))
+                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, accountGeneration, tokenValue));
+            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration) || string.IsNullOrWhiteSpace(newToken))
                 return (null, null);
-            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false, tokenGeneration: tokenGeneration);
+            return await QuerySchoolNetHuiXinInternalAsync(newToken!, false, tokenGeneration, accountGeneration);
         }
 
-        return await QuerySchoolNetHuiXinInternalAsync(token!, allowRetry: true, tokenGeneration: tokenGeneration);
+        return await QuerySchoolNetHuiXinInternalAsync(token!, true, tokenGeneration, accountGeneration);
     }
 
     private async Task<(string? Flow, string? Balance)> QuerySchoolNetHuiXinInternalAsync(
         string token,
         bool allowRetry,
-        long tokenGeneration)
+        long tokenGeneration,
+        long accountGeneration)
     {
-        if (!IsCurrentTokenGeneration(tokenGeneration))
+        if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
             return (null, null);
 
         try
@@ -698,12 +738,12 @@ public sealed class ElectricityService
             req.Content = new StringContent("feeitemid=281&type=IEC&level=0", Encoding.UTF8, "application/x-www-form-urlencoded");
 
             using var resp = await _httpClient.SendAsync(req);
-            if (!IsCurrentTokenGeneration(tokenGeneration))
+            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                 return (null, null);
 
             int httpStatus = (int)resp.StatusCode;
             var respText = await resp.Content.ReadAsStringAsync();
-            if (!IsCurrentTokenGeneration(tokenGeneration))
+            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                 return (null, null);
 
             JsonDocument? doc = null;
@@ -725,7 +765,7 @@ public sealed class ElectricityService
             {
                 if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
-                    if (!TryResolveSchoolNetRetryToken(token, tokenGeneration, out var retryToken))
+                    if (!TryResolveSchoolNetRetryToken(token, tokenGeneration, accountGeneration, out var retryToken))
                         return (null, null);
 
                     if (allowRetry)
@@ -734,13 +774,13 @@ public sealed class ElectricityService
                         if (string.IsNullOrWhiteSpace(newToken))
                         {
                             var (obtainedToken, _) = await ObtainHuiXinTokenAsync(
-                                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, tokenValue));
-                            if (!IsCurrentTokenGeneration(tokenGeneration))
+                                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, accountGeneration, tokenValue));
+                            if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                                 return (null, null);
                             newToken = obtainedToken;
                         }
                         if (!string.IsNullOrWhiteSpace(newToken))
-                            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false, tokenGeneration: tokenGeneration);
+                            return await QuerySchoolNetHuiXinInternalAsync(newToken!, false, tokenGeneration, accountGeneration);
                     }
                     return (null, null);
                 }
@@ -807,7 +847,7 @@ public sealed class ElectricityService
                     }
                 }
 
-                if (!IsCurrentTokenGeneration(tokenGeneration))
+                if (!IsCurrentTokenGeneration(tokenGeneration, accountGeneration))
                     return (null, null);
 
                 return (cleanFlow, cleanFee);
@@ -819,31 +859,38 @@ public sealed class ElectricityService
         }
     }
 
-    private bool IsCurrentTokenGeneration(long tokenGeneration)
+    private bool IsCurrentTokenGeneration(long tokenGeneration, long accountGeneration)
     {
         lock (_tokenStateLock)
         {
-            return _tokenRequestGeneration == tokenGeneration;
+            return _tokenRequestGeneration == tokenGeneration &&
+                AccountSessionManager.IsGenerationCurrent(accountGeneration);
         }
     }
 
-    private bool TryPersistTokenForTokenGeneration(long tokenGeneration, string token)
+    private bool TryPersistTokenForTokenGeneration(long tokenGeneration, long accountGeneration, string token)
     {
         lock (_tokenStateLock)
         {
-            if (_tokenRequestGeneration != tokenGeneration)
+            if (_tokenRequestGeneration != tokenGeneration ||
+                !AccountSessionManager.IsGenerationCurrent(accountGeneration))
                 return false;
 
-            SettingsManager.Shared.HuixinAuthToken = token;
-            return true;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                SettingsManager.Shared.HuixinAuthToken = token);
         }
     }
 
-    private bool TryResolveSchoolNetRetryToken(string expiredToken, long tokenGeneration, out string? retryToken)
+    private bool TryResolveSchoolNetRetryToken(
+        string expiredToken,
+        long tokenGeneration,
+        long accountGeneration,
+        out string? retryToken)
     {
         lock (_tokenStateLock)
         {
-            if (_tokenRequestGeneration != tokenGeneration)
+            if (_tokenRequestGeneration != tokenGeneration ||
+                !AccountSessionManager.IsGenerationCurrent(accountGeneration))
             {
                 retryToken = null;
                 return false;
@@ -852,7 +899,12 @@ public sealed class ElectricityService
             retryToken = SettingsManager.Shared.HuixinAuthToken;
             if (string.Equals(retryToken, expiredToken, StringComparison.Ordinal))
             {
-                SettingsManager.Shared.HuixinAuthToken = null;
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                    SettingsManager.Shared.HuixinAuthToken = null))
+                {
+                    retryToken = null;
+                    return false;
+                }
                 retryToken = null;
             }
             return true;
@@ -989,12 +1041,17 @@ public sealed class CampusCardService
 
     public void FetchData(Action<CampusCardData?, string?>? completion = null)
     {
+        var accountGeneration = AccountSessionManager.Generation;
         _ = Task.Run(async () =>
         {
             var (data, err) = await FetchDataAsync();
-            if (completion != null)
+            if (completion != null && AccountSessionManager.IsGenerationCurrent(accountGeneration))
             {
-                AppEvents.InvokeOnUI(() => completion(data, err));
+                AppEvents.InvokeOnUI(() =>
+                {
+                    if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                        completion(data, err);
+                });
             }
         });
     }
@@ -1004,37 +1061,44 @@ public sealed class CampusCardService
     /// </summary>
     public async Task<(CampusCardData? Data, string? ErrorMessage)> FetchDataAsync()
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+            return (null, StaleRequestMessage);
         long generation;
         lock (_stateLock)
         {
             generation = ++_requestGeneration;
         }
 
-        var token = SettingsManager.Shared.HuixinAuthToken;
+        string? token = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            token = SettingsManager.Shared.HuixinAuthToken))
+            return (null, StaleRequestMessage);
         if (!string.IsNullOrWhiteSpace(token))
         {
-            return await ExecuteCardQueryAsync(token!, generation, allowRetry: true);
+            return await ExecuteCardQueryAsync(token!, generation, accountGeneration, allowRetry: true);
         }
 
         var (newToken, loginErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync(
-            tokenValue => TryPersistTokenForCurrentRequest(generation, tokenValue));
-        if (!IsCurrentRequest(generation))
+            tokenValue => TryPersistTokenForCurrentRequest(generation, accountGeneration, tokenValue));
+        if (!IsCurrentRequest(generation, accountGeneration))
             return (null, StaleRequestMessage);
         if (string.IsNullOrWhiteSpace(newToken))
         {
             return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
         }
 
-        return await ExecuteCardQueryAsync(newToken!, generation, allowRetry: false);
+        return await ExecuteCardQueryAsync(newToken!, generation, accountGeneration, allowRetry: false);
     }
 
     private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(
         string token,
         long generation,
+        long accountGeneration,
         bool allowRetry,
         bool useLegacyEndpoint = false)
     {
-        if (!IsCurrentRequest(generation))
+        if (!IsCurrentRequest(generation, accountGeneration))
             return (null, StaleRequestMessage);
 
         var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
@@ -1052,12 +1116,12 @@ public sealed class CampusCardService
             cardReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
 
             using var resp = await _httpClient.SendAsync(cardReq);
-            if (!IsCurrentRequest(generation))
+            if (!IsCurrentRequest(generation, accountGeneration))
                 return (null, StaleRequestMessage);
 
             int httpStatus = (int)resp.StatusCode;
             var respText = await resp.Content.ReadAsStringAsync();
-            if (!IsCurrentRequest(generation))
+            if (!IsCurrentRequest(generation, accountGeneration))
                 return (null, StaleRequestMessage);
 
             JsonDocument? doc = null;
@@ -1079,16 +1143,16 @@ public sealed class CampusCardService
             {
                 if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
-                    ClearExpiredTokenIfCurrent(token, generation);
+                    ClearExpiredTokenIfCurrent(token, generation, accountGeneration);
                     if (allowRetry)
                     {
                         var (newToken, retryErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync(
-                            tokenValue => TryPersistTokenForCurrentRequest(generation, tokenValue));
-                        if (!IsCurrentRequest(generation))
+                            tokenValue => TryPersistTokenForCurrentRequest(generation, accountGeneration, tokenValue));
+                        if (!IsCurrentRequest(generation, accountGeneration))
                             return (null, StaleRequestMessage);
                         if (!string.IsNullOrWhiteSpace(newToken))
                         {
-                            return await ExecuteCardQueryAsync(newToken!, generation, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint);
+                            return await ExecuteCardQueryAsync(newToken!, generation, accountGeneration, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint);
                         }
                         return (null, retryErr ?? "慧新易校授权已过期，请核对学号与密码");
                     }
@@ -1098,7 +1162,7 @@ public sealed class CampusCardService
                 if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
                 {
                     if (!useLegacyEndpoint)
-                        return await ExecuteCardQueryAsync(token, generation, allowRetry: false, useLegacyEndpoint: true);
+                        return await ExecuteCardQueryAsync(token, generation, accountGeneration, allowRetry: false, useLegacyEndpoint: true);
                     return (null, "未能解析到校园一卡通账户信息");
                 }
 
@@ -1124,7 +1188,7 @@ public sealed class CampusCardService
                 if (!hasCards || cardArrElem.ValueKind != JsonValueKind.Array || cardArrElem.GetArrayLength() == 0)
                 {
                     if (!useLegacyEndpoint)
-                        return await ExecuteCardQueryAsync(token, generation, allowRetry: false, useLegacyEndpoint: true);
+                        return await ExecuteCardQueryAsync(token, generation, accountGeneration, allowRetry: false, useLegacyEndpoint: true);
                     return (null, "未能解析到校园一卡通账户信息");
                 }
 
@@ -1142,13 +1206,14 @@ public sealed class CampusCardService
                 double unsettleRMB = unsettleFen / 100.0;
 
                 var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150);
-                if (!IsCurrentRequest(generation))
+                if (!IsCurrentRequest(generation, accountGeneration))
                     return (null, StaleRequestMessage);
 
                 List<CampusCardTransaction> previousTransactions;
                 lock (_stateLock)
                 {
                     previousTransactions = _requestGeneration == generation &&
+                        AccountSessionManager.IsGenerationCurrent(accountGeneration) &&
                         LatestData?.CardAccount == account
                         ? LatestData.Transactions?.ToList() ?? new List<CampusCardTransaction>()
                         : new List<CampusCardTransaction>();
@@ -1167,7 +1232,7 @@ public sealed class CampusCardService
                     LastUpdated = DateTime.Now
                 };
 
-                if (!await CommitFetchedDataAsync(cardData, generation).ConfigureAwait(false))
+                if (!await CommitFetchedDataAsync(cardData, generation, accountGeneration).ConfigureAwait(false))
                     return (null, StaleRequestMessage);
 
                 return (cardData, null);
@@ -1179,54 +1244,61 @@ public sealed class CampusCardService
         }
     }
 
-    private bool IsCurrentRequest(long generation)
+    private bool IsCurrentRequest(long generation, long accountGeneration)
     {
         lock (_stateLock)
         {
-            return _requestGeneration == generation;
+            return _requestGeneration == generation &&
+                AccountSessionManager.IsGenerationCurrent(accountGeneration);
         }
     }
 
-    private void ClearExpiredTokenIfCurrent(string token, long generation)
+    private void ClearExpiredTokenIfCurrent(string token, long generation, long accountGeneration)
     {
         lock (_stateLock)
         {
-            if (_requestGeneration == generation &&
-                string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+            if (_requestGeneration != generation ||
+                !AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+            AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
-                SettingsManager.Shared.HuixinAuthToken = null;
-            }
+                if (string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+                    SettingsManager.Shared.HuixinAuthToken = null;
+            });
         }
     }
 
-    private bool TryPersistTokenForCurrentRequest(long generation, string token)
+    private bool TryPersistTokenForCurrentRequest(long generation, long accountGeneration, string token)
     {
         lock (_stateLock)
         {
-            if (_requestGeneration != generation)
+            if (_requestGeneration != generation ||
+                !AccountSessionManager.IsGenerationCurrent(accountGeneration))
                 return false;
 
-            SettingsManager.Shared.HuixinAuthToken = token;
-            return true;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                SettingsManager.Shared.HuixinAuthToken = token);
         }
     }
 
-    private Task<bool> CommitFetchedDataAsync(CampusCardData data, long generation)
+    private Task<bool> CommitFetchedDataAsync(CampusCardData data, long generation, long accountGeneration)
     {
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         AppEvents.InvokeOnUI(() =>
         {
             try
             {
-                bool committed;
+                bool committed = false;
                 lock (_stateLock)
                 {
-                    committed = _requestGeneration == generation;
-                    if (committed)
+                    if (_requestGeneration == generation &&
+                        AccountSessionManager.IsGenerationCurrent(accountGeneration))
                     {
-                        SaveCachedData(data);
-                        CheckLowBalanceAndBudgetWarning(data);
-                        AppEvents.RaiseCampusCardUpdated();
+                        committed = AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            SaveCachedData(data);
+                            CheckLowBalanceAndBudgetWarning(data);
+                            AppEvents.RaiseCampusCardUpdated();
+                        });
                     }
                 }
                 completion.TrySetResult(committed);

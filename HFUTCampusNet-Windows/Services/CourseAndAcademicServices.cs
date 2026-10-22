@@ -51,33 +51,38 @@ public sealed class CourseScheduleService
         }
     }
 
-    private bool IsScheduleGenerationCurrent(int generation)
+    private bool IsScheduleGenerationCurrent(int generation, long accountGeneration)
     {
         lock (_scheduleStateLock)
         {
-            return generation == _scheduleGeneration;
+            return generation == _scheduleGeneration &&
+                AccountSessionManager.IsGenerationCurrent(accountGeneration);
         }
     }
 
-    private bool TryUpdateCourseSettings(int generation, Action update)
+    private bool TryUpdateCourseSettings(int generation, long accountGeneration, Action update)
     {
         lock (_scheduleStateLock)
         {
             if (generation != _scheduleGeneration) return false;
-            update();
-            SettingsManager.Shared.Save();
-            return true;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                update();
+                SettingsManager.Shared.Save();
+            });
         }
     }
 
-    private bool TryApplySyncedSchedule(CourseScheduleData schedule, int generation)
+    private bool TryApplySyncedSchedule(CourseScheduleData schedule, int generation, long accountGeneration)
     {
         lock (_scheduleStateLock)
         {
             if (generation != _scheduleGeneration) return false;
-            CurrentSchedule = schedule;
-            SaveCache();
-            return true;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                CurrentSchedule = schedule;
+                SaveCache();
+            });
         }
     }
 
@@ -88,38 +93,68 @@ public sealed class CourseScheduleService
 
     public void SwitchSemester(string semesterId)
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
         BeginScheduleOperation();
-        SettingsManager.Shared.CourseSemesterId = semesterId;
-        SettingsManager.Shared.Save();
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            SettingsManager.Shared.CourseSemesterId = semesterId;
+            SettingsManager.Shared.Save();
+        })) return;
         SyncSchedule(_ => { });
     }
 
     public void SwitchSemester(string semesterId, Action<CourseScheduleData?, string?>? callback)
     {
+        var accountGeneration = AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+        {
+            callback?.Invoke(null, "账号已切换");
+            return;
+        }
         BeginScheduleOperation();
-        SettingsManager.Shared.CourseSemesterId = semesterId;
-        SettingsManager.Shared.Save();
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            SettingsManager.Shared.CourseSemesterId = semesterId;
+            SettingsManager.Shared.Save();
+        })) return;
         SyncSchedule(callback);
     }
 
-    public void SyncSchedule(Action<bool>? callback = null)
+    public void SyncSchedule(Action<bool>? callback = null, long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+        {
+            callback?.Invoke(false);
+            return;
+        }
         var generation = BeginScheduleOperation();
         Task.Run(async () =>
         {
             try
             {
-                if (!IsScheduleGenerationCurrent(generation))
+                if (!IsScheduleGenerationCurrent(generation, accountGeneration))
                 {
                     callback?.Invoke(false);
                     return;
                 }
 
-                var cookie = SettingsManager.Shared.CourseSessionCookie;
+                string? cookie = null;
+                string? tgc = null;
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                {
+                    cookie = SettingsManager.Shared.CourseSessionCookie;
+                    tgc = SettingsManager.Shared.CasTgcCookie;
+                }))
+                {
+                    callback?.Invoke(false);
+                    return;
+                }
                 if (!string.IsNullOrEmpty(cookie))
                 {
-                    var data = await FetchFromEamsAsync(cookie, generation);
-                    if (data != null && data.Lessons.Count > 0 && TryApplySyncedSchedule(data, generation))
+                    var data = await FetchFromEamsAsync(cookie, generation, accountGeneration);
+                    if (data != null && data.Lessons.Count > 0 && TryApplySyncedSchedule(data, generation, accountGeneration))
                     {
                         AppEvents.RaiseCourseScheduleUpdated();
                         callback?.Invoke(true);
@@ -127,20 +162,20 @@ public sealed class CourseScheduleService
                     }
                 }
 
-                if (!IsScheduleGenerationCurrent(generation))
+                if (!IsScheduleGenerationCurrent(generation, accountGeneration))
                 {
                     callback?.Invoke(false);
                     return;
                 }
 
                 // 尝试 CAS 静默换取 SESSION
-                if (!string.IsNullOrEmpty(SettingsManager.Shared.CasTgcCookie))
+                if (!string.IsNullOrEmpty(tgc))
                 {
-                    var sessionCookie = await ExchangeCasTicketForEamsSessionAsync(SettingsManager.Shared.CasTgcCookie, generation);
+                    var sessionCookie = await ExchangeCasTicketForEamsSessionAsync(tgc, generation, accountGeneration);
                     if (!string.IsNullOrEmpty(sessionCookie))
                     {
-                        var data = await FetchFromEamsAsync(sessionCookie, generation);
-                        if (data != null && TryApplySyncedSchedule(data, generation))
+                        var data = await FetchFromEamsAsync(sessionCookie, generation, accountGeneration);
+                        if (data != null && TryApplySyncedSchedule(data, generation, accountGeneration))
                         {
                             AppEvents.RaiseCourseScheduleUpdated();
                             callback?.Invoke(true);
@@ -195,17 +230,19 @@ public sealed class CourseScheduleService
 
     public void ApplyCustomSchedule(CourseScheduleData schedule, long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         CourseLesson.EnrichLessons(schedule.Lessons);
         lock (_scheduleStateLock)
         {
-            if (expectedAccountGeneration.HasValue &&
-                expectedAccountGeneration.Value != AccountSessionManager.Generation)
-                return;
-            _scheduleGeneration++;
-            CurrentSchedule = schedule;
-            SaveCache();
+            AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                _scheduleGeneration++;
+                CurrentSchedule = schedule;
+                SaveCache();
+            });
         }
-        AppEvents.RaiseCourseScheduleUpdated();
+        if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+            AppEvents.RaiseCourseScheduleUpdated();
     }
 
     public CourseScheduleData? ApplyDatumJSONString(
@@ -217,37 +254,39 @@ public sealed class CourseScheduleService
     {
         try
         {
+            var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
             var parsedLessons = ParseDatumScheduleJson(jsonString);
             if (parsedLessons.Count == 0) return null;
 
             CourseLesson.EnrichLessons(parsedLessons);
 
-            CourseScheduleData schedule;
+            CourseScheduleData? schedule = null;
             lock (_scheduleStateLock)
             {
-                if (expectedAccountGeneration.HasValue &&
-                    expectedAccountGeneration.Value != AccountSessionManager.Generation)
-                    return null;
-                _scheduleGeneration++;
-                if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
-                if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
-                if (!string.IsNullOrEmpty(bizTypeId)) SettingsManager.Shared.CourseBizTypeId = bizTypeId;
-                SettingsManager.Shared.Save();
-
-                int.TryParse(semesterId, out int sIdNum);
-                schedule = new CourseScheduleData
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                 {
-                    StudentId = !string.IsNullOrEmpty(studentId) ? studentId : SettingsManager.Shared.CourseStudentId,
-                    SemesterId = !string.IsNullOrEmpty(semesterId) ? semesterId : SettingsManager.Shared.CourseSemesterId,
-                    SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
-                    BizTypeId = !string.IsNullOrEmpty(bizTypeId) ? bizTypeId : SettingsManager.Shared.CourseBizTypeId,
-                    LastSyncTime = DateTime.Now,
-                    Lessons = parsedLessons
-                };
+                    _scheduleGeneration++;
+                    if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
+                    if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
+                    if (!string.IsNullOrEmpty(bizTypeId)) SettingsManager.Shared.CourseBizTypeId = bizTypeId;
+                    SettingsManager.Shared.Save();
 
-                CurrentSchedule = schedule;
-                SaveCache();
+                    int.TryParse(semesterId, out int sIdNum);
+                    schedule = new CourseScheduleData
+                    {
+                        StudentId = !string.IsNullOrEmpty(studentId) ? studentId : SettingsManager.Shared.CourseStudentId,
+                        SemesterId = !string.IsNullOrEmpty(semesterId) ? semesterId : SettingsManager.Shared.CourseSemesterId,
+                        SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
+                        BizTypeId = !string.IsNullOrEmpty(bizTypeId) ? bizTypeId : SettingsManager.Shared.CourseBizTypeId,
+                        LastSyncTime = DateTime.Now,
+                        Lessons = parsedLessons
+                    };
+
+                    CurrentSchedule = schedule;
+                    SaveCache();
+                })) return null;
             }
+            if (schedule == null) return null;
             AppEvents.RaiseCourseScheduleUpdated();
             return schedule;
         }
@@ -257,20 +296,27 @@ public sealed class CourseScheduleService
         }
     }
 
-    public async Task<string?> EnsureSessionAsync(bool forceRefresh = false)
+    public async Task<string?> EnsureSessionAsync(bool forceRefresh = false, long? expectedAccountGeneration = null)
     {
-        var cookie = SettingsManager.Shared.CourseSessionCookie;
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
+        string? cookie = null;
+        string? tgc = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            cookie = SettingsManager.Shared.CourseSessionCookie;
+            tgc = SettingsManager.Shared.CasTgcCookie;
+        })) return null;
         if (!forceRefresh && !string.IsNullOrEmpty(cookie))
         {
             return cookie;
         }
 
         // 尝试通过 CAS TGC 换取
-        var tgc = SettingsManager.Shared.CasTgcCookie;
         if (!string.IsNullOrEmpty(tgc))
         {
-            var session = await ExchangeCasTicketForEamsSessionAsync(tgc);
-            if (!string.IsNullOrEmpty(session))
+            var session = await ExchangeCasTicketForEamsSessionAsync(tgc, accountGeneration);
+            if (AccountSessionManager.IsGenerationCurrent(accountGeneration) && !string.IsNullOrEmpty(session))
             {
                 return session;
             }
@@ -279,13 +325,17 @@ public sealed class CourseScheduleService
         return null;
     }
 
-    public Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc)
+    public Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc, long? expectedAccountGeneration = null)
     {
-        return ExchangeCasTicketForEamsSessionAsync(tgc, BeginScheduleOperation());
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+            return Task.FromResult<string?>(null);
+        return ExchangeCasTicketForEamsSessionAsync(tgc, BeginScheduleOperation(), accountGeneration);
     }
 
-    private async Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc, int scheduleGeneration)
+    private async Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc, int scheduleGeneration, long accountGeneration)
     {
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
         try
         {
             var cookieContainer = new CookieContainer();
@@ -307,7 +357,7 @@ public sealed class CourseScheduleService
             var ssoUrl = "https://cas.hfut.edu.cn/cas/login?service=http%3A%2F%2Fjxglstu.hfut.edu.cn%2Feams5-student%2Fneusoft-sso%2Flogin";
             using var req1 = new HttpRequestMessage(HttpMethod.Get, ssoUrl);
             using var res1 = await client.SendAsync(req1);
-            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+            if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
             Uri? redirectUrl = null;
             if (res1.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.Moved or HttpStatusCode.Found or HttpStatusCode.SeeOther)
@@ -323,7 +373,7 @@ public sealed class CourseScheduleService
             // 2. 跟随重定向到教务系统 (http://jxglstu.hfut.edu.cn/eams5-student/neusoft-sso/login?ticket=ST-...)
             using var req2 = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
             using var res2 = await client.SendAsync(req2);
-            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+            if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
             // 检查教务系统的 Set-Cookie（涵盖带 path 的完整 URL）
             string? sess = null;
@@ -362,7 +412,7 @@ public sealed class CourseScheduleService
             if (!string.IsNullOrEmpty(sess))
             {
                 var cookieHeader = !string.IsNullOrEmpty(srv) ? $"SESSION={sess}; SRVID={srv}" : $"SESSION={sess}";
-                if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                if (!TryUpdateCourseSettings(scheduleGeneration, accountGeneration, () =>
                     SettingsManager.Shared.CourseSessionCookie = cookieHeader)) return null;
 
                 // 3. 顺便访问 /for-std/course-table 自动发现真实 studentId
@@ -371,30 +421,33 @@ public sealed class CourseScheduleService
                     using var tableReq = new HttpRequestMessage(HttpMethod.Get, "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
                     tableReq.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
                     using var tableRes = await client.SendAsync(tableReq);
-                    if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+                    if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
                     if (tableRes.IsSuccessStatusCode)
                     {
                         var html = await tableRes.Content.ReadAsStringAsync();
-                        if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+                        if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
                         var match = Regex.Match(html, @"/for-std/course-table/info/(\d+)");
                         if (match.Success)
                         {
-                            if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                            if (!TryUpdateCourseSettings(scheduleGeneration, accountGeneration, () =>
                                 SettingsManager.Shared.CourseStudentId = match.Groups[1].Value)) return null;
                         }
                     }
                 }
                 catch { }
 
-                if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+                if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
                 // 4. 联动推导 UniApp 密码并全量同步
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
-                        AcademicService.Shared.SyncAll(silent: true);
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                            forceRelogin: true,
+                            expectedAccountGeneration: accountGeneration);
+                        AcademicService.Shared.SyncAll(silent: true, expectedAccountGeneration: accountGeneration);
                         EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
                     }
                     catch { }
@@ -407,8 +460,9 @@ public sealed class CourseScheduleService
         return null;
     }
 
-    private async Task<CourseScheduleData?> FetchFromEamsAsync(string sessionCookie, int scheduleGeneration)
+    private async Task<CourseScheduleData?> FetchFromEamsAsync(string sessionCookie, int scheduleGeneration, long accountGeneration)
     {
+        if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
         try
         {
             var semId = SettingsManager.Shared.CourseSemesterId;
@@ -424,7 +478,7 @@ public sealed class CourseScheduleService
                 pageReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
                 using var pageRes = await _client.SendAsync(pageReq);
                 var pageHtml = await pageRes.Content.ReadAsStringAsync();
-                if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+                if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
                 var stdMatch = Regex.Match(pageHtml, @"/for-std/course-table/info/(\d+)");
                 if (!stdMatch.Success) stdMatch = Regex.Match(pageHtml, @"var\s+studentId\s*=\s*(\d+)");
@@ -432,21 +486,19 @@ public sealed class CourseScheduleService
                 if (stdMatch.Success)
                 {
                     stdId = stdMatch.Groups[1].Value;
-                    SettingsManager.Shared.CourseStudentId = stdId;
                 }
                 var semMatch = Regex.Match(pageHtml, @"semesterId\s*:\s*(\d+)");
                 if (!semMatch.Success) semMatch = Regex.Match(pageHtml, @"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)");
                 if (semMatch.Success)
                 {
                     semId = semMatch.Groups[1].Value;
-                    SettingsManager.Shared.CourseSemesterId = semId;
                 }
                 var bizMatch = Regex.Match(pageHtml, @"bizTypeId\s*:\s*(\d+)");
                 if (bizMatch.Success)
                 {
                     bizId = bizMatch.Groups[1].Value;
                 }
-                if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                if (!TryUpdateCourseSettings(scheduleGeneration, accountGeneration, () =>
                 {
                     if (stdMatch.Success) SettingsManager.Shared.CourseStudentId = stdId;
                     if (semMatch.Success) SettingsManager.Shared.CourseSemesterId = semId;
@@ -464,7 +516,7 @@ public sealed class CourseScheduleService
             getReq.Headers.TryAddWithoutValidation("Accept", "application/json, text/javascript, */*; q=0.01");
             using var getResp = await _client.SendAsync(getReq);
             var getJson = await getResp.Content.ReadAsStringAsync();
-            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+            if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
             var lessonIds = new List<int>();
             using (var doc = SafeParseJson(getJson))
@@ -497,7 +549,7 @@ public sealed class CourseScheduleService
 
             using var datumResp = await _client.SendAsync(datumReq);
             var datumJson = await datumResp.Content.ReadAsStringAsync();
-            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
+            if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
 
             var lessons = ParseDatumScheduleJson(datumJson);
             if (lessons.Count == 0) return null;
@@ -649,14 +701,15 @@ public sealed class CourseScheduleService
         catch { }
     }
 
-    public async Task<string?> DiscoverStudentIdAsync(string cookie)
+    public async Task<string?> DiscoverStudentIdAsync(string cookie, long? expectedAccountGeneration = null)
     {
         int scheduleGeneration;
         lock (_scheduleStateLock)
         {
             scheduleGeneration = _scheduleGeneration;
         }
-        var accountGeneration = AccountSessionManager.Generation;
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
 
         try
         {
@@ -677,11 +730,14 @@ public sealed class CourseScheduleService
                     lock (_scheduleStateLock)
                     {
                         if (scheduleGeneration != _scheduleGeneration ||
-                            accountGeneration != AccountSessionManager.Generation)
+                            !AccountSessionManager.IsGenerationCurrent(accountGeneration))
                             return null;
 
-                        SettingsManager.Shared.CourseStudentId = stdId;
-                        SettingsManager.Shared.Save();
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            SettingsManager.Shared.CourseStudentId = stdId;
+                            SettingsManager.Shared.Save();
+                        })) return null;
                     }
                     return stdId;
                 }
@@ -765,8 +821,14 @@ public sealed class AcademicService
         AppEvents.RaiseAcademicDataUpdated();
     }
 
-    public void SyncAll(bool silent, Action<bool>? callback = null)
+    public void SyncAll(bool silent, Action<bool>? callback = null, long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+        {
+            callback?.Invoke(false);
+            return;
+        }
         Task.Run(async () =>
         {
             if (!await _syncLock.WaitAsync(0))
@@ -784,13 +846,13 @@ public sealed class AcademicService
             try
             {
                 // 通道 1：合工大教务移动端 (UniApp JWT 主源)
-                var uniAppTask = FetchFromUniAppAsync();
+                var uniAppTask = FetchFromUniAppAsync(accountGeneration);
 
                 // 通道 2：树维教务系统网页端 (jxglstu EAMS 5.0 辅源)
-                var eamsWebTask = FetchFromEamsWebAsync();
+                var eamsWebTask = FetchFromEamsWebAsync(accountGeneration);
 
                 await Task.WhenAll(uniAppTask, eamsWebTask);
-                if (!IsCurrentCacheGeneration(generation))
+                if (!IsCurrentCacheGeneration(generation, accountGeneration))
                 {
                     callback?.Invoke(false);
                     return;
@@ -811,7 +873,7 @@ public sealed class AcademicService
                     {
                         staleGeneration = true;
                     }
-                    else
+                    else if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                     {
                         var prevSnapshot = LatestData;
 
@@ -845,7 +907,7 @@ public sealed class AcademicService
                             LatestData = newSnapshot;
                             SaveCache();
                         }
-                    }
+                    })) staleGeneration = true;
                 }
                 if (staleGeneration)
                 {
@@ -865,7 +927,10 @@ public sealed class AcademicService
                 lock (_stateLock)
                 {
                     if (generation == _cacheGeneration && LatestData != null)
-                        LatestData.LastErrorMessage = ex.Message;
+                    {
+                        AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                            LatestData.LastErrorMessage = ex.Message);
+                    }
                 }
                 callback?.Invoke(false);
             }
@@ -878,10 +943,12 @@ public sealed class AcademicService
 
     // MARK: - 通道 1：UniApp 移动端数据拉取
 
-    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams)> FetchFromUniAppAsync()
+    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams)> FetchFromUniAppAsync(long accountGeneration)
     {
-        var token = await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: false);
-        if (string.IsNullOrEmpty(token))
+        var token = await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+            forceRelogin: false,
+            expectedAccountGeneration: accountGeneration);
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(token))
         {
             return (new(), new());
         }
@@ -889,8 +956,10 @@ public sealed class AcademicService
         var (grades, exams, needRetry) = await RequestUniAppDataAsync(token);
         if (needRetry)
         {
-            var newToken = await EmptyClassroomService.Shared.EnsureValidTokenAsync(forceRelogin: true);
-            if (!string.IsNullOrEmpty(newToken))
+            var newToken = await EmptyClassroomService.Shared.EnsureValidTokenAsync(
+                forceRelogin: true,
+                expectedAccountGeneration: accountGeneration);
+            if (AccountSessionManager.IsGenerationCurrent(accountGeneration) && !string.IsNullOrEmpty(newToken))
             {
                 var retried = await RequestUniAppDataAsync(newToken);
                 return (retried.Grades, retried.Exams);
@@ -1025,28 +1094,37 @@ public sealed class AcademicService
 
     // MARK: - 通道 2：树维 EAMS 网页端数据拉取
 
-    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams, ProgramCompletionSummary? Program, List<CourseTextbookItem> Books, List<LessonSurveyItem> Surveys)> FetchFromEamsWebAsync()
+    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams, ProgramCompletionSummary? Program, List<CourseTextbookItem> Books, List<LessonSurveyItem> Surveys)> FetchFromEamsWebAsync(long accountGeneration)
     {
         try
         {
-            var cookie = await CourseScheduleService.Shared.EnsureSessionAsync();
-            if (string.IsNullOrEmpty(cookie))
+            var cookie = await CourseScheduleService.Shared.EnsureSessionAsync(
+                expectedAccountGeneration: accountGeneration);
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(cookie))
             {
                 return (new(), new(), null, new(), new());
             }
 
-            var stdId = SettingsManager.Shared.CourseStudentId;
+            string stdId = string.Empty;
+            string semId = string.Empty;
+            string bizId = string.Empty;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                stdId = SettingsManager.Shared.CourseStudentId;
+                semId = SettingsManager.Shared.CourseSemesterId;
+                bizId = SettingsManager.Shared.CourseBizTypeId;
+            })) return (new(), new(), null, new(), new());
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
             {
-                stdId = await CourseScheduleService.Shared.DiscoverStudentIdAsync(cookie) ?? "178506";
+                stdId = await CourseScheduleService.Shared.DiscoverStudentIdAsync(cookie, accountGeneration) ?? "178506";
+                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                    return (new(), new(), null, new(), new());
             }
 
             var gTask = FetchGradesHtmlAsync(cookie, stdId);
             var eTask = FetchExamsHtmlAsync(cookie, stdId);
             var pTask = FetchProgramCompletionAsync(cookie, stdId);
 
-            var semId = SettingsManager.Shared.CourseSemesterId;
-            var bizId = SettingsManager.Shared.CourseBizTypeId;
             var bTask = FetchTextbooksAsync(cookie, semId, bizId, stdId);
             var sTask = FetchSurveysAsync(cookie, semId, stdId);
 
@@ -1164,8 +1242,8 @@ public sealed class AcademicService
     {
         try
         {
-            if (expectedAccountGeneration.HasValue &&
-                expectedAccountGeneration.Value != AccountSessionManager.Generation)
+            var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
                 return;
             long generation;
             AcademicDataSnapshot? prevSnapshot;
@@ -1201,23 +1279,25 @@ public sealed class AcademicService
 
             lock (_stateLock)
             {
-                if (generation != _cacheGeneration ||
-                    (expectedAccountGeneration.HasValue &&
-                     expectedAccountGeneration.Value != AccountSessionManager.Generation)) return;
-                CheckNewGradesNotification(newSnapshot.AllGrades);
-                LatestData = newSnapshot;
-                SaveCache();
+                if (generation != _cacheGeneration) return;
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                {
+                    CheckNewGradesNotification(newSnapshot.AllGrades);
+                    LatestData = newSnapshot;
+                    SaveCache();
+                })) return;
             }
             AppEvents.RaiseAcademicDataUpdated();
         }
         catch { }
     }
 
-    private bool IsCurrentCacheGeneration(long generation)
+    private bool IsCurrentCacheGeneration(long generation, long accountGeneration)
     {
         lock (_stateLock)
         {
-            return generation == _cacheGeneration;
+            return generation == _cacheGeneration &&
+                AccountSessionManager.IsGenerationCurrent(accountGeneration);
         }
     }
 

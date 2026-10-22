@@ -720,6 +720,7 @@ public sealed class CampusNetworkClient
     private Timer? _syncTimer;
     private readonly HttpClient _client;
     private readonly HttpClient _selfServiceClient;
+    private readonly object _accountStateLock = new();
     private int _isFetchingSelfService = 0;
 
     private CampusNetworkClient()
@@ -749,42 +750,77 @@ public sealed class CampusNetworkClient
         _syncTimer = new Timer(_ => FetchData(), null, intervalMs, intervalMs);
     }
 
+    public void ClearAccountScopedData()
+    {
+        lock (_accountStateLock)
+        {
+            LatestData = new CampusNetworkData();
+        }
+        Interlocked.Exchange(ref _isFetchingSelfService, 0);
+        AppEvents.InvokeOnUI(AppEvents.RaiseNetworkDataUpdated);
+    }
+
+    public bool TrySetSessionCookie(string cookie, long expectedAccountGeneration)
+    {
+        return TryUpdateForAccount(expectedAccountGeneration, () =>
+        {
+            SettingsManager.Shared.SessionCookie = cookie;
+            SettingsManager.Shared.Save();
+        });
+    }
+
+    private bool IsCurrentAccount(long accountGeneration) =>
+        AccountSessionManager.IsGenerationCurrent(accountGeneration);
+
+    private bool TryUpdateForAccount(long accountGeneration, Action update)
+    {
+        lock (_accountStateLock)
+        {
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, update);
+        }
+    }
+
     public void FetchData()
     {
+        var accountGeneration = AccountSessionManager.Generation;
         Task.Run(async () =>
         {
             try
             {
                 var (online, uid, ip, flowMB, fee, timeMin) = await PortalAuthService.Shared.CheckStatusAsync();
+                if (!IsCurrentAccount(accountGeneration)) return;
                 if (online)
                 {
-                    LatestData.IsLoggedIn = true;
-                    if (flowMB > 0)
+                    if (!TryUpdateForAccount(accountGeneration, () =>
                     {
-                        var curMB = LatestData.UsedMB ?? 0.0;
-                        if (curMB == 0 || flowMB >= curMB)
+                        LatestData.IsLoggedIn = true;
+                        if (flowMB > 0)
                         {
-                            LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
+                            var curMB = LatestData.UsedMB ?? 0.0;
+                            if (curMB == 0 || flowMB >= curMB)
+                            {
+                                LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
+                            }
                         }
-                    }
-                    // 网关在部分网络状态下会返回 0；不要用它覆盖自服务里的真实余额，
-                    // 也不要在自服务同步前把占位值替换成误导性的 0.00 元。
-                    if (fee > 0 &&
-                        (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
-                    {
-                        LatestData.Balance = $"{fee:F2} 元";
-                    }
-                    if (flowMB > 0)
-                    {
-                        LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - flowMB):F0} M";
-                    }
-                    LatestData.LastUpdated = DateTime.Now;
-                    LatestData.ErrorMessage = null;
+                        // 网关在部分网络状态下会返回 0；不要用它覆盖自服务里的真实余额，
+                        // 也不要在自服务同步前把占位值替换成误导性的 0.00 元。
+                        if (fee > 0 &&
+                            (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
+                        {
+                            LatestData.Balance = $"{fee:F2} 元";
+                        }
+                        if (flowMB > 0)
+                        {
+                            LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - flowMB):F0} M";
+                        }
+                        LatestData.LastUpdated = DateTime.Now;
+                        LatestData.ErrorMessage = null;
 
-                    if (flowMB > 0)
-                    {
-                        CampusHistoryManager.Shared.RecordFlow(flowMB);
-                    }
+                        if (flowMB > 0)
+                        {
+                            CampusHistoryManager.Shared.RecordFlow(flowMB);
+                        }
+                    })) return;
 
                     // 在线状态也要定期刷新自服务仪表盘。以前这里仅更新网关数据，
                     // 导致自服务的月流量与余额在在线时一直停留在旧值。
@@ -795,24 +831,35 @@ public sealed class CampusNetworkClient
                          !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword));
                     if (hasSelfServiceAuth)
                     {
-                        try { dashboardRefreshed = await FetchDashboardDataAsync(); } catch { }
+                        try { dashboardRefreshed = await FetchDashboardDataAsync(accountGeneration); } catch { }
                     }
+                    if (!IsCurrentAccount(accountGeneration)) return;
 
                     // 成功解析仪表盘时 ApplyParsedDashboardHTML 已会刷新设备列表；
                     // 解析失败但会话仍有效时，仍单独更新在线设备。
                     if (!dashboardRefreshed && !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie))
                     {
-                        try { await FetchOnlineDevicesAsync(); } catch { }
+                        try { await FetchOnlineDevicesAsync(accountGeneration); } catch { }
                     }
                 }
                 else
                 {
                     // 若开启了自动登录网关，尝试自动认证
-                    if (SettingsManager.Shared.AutoLoginPortal && !string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername))
+                    string portalUsername = string.Empty;
+                    string portalPassword = string.Empty;
+                    bool autoLoginPortal = false;
+                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                    {
+                        portalUsername = SettingsManager.Shared.PortalUsername;
+                        portalPassword = SettingsManager.Shared.PortalPassword;
+                        autoLoginPortal = SettingsManager.Shared.AutoLoginPortal;
+                    })) return;
+                    if (autoLoginPortal && !string.IsNullOrEmpty(portalUsername))
                     {
                         var (ok, _) = await PortalAuthService.Shared.LoginAsync(
-                            SettingsManager.Shared.PortalUsername,
-                            SettingsManager.Shared.PortalPassword);
+                            portalUsername,
+                            portalPassword);
+                        if (!IsCurrentAccount(accountGeneration)) return;
                         if (ok)
                         {
                             FetchData();
@@ -827,10 +874,11 @@ public sealed class CampusNetworkClient
                         if (!string.IsNullOrEmpty(SettingsManager.Shared.SessionCookie) ||
                             (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) && !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword)))
                         {
-                            dashOk = await FetchDashboardDataAsync();
+                            dashOk = await FetchDashboardDataAsync(accountGeneration);
                         }
                     }
                     catch { }
+                    if (!IsCurrentAccount(accountGeneration)) return;
 
                     if (!dashOk)
                     {
@@ -838,52 +886,63 @@ public sealed class CampusNetworkClient
                         try
                         {
                             var (hxFlow, hxBalance) = await ElectricityService.Shared.FetchSchoolNetInfoFromHuiXinAsync();
+                            if (!IsCurrentAccount(accountGeneration)) return;
                             if (!string.IsNullOrEmpty(hxFlow) || !string.IsNullOrEmpty(hxBalance))
                             {
-                                LatestData.IsLoggedIn = false;
-                                if (!string.IsNullOrEmpty(hxFlow) &&
-                                    (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
+                                if (!TryUpdateForAccount(accountGeneration, () =>
                                 {
-                                    LatestData.UsedFlow = hxFlow;
-                                }
-                                if (!string.IsNullOrEmpty(hxBalance) &&
-                                    (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
-                                {
-                                    LatestData.Balance = hxBalance;
-                                }
-                                LatestData.ErrorMessage = "未处于校园网Wi-Fi (已同步慧新易校数据)";
-                                LatestData.LastUpdated = DateTime.Now;
-
-                                if (!string.IsNullOrEmpty(hxFlow))
-                                {
-                                    var cleanMB = Regex.Match(hxFlow, @"[0-9]+(?:\.[0-9]+)?");
-                                    if (cleanMB.Success && double.TryParse(cleanMB.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedMB))
+                                    LatestData.IsLoggedIn = false;
+                                    if (!string.IsNullOrEmpty(hxFlow) &&
+                                        (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
                                     {
-                                        CampusHistoryManager.Shared.RecordFlow(parsedMB);
+                                        LatestData.UsedFlow = hxFlow;
                                     }
-                                }
+                                    if (!string.IsNullOrEmpty(hxBalance) &&
+                                        (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
+                                    {
+                                        LatestData.Balance = hxBalance;
+                                    }
+                                    LatestData.ErrorMessage = "未处于校园网Wi-Fi (已同步慧新易校数据)";
+                                    LatestData.LastUpdated = DateTime.Now;
+
+                                    if (!string.IsNullOrEmpty(hxFlow))
+                                    {
+                                        var cleanMB = Regex.Match(hxFlow, @"[0-9]+(?:\.[0-9]+)?");
+                                        if (cleanMB.Success && double.TryParse(cleanMB.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedMB))
+                                        {
+                                            CampusHistoryManager.Shared.RecordFlow(parsedMB);
+                                        }
+                                    }
+                                })) return;
                             }
                             else
                             {
-                                LatestData.IsLoggedIn = false;
-                                LatestData.ErrorMessage = "未登录校园网";
+                                TryUpdateForAccount(accountGeneration, () =>
+                                {
+                                    LatestData.IsLoggedIn = false;
+                                    LatestData.ErrorMessage = "未登录校园网";
+                                });
                             }
                         }
                         catch
                         {
-                            LatestData.IsLoggedIn = false;
-                            LatestData.ErrorMessage = "未登录校园网";
+                            TryUpdateForAccount(accountGeneration, () =>
+                            {
+                                LatestData.IsLoggedIn = false;
+                                LatestData.ErrorMessage = "未登录校园网";
+                            });
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                LatestData.ErrorMessage = ex.Message;
+                TryUpdateForAccount(accountGeneration, () => LatestData.ErrorMessage = ex.Message);
             }
             finally
             {
-                AppEvents.RaiseNetworkDataUpdated();
+                if (IsCurrentAccount(accountGeneration))
+                    AppEvents.RaiseNetworkDataUpdated();
             }
         });
     }
@@ -894,31 +953,38 @@ public sealed class CampusNetworkClient
     /// </summary>
     public void FetchOnlineDevices(Action<bool, string>? callback = null)
     {
+        var accountGeneration = AccountSessionManager.Generation;
         Task.Run(async () =>
         {
             try
             {
-                var result = await FetchOnlineDevicesAsync();
-                callback?.Invoke(result.Success, result.Message);
+                var result = await FetchOnlineDevicesAsync(accountGeneration);
+                if (IsCurrentAccount(accountGeneration))
+                    callback?.Invoke(result.Success, result.Message);
             }
             catch (Exception ex)
             {
-                callback?.Invoke(false, ex.Message);
+                if (IsCurrentAccount(accountGeneration))
+                    callback?.Invoke(false, ex.Message);
             }
         });
     }
 
-    public async Task<(bool Success, string Message, List<OnlineDeviceSession> Devices)> FetchOnlineDevicesAsync()
+    public async Task<(bool Success, string Message, List<OnlineDeviceSession> Devices)> FetchOnlineDevicesAsync(
+        long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         try
         {
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
             var cookie = SettingsManager.Shared.SessionCookie?.Trim();
             if (string.IsNullOrEmpty(cookie))
             {
                 if (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) &&
                     !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword))
                 {
-                    var (loginOk, _) = await SilentLoginSelfServiceAndFetchAsync();
+                    var (loginOk, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+                    if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
                     if (loginOk)
                     {
                         cookie = SettingsManager.Shared.SessionCookie?.Trim();
@@ -938,18 +1004,26 @@ public sealed class CampusNetworkClient
             req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
 
             using var resp = await _selfServiceClient.SendAsync(req);
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
             if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
             {
-                SettingsManager.Shared.SessionCookie = null;
-                SettingsManager.Shared.Save();
+                TryUpdateForAccount(accountGeneration, () =>
+                {
+                    SettingsManager.Shared.SessionCookie = null;
+                    SettingsManager.Shared.Save();
+                });
                 return (false, "自服务会话已失效", new());
             }
 
             var text = await resp.Content.ReadAsStringAsync();
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
             if (string.IsNullOrWhiteSpace(text) || text.Contains("欢迎登录用户自助服务系统") || text.TrimStart().StartsWith("<"))
             {
-                SettingsManager.Shared.SessionCookie = null;
-                SettingsManager.Shared.Save();
+                TryUpdateForAccount(accountGeneration, () =>
+                {
+                    SettingsManager.Shared.SessionCookie = null;
+                    SettingsManager.Shared.Save();
+                });
                 return (false, "自服务会话已失效", new());
             }
 
@@ -1009,7 +1083,8 @@ public sealed class CampusNetworkClient
                 }
             }
 
-            LatestData.OnlineDevices = list;
+            if (!TryUpdateForAccount(accountGeneration, () => LatestData.OnlineDevices = list))
+                return (false, "账号已切换", new());
             AppEvents.RaiseNetworkDataUpdated();
             return (true, $"已获取 {list.Count} 台在线终端设备", list);
         }
@@ -1022,10 +1097,17 @@ public sealed class CampusNetworkClient
     /// <summary>
     /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取流量
     /// </summary>
-    public async Task<(bool Success, string Message)> SilentLoginSelfServiceAndFetchAsync()
+    public async Task<(bool Success, string Message)> SilentLoginSelfServiceAndFetchAsync(
+        long? expectedAccountGeneration = null)
     {
-        var username = SettingsManager.Shared.PortalUsername?.Trim();
-        var password = SettingsManager.Shared.PortalPassword?.Trim();
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        string? username = null;
+        string? password = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            username = SettingsManager.Shared.PortalUsername?.Trim();
+            password = SettingsManager.Shared.PortalPassword?.Trim();
+        })) return (false, "账号已切换");
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
         {
             return (false, "请先在偏好设置中配置学号与密码");
@@ -1042,7 +1124,9 @@ public sealed class CampusNetworkClient
             using var step1Req = new HttpRequestMessage(HttpMethod.Get, "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
             step1Req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
             using var step1Resp = await _selfServiceClient.SendAsync(step1Req);
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换");
             var step1Html = await step1Resp.Content.ReadAsStringAsync();
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换");
 
             string? sid = null;
             if (step1Resp.Headers.TryGetValues("Set-Cookie", out var setCookies))
@@ -1076,6 +1160,7 @@ public sealed class CampusNetworkClient
             step2Req.Headers.TryAddWithoutValidation("Referer", "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
             step2Req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
             using var step2Resp = await _selfServiceClient.SendAsync(step2Req);
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换");
 
             // Step 3: POST verify
             using var md5 = MD5.Create();
@@ -1090,7 +1175,9 @@ public sealed class CampusNetworkClient
             step3Req.Content = new StringContent(formBody, Encoding.UTF8, "application/x-www-form-urlencoded");
 
             using var step3Resp = await _selfServiceClient.SendAsync(step3Req);
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换");
             var step3Html = await step3Resp.Content.ReadAsStringAsync();
+            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换");
 
             string finalSid = sid;
             if (step3Resp.Headers.TryGetValues("Set-Cookie", out var verifyCookies))
@@ -1102,12 +1189,15 @@ public sealed class CampusNetworkClient
                 }
             }
 
-            SettingsManager.Shared.SessionCookie = $"JSESSIONID={finalSid}";
-            SettingsManager.Shared.Save();
+            if (!TryUpdateForAccount(accountGeneration, () =>
+            {
+                SettingsManager.Shared.SessionCookie = $"JSESSIONID={finalSid}";
+                SettingsManager.Shared.Save();
+            })) return (false, "账号已切换");
 
             if (step3Html.Contains("可用流量") || step3Html.Contains("已用流量"))
             {
-                ApplyParsedDashboardHTML(step3Html);
+                ApplyParsedDashboardHTML(step3Html, accountGeneration);
                 return (true, "自服务系统登录成功");
             }
 
@@ -1119,20 +1209,23 @@ public sealed class CampusNetworkClient
         }
         finally
         {
-            Interlocked.Exchange(ref _isFetchingSelfService, 0);
+            if (IsCurrentAccount(accountGeneration))
+                Interlocked.Exchange(ref _isFetchingSelfService, 0);
         }
     }
 
     /// <summary>
     /// 抓取自服务仪表盘流量与余额页面（单向拉取，绝不循环递归）
     /// </summary>
-    public async Task<bool> FetchDashboardDataAsync()
+    public async Task<bool> FetchDashboardDataAsync(long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        if (!IsCurrentAccount(accountGeneration)) return false;
         var cookie = SettingsManager.Shared.SessionCookie?.Trim();
         if (string.IsNullOrEmpty(cookie))
         {
-            var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
-            return ok;
+            var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+            return IsCurrentAccount(accountGeneration) && ok;
         }
 
         try
@@ -1144,24 +1237,32 @@ public sealed class CampusNetworkClient
             req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
 
             using var resp = await _selfServiceClient.SendAsync(req);
+            if (!IsCurrentAccount(accountGeneration)) return false;
             if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
             {
-                SettingsManager.Shared.SessionCookie = null;
-                SettingsManager.Shared.Save();
-                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
-                return ok;
+                if (!TryUpdateForAccount(accountGeneration, () =>
+                {
+                    SettingsManager.Shared.SessionCookie = null;
+                    SettingsManager.Shared.Save();
+                })) return false;
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+                return IsCurrentAccount(accountGeneration) && ok;
             }
 
             var html = await resp.Content.ReadAsStringAsync();
+            if (!IsCurrentAccount(accountGeneration)) return false;
             if (html.Contains("欢迎登录用户自助服务系统") && !html.Contains("已用流量"))
             {
-                SettingsManager.Shared.SessionCookie = null;
-                SettingsManager.Shared.Save();
-                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync();
-                return ok;
+                if (!TryUpdateForAccount(accountGeneration, () =>
+                {
+                    SettingsManager.Shared.SessionCookie = null;
+                    SettingsManager.Shared.Save();
+                })) return false;
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+                return IsCurrentAccount(accountGeneration) && ok;
             }
 
-            return ApplyParsedDashboardHTML(html);
+            return ApplyParsedDashboardHTML(html, accountGeneration);
         }
         catch
         {
@@ -1174,6 +1275,7 @@ public sealed class CampusNetworkClient
     /// </summary>
     public void KickDevice(OnlineDeviceSession session, Action<bool, string> callback)
     {
+        var accountGeneration = AccountSessionManager.Generation;
         Task.Run(async () =>
         {
             try
@@ -1194,13 +1296,25 @@ public sealed class CampusNetworkClient
 
                 using var res = await _selfServiceClient.SendAsync(req);
                 var content = await res.Content.ReadAsStringAsync();
+                if (!IsCurrentAccount(accountGeneration))
+                {
+                    callback(false, "账号已切换");
+                    return;
+                }
                 bool ok = res.IsSuccessStatusCode && (content.Contains("success") || content.Contains("true") || content.Contains("成功"));
 
                 if (ok)
                 {
-                    LatestData.OnlineDevices.RemoveAll(d => d.SessionId == session.SessionId);
+                    if (!TryUpdateForAccount(accountGeneration, () =>
+                    {
+                        LatestData.OnlineDevices.RemoveAll(d => d.SessionId == session.SessionId);
+                    }))
+                    {
+                        callback(false, "账号已切换");
+                        return;
+                    }
                     AppEvents.RaiseNetworkDataUpdated();
-                    _ = Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+                    _ = Task.Run(async () => { try { await FetchOnlineDevicesAsync(accountGeneration); } catch { } });
                     callback(true, "设备已成功强制下线");
                 }
                 else
@@ -1236,97 +1350,114 @@ public sealed class CampusNetworkClient
         _syncTimer?.Change(intervalMs, intervalMs);
     }
 
-    public bool ApplyParsedDashboardHTML(string html)
+    public bool ApplyParsedDashboardHTML(string html, long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         var parsed = ParseDashboardHTML(html);
         if (parsed == null) return false;
 
         bool hasRealData = false;
-        if (!string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
+        if (!TryUpdateForAccount(accountGeneration, () =>
         {
-            LatestData.UsedFlow = parsed.UsedFlow;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
-        {
-            LatestData.AvailableFlow = parsed.AvailableFlow;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrEmpty(parsed.Balance) && parsed.Balance != "-- 元")
-        {
-            LatestData.Balance = parsed.Balance;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrEmpty(parsed.FlowProtection) && parsed.FlowProtection != "--")
-        {
-            LatestData.FlowProtection = parsed.FlowProtection;
-        }
+            if (!string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
+            {
+                LatestData.UsedFlow = parsed.UsedFlow;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
+            {
+                LatestData.AvailableFlow = parsed.AvailableFlow;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrEmpty(parsed.Balance) && parsed.Balance != "-- 元")
+            {
+                LatestData.Balance = parsed.Balance;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrEmpty(parsed.FlowProtection) && parsed.FlowProtection != "--")
+            {
+                LatestData.FlowProtection = parsed.FlowProtection;
+            }
 
+            if (!hasRealData) return;
+
+            LatestData.IsLoggedIn = true;
+            LatestData.LastUpdated = DateTime.Now;
+            LatestData.ErrorMessage = null;
+
+            // 记录历史流量
+            if (!string.IsNullOrEmpty(parsed.UsedFlow))
+            {
+                var m = Regex.Match(parsed.UsedFlow, @"[0-9]+(?:\.[0-9]+)?");
+                if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
+                {
+                    if (parsed.UsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
+                    CampusHistoryManager.Shared.RecordFlow(flowVal);
+                }
+            }
+        })) return false;
         if (!hasRealData) return false;
 
-        LatestData.IsLoggedIn = true;
-        LatestData.LastUpdated = DateTime.Now;
-        LatestData.ErrorMessage = null;
         AppEvents.RaiseNetworkDataUpdated();
 
-        // 记录历史流量
-        if (!string.IsNullOrEmpty(parsed.UsedFlow))
-        {
-            var m = Regex.Match(parsed.UsedFlow, @"[0-9]+(?:\.[0-9]+)?");
-            if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
-            {
-                if (parsed.UsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
-                CampusHistoryManager.Shared.RecordFlow(flowVal);
-            }
-        }
-
         // 提取在线设备
-        Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+        Task.Run(async () => { try { await FetchOnlineDevicesAsync(accountGeneration); } catch { } });
         return true;
     }
 
-    public bool ApplyExplicitDashboardData(string? usedFlow, string? availFlow, string? balance, string? protection)
+    public bool ApplyExplicitDashboardData(
+        string? usedFlow,
+        string? availFlow,
+        string? balance,
+        string? protection,
+        long? expectedAccountGeneration = null)
     {
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         bool hasRealData = false;
-        if (!string.IsNullOrWhiteSpace(usedFlow) && usedFlow != "-- M")
+        if (!TryUpdateForAccount(accountGeneration, () =>
         {
-            LatestData.UsedFlow = usedFlow;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrWhiteSpace(availFlow) && availFlow != "-- M")
-        {
-            LatestData.AvailableFlow = availFlow;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrWhiteSpace(balance) && balance != "-- 元")
-        {
-            LatestData.Balance = balance;
-            hasRealData = true;
-        }
-        if (!string.IsNullOrWhiteSpace(protection) && protection != "--")
-        {
-            LatestData.FlowProtection = protection;
-        }
+            if (!string.IsNullOrWhiteSpace(usedFlow) && usedFlow != "-- M")
+            {
+                LatestData.UsedFlow = usedFlow;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrWhiteSpace(availFlow) && availFlow != "-- M")
+            {
+                LatestData.AvailableFlow = availFlow;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrWhiteSpace(balance) && balance != "-- 元")
+            {
+                LatestData.Balance = balance;
+                hasRealData = true;
+            }
+            if (!string.IsNullOrWhiteSpace(protection) && protection != "--")
+            {
+                LatestData.FlowProtection = protection;
+            }
 
+            if (!hasRealData) return;
+
+            LatestData.IsLoggedIn = true;
+            LatestData.LastUpdated = DateTime.Now;
+            LatestData.ErrorMessage = null;
+
+            if (!string.IsNullOrEmpty(usedFlow))
+            {
+                var m = Regex.Match(usedFlow, @"[0-9]+(?:\.[0-9]+)?");
+                if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
+                {
+                    if (usedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
+                    CampusHistoryManager.Shared.RecordFlow(flowVal);
+                }
+            }
+        })) return false;
         if (!hasRealData) return false;
 
-        LatestData.IsLoggedIn = true;
-        LatestData.LastUpdated = DateTime.Now;
-        LatestData.ErrorMessage = null;
         AppEvents.RaiseNetworkDataUpdated();
 
-        if (!string.IsNullOrEmpty(usedFlow))
-        {
-            var m = Regex.Match(usedFlow, @"[0-9]+(?:\.[0-9]+)?");
-            if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
-            {
-                if (usedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
-                CampusHistoryManager.Shared.RecordFlow(flowVal);
-            }
-        }
-
         // 提取在线设备
-        Task.Run(async () => { try { await FetchOnlineDevicesAsync(); } catch { } });
+        Task.Run(async () => { try { await FetchOnlineDevicesAsync(accountGeneration); } catch { } });
         return true;
     }
 
