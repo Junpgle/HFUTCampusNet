@@ -115,10 +115,13 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         }
     }
 
-    // 处理自签名证书信任（关键：确保 HTTPS 8443 不报错白屏）
+    // 仅为自服务旧版 HTTPS 端口兼容证书；重定向到其他主机时走系统校验。
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let serverTrust = challenge.protectionSpace.serverTrust {
+        let protectionSpace = challenge.protectionSpace
+        if protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           protectionSpace.host.caseInsensitiveCompare("xywzz.hfut.edu.cn") == .orderedSame,
+           protectionSpace.port == 8443,
+           let serverTrust = protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: serverTrust))
         } else {
             completionHandler(.performDefaultHandling, nil)
