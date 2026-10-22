@@ -663,6 +663,11 @@ public sealed class EmptyClassroomService
 
                 // 若未指定校区，优先同步当前自习室所在校区（宣城 6 / 翡翠湖 3 / 屯溪路 2）
                 var activeCampusId = targetCampusId ?? (int)CurrentPreferredCampus;
+                if (!targetCampusId.HasValue && CurrentStudyRoomItem() is { } currentStudyRoom &&
+                    StudyCampusExtensions.AllCases.Contains((StudyCampus)currentStudyRoom.CampusId))
+                {
+                    activeCampusId = currentStudyRoom.CampusId;
+                }
                 var campusesToSync = targetCampusId.HasValue ? new[] { targetCampusId.Value } : new[] { activeCampusId };
 
                 var allResults = new List<ClassroomOccupationItem>();
