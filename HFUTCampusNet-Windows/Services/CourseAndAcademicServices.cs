@@ -1064,11 +1064,16 @@ public sealed class AcademicService
 
                         var cCode = item.TryGetProperty("courseCode", out var cc) ? cc.GetString() : null;
                         var examDate = item.TryGetProperty("examDate", out var ed) ? ed.GetString()?.Trim() ?? "" : "";
-                        int startInt = item.TryGetProperty("startTime", out var st) && st.ValueKind == JsonValueKind.Number ? st.GetInt32() : 0;
-                        int endInt = item.TryGetProperty("endTime", out var et) && et.ValueKind == JsonValueKind.Number ? et.GetInt32() : 0;
-
-                        var startStr = $"{startInt / 100:D2}:{startInt % 100:D2}";
-                        var endStr = $"{endInt / 100:D2}:{endInt % 100:D2}";
+                        if (!item.TryGetProperty("startTime", out var startProp) ||
+                            !TryParseApiExamTime(startProp, out var startStr) ||
+                            !item.TryGetProperty("endTime", out var endProp) ||
+                            !TryParseApiExamTime(endProp, out var endStr) ||
+                            !TryParseExamDateTime(examDate, startStr, endStr, out var startDateTime, out var endDateTime))
+                        {
+                            continue;
+                        }
+                        startStr = startDateTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+                        endStr = endDateTime.ToString("HH:mm", CultureInfo.InvariantCulture);
                         var dtStr = $"{examDate} {startStr}~{endStr}";
 
                         var place = item.TryGetProperty("place", out var pl) ? pl.GetString()?.Trim() : null;
@@ -1370,12 +1375,7 @@ public sealed class AcademicService
                     var datePart = dateTimeMatch.Groups["date"].Value;
                     var startTime = dateTimeMatch.Groups["start"].Value;
                     var endTime = dateTimeMatch.Groups["end"].Value;
-                    var dateTimeFormats = new[] { "yyyy-MM-dd H:mm", "yyyy-MM-dd HH:mm" };
-                    if (!DateTime.TryParseExact(
-                            $"{datePart} {startTime}", dateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDateTime) ||
-                        !DateTime.TryParseExact(
-                            $"{datePart} {endTime}", dateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var endDateTime) ||
-                        endDateTime < startDateTime)
+                    if (!TryParseExamDateTime(datePart, startTime, endTime, out var startDateTime, out var endDateTime))
                     {
                         continue;
                     }
@@ -1398,6 +1398,62 @@ public sealed class AcademicService
         catch { }
         return list;
     }
+
+    private static bool TryParseApiExamTime(JsonElement value, out string formattedTime)
+    {
+        formattedTime = string.Empty;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numericTime))
+            return TryFormatExamTime(numericTime, out formattedTime);
+
+        if (value.ValueKind != JsonValueKind.String) return false;
+        var text = value.GetString()?.Trim();
+        if (string.IsNullOrEmpty(text)) return false;
+        if (int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out numericTime))
+            return TryFormatExamTime(numericTime, out formattedTime);
+
+        if (!DateTime.TryParseExact(
+                text,
+                new[] { "H:mm", "HH:mm" },
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedTime))
+        {
+            return false;
+        }
+
+        formattedTime = parsedTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    private static bool TryFormatExamTime(int value, out string formattedTime)
+    {
+        formattedTime = string.Empty;
+        var hour = value / 100;
+        var minute = value % 100;
+        if (value < 0 || hour >= 24 || minute >= 60) return false;
+        formattedTime = $"{hour:D2}:{minute:D2}";
+        return true;
+    }
+
+    private static bool TryParseExamDateTime(
+        string date,
+        string startTime,
+        string endTime,
+        out DateTime startDateTime,
+        out DateTime endDateTime)
+    {
+        startDateTime = default;
+        endDateTime = default;
+        var formats = new[] { "yyyy-MM-dd H:mm", "yyyy-MM-dd HH:mm" };
+        return DateTime.TryParseExact(
+                $"{date} {startTime}", formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out startDateTime) &&
+            DateTime.TryParseExact(
+                $"{date} {endTime}", formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out endDateTime) &&
+            endDateTime >= startDateTime;
+    }
+
+    private static bool IsValidExamSchedule(ExamItem exam) =>
+        TryParseExamDateTime(exam.DateString, exam.StartTimeString, exam.EndTimeString, out _, out _);
 
     private async Task<List<GradeItem>> FetchGradesHtmlAsync(string cookie, string stdId)
     {
@@ -1611,7 +1667,15 @@ public sealed class AcademicService
             if (File.Exists(_cacheFile))
             {
                 var json = File.ReadAllText(_cacheFile, Encoding.UTF8);
-                LatestData = JsonSerializer.Deserialize<AcademicDataSnapshot>(json);
+                var cached = JsonSerializer.Deserialize<AcademicDataSnapshot>(json);
+                if (cached == null) return;
+
+                var cachedExams = cached.Exams ?? new List<ExamItem>();
+                var validExams = cachedExams.Where(exam => exam != null && IsValidExamSchedule(exam)).ToList();
+                bool removedInvalidExams = validExams.Count != cachedExams.Count;
+                cached.Exams = validExams;
+                LatestData = cached;
+                if (removedInvalidExams) SaveCache();
             }
         }
         catch { }
