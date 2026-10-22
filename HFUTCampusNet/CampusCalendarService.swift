@@ -71,6 +71,7 @@ public enum CampusCalendarService {
         let formatter = DateFormatter()
         formatter.calendar = CourseCalendarHelper.beijingCalendar
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         let today = formatter.string(from: now)
         let todayDate = formatter.date(from: today) ?? now
