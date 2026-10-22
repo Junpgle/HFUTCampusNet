@@ -2485,8 +2485,13 @@ public sealed class ClassroomSemesterScheduleWindow : Window
     {
         var palettes = ThemeManager.Shared.IsDarkTheme ? CoursePaletteDark : CoursePaletteLight;
         if (string.IsNullOrEmpty(courseName)) return palettes[0];
-        int hash = Math.Abs(courseName.GetHashCode());
-        return palettes[hash % palettes.Length];
+        uint hash = 2166136261;
+        foreach (char c in courseName)
+        {
+            hash ^= c;
+            hash *= 16777619;
+        }
+        return palettes[hash % (uint)palettes.Length];
     }
 
     private List<CourseLesson> ResolveWeekLessons(int week)
