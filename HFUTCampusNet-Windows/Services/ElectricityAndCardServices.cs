@@ -1120,7 +1120,19 @@ public sealed class CampusCardService
                 double balanceRMB = dbBalanceFen / 100.0;
                 double unsettleRMB = unsettleFen / 100.0;
 
-                var transactions = await FetchTransactionsAsync(authHeader, 150);
+                var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150);
+                if (!IsCurrentRequest(generation))
+                    return (null, StaleRequestMessage);
+
+                List<CampusCardTransaction> previousTransactions;
+                lock (_stateLock)
+                {
+                    previousTransactions = _requestGeneration == generation &&
+                        LatestData?.CardAccount == account
+                        ? LatestData.Transactions?.ToList() ?? new List<CampusCardTransaction>()
+                        : new List<CampusCardTransaction>();
+                }
+                var transactions = MergeTransactions(previousTransactions.Concat(fetchedTransactions));
 
                 var cardData = new CampusCardData
                 {
@@ -1248,7 +1260,6 @@ public sealed class CampusCardService
             int idx = 0;
             foreach (var rec in recordsElem.EnumerateArray())
             {
-                var orderId = GetJsonString(rec, "orderId") ?? $"tx-{idx}";
                 var resume = GetJsonString(rec, "resume") ?? "校园卡交易";
                 var turnoverType = GetJsonString(rec, "turnoverType") ?? "消费";
                 var jnTimeStr = GetJsonString(rec, "jndatetimeStr")
@@ -1256,6 +1267,11 @@ public sealed class CampusCardService
                     ?? string.Empty;
                 int tranAmtFen = GetJsonInt(rec, "tranamt") ?? 0;
                 int? cardBalFen = GetJsonInt(rec, "cardBalance");
+                var orderId = GetJsonString(rec, "orderId");
+                if (string.IsNullOrWhiteSpace(orderId))
+                {
+                    orderId = $"tx-{jnTimeStr}|{resume}|{turnoverType}|{tranAmtFen}|{cardBalFen?.ToString(CultureInfo.InvariantCulture) ?? "-1"}";
+                }
 
                 double amountRMB = Math.Abs(tranAmtFen) / 100.0;
                 double? balAfterRMB = cardBalFen.HasValue ? cardBalFen.Value / 100.0 : null;
@@ -1294,6 +1310,25 @@ public sealed class CampusCardService
                 $"当前卡内余额仅剩 {data.DisplayBalance}，已低于预警线 ({threshold:F0}元)，去食堂或超市前请记得在慧新易校或支付宝充值！",
                 "campus_card_low_warning");
         }
+    }
+
+    private static List<CampusCardTransaction> MergeTransactions(IEnumerable<CampusCardTransaction> transactions)
+    {
+        var byId = new Dictionary<string, CampusCardTransaction>(StringComparer.Ordinal);
+        var index = 0;
+        foreach (var transaction in transactions)
+        {
+            var stableId = string.IsNullOrEmpty(transaction.Id)
+                ? $"{transaction.DateTimeString}|{transaction.MerchantName}|{transaction.TurnoverType}|{transaction.AmountRMB.ToString(CultureInfo.InvariantCulture)}|{index}"
+                : transaction.Id;
+            byId[stableId] = transaction;
+            index++;
+        }
+
+        return byId.Values
+            .OrderByDescending(transaction => transaction.DateTimeString, StringComparer.Ordinal)
+            .ThenByDescending(transaction => transaction.Id, StringComparer.Ordinal)
+            .ToList();
     }
 
     private static string? GetJsonString(JsonElement obj, string propName)
