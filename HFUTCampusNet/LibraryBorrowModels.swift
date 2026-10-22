@@ -150,6 +150,8 @@ public final class LibraryBorrowManager {
 
     private let storageKey = "cn.edu.hfut.campusnet.borrow_records_v3"
     private let lastSyncKey = "cn.edu.hfut.campusnet.borrow_sync_time_v3"
+    private let stateLock = NSLock()
+    private var syncGeneration = 0
     private static let readerRecordPageSize = 100
     private static let maximumReaderRecordPages = 100
 
@@ -240,44 +242,98 @@ public final class LibraryBorrowManager {
         UserDefaults.standard.set(Date(), forKey: lastSyncKey)
     }
 
+    public func clearCache() {
+        stateLock.lock()
+        syncGeneration &+= 1
+        SettingsManager.shared.libraryToken = nil
+        SettingsManager.shared.libraryBorrowCount = 0
+        books.removeAll()
+        totalBorrowStatsCount = 0
+        totalBookshelfStatsCount = 0
+        isSyncing = false
+        let completions = pendingSyncCompletions
+        pendingSyncCompletions.removeAll(keepingCapacity: false)
+        UserDefaults.standard.removeObject(forKey: storageKey)
+        UserDefaults.standard.removeObject(forKey: lastSyncKey)
+        stateLock.unlock()
+
+        let cancellation = Self.cancelledError()
+        DispatchQueue.main.async {
+            self.onDataChanged?()
+            completions.forEach { $0(.failure(cancellation)) }
+        }
+    }
+
+    private func isCurrentSyncGeneration(_ generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return syncGeneration == generation
+    }
+
+    private func setLibraryToken(_ token: String?, generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard syncGeneration == generation else { return false }
+        SettingsManager.shared.libraryToken = token
+        return true
+    }
+
+    private static func cancelledError() -> NSError {
+        NSError(domain: "LibraryBorrowManager", code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次图书借阅同步已取消"])
+    }
+
     // MARK: - 从合工大图书馆 API (CAS SSO) 同步真实借阅与历史
 
     /// 核心同步入口：自动利用 CAS TGC 换取图书馆 JWT Token，并拉取真实在借与借阅历史
     public func syncWithRemote(forceSSO: Bool = false, completion: ((Result<[CampusBorrowedBook], Error>) -> Void)? = nil) {
+        stateLock.lock()
         if isSyncing {
             if let completion {
                 pendingSyncCompletions.append(completion)
             }
+            stateLock.unlock()
             return
         }
         isSyncing = true
         pendingSyncCompletions = completion.map { [$0] } ?? []
+        let generation = syncGeneration
+        stateLock.unlock()
 
         let finishSync: (Result<[CampusBorrowedBook], Error>) -> Void = { [weak self] result in
             guard let self else { return }
+            self.stateLock.lock()
+            guard self.syncGeneration == generation else {
+                self.stateLock.unlock()
+                return
+            }
             self.isSyncing = false
             let completions = self.pendingSyncCompletions
             self.pendingSyncCompletions.removeAll(keepingCapacity: false)
+            self.stateLock.unlock()
             completions.forEach { $0(result) }
         }
 
         let existingToken = SettingsManager.shared.libraryToken?.trimmingCharacters(in: .whitespacesAndNewlines)
         if !forceSSO, let token = existingToken, !token.isEmpty {
             // 直接尝试拉取借阅记录
-            fetchReaderRecord(token: token) { [weak self] result in
+            fetchReaderRecord(token: token, generation: generation) { [weak self] result in
                 guard let self else { return }
+                guard self.isCurrentSyncGeneration(generation) else { return }
                 switch result {
                 case .success(let items):
-                    self.fetchLibraryStats(token: token)
+                    self.fetchLibraryStats(token: token, generation: generation)
                     finishSync(.success(items))
                 case .failure:
                     // Token 可能过期，退化为 CAS SSO 重新获取
-                    self.loginViaCASTgc { ssoResult in
+                    self.loginViaCASTgc(generation: generation) { ssoResult in
+                        guard self.isCurrentSyncGeneration(generation) else { return }
                         switch ssoResult {
                         case .success(let newToken):
-                            self.fetchReaderRecord(token: newToken) { finalRes in
+                            self.fetchReaderRecord(token: newToken, generation: generation) { finalRes in
+                                guard self.isCurrentSyncGeneration(generation) else { return }
                                 if case .success = finalRes {
-                                    self.fetchLibraryStats(token: newToken)
+                                    self.fetchLibraryStats(token: newToken, generation: generation)
                                 }
                                 finishSync(finalRes)
                             }
@@ -291,13 +347,15 @@ public final class LibraryBorrowManager {
         }
 
         // 无 Token 或强制 SSO 重新登录
-        loginViaCASTgc { [weak self] ssoResult in
+        loginViaCASTgc(generation: generation) { [weak self] ssoResult in
             guard let self else { return }
+            guard self.isCurrentSyncGeneration(generation) else { return }
             switch ssoResult {
             case .success(let newToken):
-                self.fetchReaderRecord(token: newToken) { finalRes in
+                self.fetchReaderRecord(token: newToken, generation: generation) { finalRes in
+                    guard self.isCurrentSyncGeneration(generation) else { return }
                     if case .success = finalRes {
-                        self.fetchLibraryStats(token: newToken)
+                        self.fetchLibraryStats(token: newToken, generation: generation)
                     }
                     finishSync(finalRes)
                 }
@@ -308,7 +366,11 @@ public final class LibraryBorrowManager {
     }
 
     /// 使用 CAS TGC Cookie 单点登录图书馆系统，获取 Authorization Header Token
-    private func loginViaCASTgc(completion: @escaping (Result<String, Error>) -> Void) {
+    private func loginViaCASTgc(generation: Int, completion: @escaping (Result<String, Error>) -> Void) {
+        guard isCurrentSyncGeneration(generation) else {
+            completion(.failure(Self.cancelledError()))
+            return
+        }
         guard let tgc = SettingsManager.shared.casTgcCookie?.trimmingCharacters(in: .whitespacesAndNewlines), !tgc.isEmpty else {
             completion(.failure(NSError(domain: "LibraryBorrowManager", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未登录统一身份认证 (CAS)，请先在一键登录中完成认证"])))
             return
@@ -359,22 +421,34 @@ public final class LibraryBorrowManager {
                 return
             }
 
-            SettingsManager.shared.libraryToken = token
+            guard self.setLibraryToken(token, generation: generation) else {
+                completion(.failure(Self.cancelledError()))
+                return
+            }
             completion(.success(token))
         }.resume()
     }
 
     /// 调用 readerRecord 分页接口，完整读取在借与历史记录。
-    private func fetchReaderRecord(token: String, completion: @escaping (Result<[CampusBorrowedBook], Error>) -> Void) {
-        fetchReaderRecordPage(token: token, page: 1, accumulated: [], completion: completion)
+    private func fetchReaderRecord(
+        token: String,
+        generation: Int,
+        completion: @escaping (Result<[CampusBorrowedBook], Error>) -> Void
+    ) {
+        fetchReaderRecordPage(token: token, generation: generation, page: 1, accumulated: [], completion: completion)
     }
 
     private func fetchReaderRecordPage(
         token: String,
+        generation: Int,
         page: Int,
         accumulated: [CampusBorrowedBook],
         completion: @escaping (Result<[CampusBorrowedBook], Error>) -> Void
     ) {
+        guard isCurrentSyncGeneration(generation) else {
+            completion(.failure(Self.cancelledError()))
+            return
+        }
         guard page <= Self.maximumReaderRecordPages,
               var components = URLComponents(string: "https://lib.hfut.edu.cn/svc/circulate/readerRecord") else {
             completion(.failure(NSError(domain: "LibraryBorrowManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "无效的借阅查询 URL"])))
@@ -397,6 +471,10 @@ public final class LibraryBorrowManager {
 
         URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
             guard let self else { return }
+            guard self.isCurrentSyncGeneration(generation) else {
+                completion(.failure(Self.cancelledError()))
+                return
+            }
             if let error = error {
                 completion(.failure(error))
                 return
@@ -475,6 +553,7 @@ public final class LibraryBorrowManager {
                     }
                     self.fetchReaderRecordPage(
                         token: token,
+                        generation: generation,
                         page: page + 1,
                         accumulated: accumulated + parsedBooks,
                         completion: completion
@@ -484,6 +563,10 @@ public final class LibraryBorrowManager {
 
                 let allBooks = accumulated + parsedBooks
                 DispatchQueue.main.async {
+                    guard self.isCurrentSyncGeneration(generation) else {
+                        completion(.failure(Self.cancelledError()))
+                        return
+                    }
                     self.books = allBooks
                     self.recordSync()
                     self.saveToStorage()
@@ -496,7 +579,8 @@ public final class LibraryBorrowManager {
     }
 
     /// 获取读者借阅统计（书架、借阅册数、预约等）
-    public func fetchLibraryStats(token: String) {
+    public func fetchLibraryStats(token: String, generation: Int) {
+        guard isCurrentSyncGeneration(generation) else { return }
         guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/myLibCall/listMyLibStatis") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -510,18 +594,32 @@ public final class LibraryBorrowManager {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let list = json["data"] as? [[String: Any]] else { return }
 
+            var borrowCount: Int?
+            var bookshelfCount: Int?
             for item in list {
                 let code = item["code"] as? String ?? ""
                 let count = item["count"] as? Int ?? 0
                 if code == "myborrow" {
-                    self.totalBorrowStatsCount = count
-                    SettingsManager.shared.libraryBorrowCount = count
+                    borrowCount = count
                 } else if code == "mybookshelf" {
-                    self.totalBookshelfStatsCount = count
+                    bookshelfCount = count
                 }
             }
 
             DispatchQueue.main.async {
+                self.stateLock.lock()
+                guard self.syncGeneration == generation else {
+                    self.stateLock.unlock()
+                    return
+                }
+                if let borrowCount {
+                    self.totalBorrowStatsCount = borrowCount
+                    SettingsManager.shared.libraryBorrowCount = borrowCount
+                }
+                if let bookshelfCount {
+                    self.totalBookshelfStatsCount = bookshelfCount
+                }
+                self.stateLock.unlock()
                 self.onDataChanged?()
             }
         }.resume()

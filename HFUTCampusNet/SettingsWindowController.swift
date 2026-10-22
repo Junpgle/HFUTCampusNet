@@ -962,6 +962,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         CourseScheduleService.shared.clearSchedule()
         CampusCardService.shared.clearCache()
         AcademicService.shared.clearCache()
+        LibraryBorrowManager.shared.clearCache()
         updateCourseStatusDisplay()
     }
 
