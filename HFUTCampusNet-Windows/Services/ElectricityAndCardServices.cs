@@ -639,20 +639,33 @@ public sealed class ElectricityService
     /// </summary>
     public async Task<(string? Flow, string? Balance)> FetchSchoolNetInfoFromHuiXinAsync()
     {
+        long tokenGeneration;
+        lock (_tokenStateLock)
+        {
+            tokenGeneration = _tokenRequestGeneration;
+        }
+
         var token = SettingsManager.Shared.HuixinAuthToken;
         if (string.IsNullOrWhiteSpace(token))
         {
-            var (newToken, _) = await ObtainHuiXinTokenAsync();
-            if (string.IsNullOrWhiteSpace(newToken))
+            var (newToken, _) = await ObtainHuiXinTokenAsync(
+                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, tokenValue));
+            if (!IsCurrentTokenGeneration(tokenGeneration) || string.IsNullOrWhiteSpace(newToken))
                 return (null, null);
-            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false);
+            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false, tokenGeneration: tokenGeneration);
         }
 
-        return await QuerySchoolNetHuiXinInternalAsync(token!, allowRetry: true);
+        return await QuerySchoolNetHuiXinInternalAsync(token!, allowRetry: true, tokenGeneration: tokenGeneration);
     }
 
-    private async Task<(string? Flow, string? Balance)> QuerySchoolNetHuiXinInternalAsync(string token, bool allowRetry)
+    private async Task<(string? Flow, string? Balance)> QuerySchoolNetHuiXinInternalAsync(
+        string token,
+        bool allowRetry,
+        long tokenGeneration)
     {
+        if (!IsCurrentTokenGeneration(tokenGeneration))
+            return (null, null);
+
         try
         {
             var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
@@ -664,8 +677,13 @@ public sealed class ElectricityService
             req.Content = new StringContent("feeitemid=281&type=IEC&level=0", Encoding.UTF8, "application/x-www-form-urlencoded");
 
             using var resp = await _httpClient.SendAsync(req);
+            if (!IsCurrentTokenGeneration(tokenGeneration))
+                return (null, null);
+
             int httpStatus = (int)resp.StatusCode;
             var respText = await resp.Content.ReadAsStringAsync();
+            if (!IsCurrentTokenGeneration(tokenGeneration))
+                return (null, null);
 
             JsonDocument? doc = null;
             int? jsonCode = null;
@@ -686,12 +704,22 @@ public sealed class ElectricityService
             {
                 if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
-                    SettingsManager.Shared.HuixinAuthToken = null;
+                    if (!TryResolveSchoolNetRetryToken(token, tokenGeneration, out var retryToken))
+                        return (null, null);
+
                     if (allowRetry)
                     {
-                        var (newToken, _) = await ObtainHuiXinTokenAsync();
+                        var newToken = retryToken;
+                        if (string.IsNullOrWhiteSpace(newToken))
+                        {
+                            var (obtainedToken, _) = await ObtainHuiXinTokenAsync(
+                                tokenValue => TryPersistTokenForTokenGeneration(tokenGeneration, tokenValue));
+                            if (!IsCurrentTokenGeneration(tokenGeneration))
+                                return (null, null);
+                            newToken = obtainedToken;
+                        }
                         if (!string.IsNullOrWhiteSpace(newToken))
-                            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false);
+                            return await QuerySchoolNetHuiXinInternalAsync(newToken!, allowRetry: false, tokenGeneration: tokenGeneration);
                     }
                     return (null, null);
                 }
@@ -758,12 +786,55 @@ public sealed class ElectricityService
                     }
                 }
 
+                if (!IsCurrentTokenGeneration(tokenGeneration))
+                    return (null, null);
+
                 return (cleanFlow, cleanFee);
             }
         }
         catch
         {
             return (null, null);
+        }
+    }
+
+    private bool IsCurrentTokenGeneration(long tokenGeneration)
+    {
+        lock (_tokenStateLock)
+        {
+            return _tokenRequestGeneration == tokenGeneration;
+        }
+    }
+
+    private bool TryPersistTokenForTokenGeneration(long tokenGeneration, string token)
+    {
+        lock (_tokenStateLock)
+        {
+            if (_tokenRequestGeneration != tokenGeneration)
+                return false;
+
+            SettingsManager.Shared.HuixinAuthToken = token;
+            return true;
+        }
+    }
+
+    private bool TryResolveSchoolNetRetryToken(string expiredToken, long tokenGeneration, out string? retryToken)
+    {
+        lock (_tokenStateLock)
+        {
+            if (_tokenRequestGeneration != tokenGeneration)
+            {
+                retryToken = null;
+                return false;
+            }
+
+            retryToken = SettingsManager.Shared.HuixinAuthToken;
+            if (string.Equals(retryToken, expiredToken, StringComparison.Ordinal))
+            {
+                SettingsManager.Shared.HuixinAuthToken = null;
+                retryToken = null;
+            }
+            return true;
         }
     }
 
