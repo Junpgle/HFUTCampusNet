@@ -147,8 +147,19 @@ public class ElectricityService {
                 if let data = data,
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let token = json["access_token"] as? String, !token.isEmpty {
-                    SettingsManager.shared.huixinAuthToken = token
-                    DispatchQueue.main.async { completion(.success(token)) }
+                    DispatchQueue.main.async {
+                        let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard currentUsername == username else {
+                            completion(.failure(NSError(
+                                domain: "cn.edu.hfut.electricity",
+                                code: NSURLErrorCancelled,
+                                userInfo: [NSLocalizedDescriptionKey: "账号已切换，已取消旧的慧新易校授权"]
+                            )))
+                            return
+                        }
+                        SettingsManager.shared.huixinAuthToken = token
+                        completion(.success(token))
+                    }
                 } else if index + 1 < candidates.count {
                     tryCandidate(at: index + 1)
                 } else {
