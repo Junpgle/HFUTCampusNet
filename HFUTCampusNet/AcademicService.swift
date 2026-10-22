@@ -251,6 +251,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         }
 
         let group = DispatchGroup()
+        let resultQueue = DispatchQueue(label: "AcademicService.syncResults.\(generation)")
 
         var uniAppGrades: [TermGradeGroup]?
         var eamsGrades: [TermGradeGroup]?
@@ -264,14 +265,16 @@ public class AcademicService: NSObject, URLSessionDelegate {
         // 通道 1：合工大教务移动端 (UniApp JWT)
         group.enter()
         fetchFromUniApp { resGrades, resExams, err in
-            if let g = resGrades, !g.isEmpty {
-                uniAppGrades = g
-            }
-            if let e = resExams {
-                uniAppExams = e
-            }
-            if let err = err {
-                lastErr = err
+            resultQueue.sync {
+                if let g = resGrades, !g.isEmpty {
+                    uniAppGrades = g
+                }
+                if let e = resExams {
+                    uniAppExams = e
+                }
+                if let err = err {
+                    lastErr = err
+                }
             }
             group.leave()
         }
@@ -279,41 +282,55 @@ public class AcademicService: NSObject, URLSessionDelegate {
         // 通道 2：树维教务系统网页端 (jxglstu EAMS 5.0：含成绩、排考、培养方案完成度、本学期教材与评教状态)
         group.enter()
         fetchFromEamsWeb { resGrades, resExams, resProgram, resTextbooks, resSurveys, err in
-            if let g = resGrades, !g.isEmpty {
-                eamsGrades = g
-            }
-            if let e = resExams {
-                eamsExams = e
-            }
-            if let p = resProgram {
-                eamsProgram = p
-            }
-            if let tb = resTextbooks, !tb.isEmpty {
-                eamsTextbooks = tb
-            }
-            if let sv = resSurveys {
-                eamsSurveys = sv
-            }
-            if let err = err, lastErr == nil {
-                lastErr = err
+            resultQueue.sync {
+                if let g = resGrades, !g.isEmpty {
+                    eamsGrades = g
+                }
+                if let e = resExams {
+                    eamsExams = e
+                }
+                if let p = resProgram {
+                    eamsProgram = p
+                }
+                if let tb = resTextbooks, !tb.isEmpty {
+                    eamsTextbooks = tb
+                }
+                if let sv = resSurveys {
+                    eamsSurveys = sv
+                }
+                if let err = err, lastErr == nil {
+                    lastErr = err
+                }
             }
             group.leave()
         }
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self, self.syncGeneration == generation else { return }
+            let collected = resultQueue.sync {
+                (
+                    uniAppGrades: uniAppGrades,
+                    eamsGrades: eamsGrades,
+                    uniAppExams: uniAppExams,
+                    eamsExams: eamsExams,
+                    eamsProgram: eamsProgram,
+                    eamsTextbooks: eamsTextbooks,
+                    eamsSurveys: eamsSurveys,
+                    lastError: lastErr
+                )
+            }
 
             // 合并成绩（优先使用包含 semesterId 的 UniApp 数据，并补充 EAMS 独有的条目；若 UniApp 失败则使用 EAMS 数据）
-            let mergedTermGroups = self.mergeTermGradeGroups(primary: uniAppGrades, secondary: eamsGrades)
+            let mergedTermGroups = self.mergeTermGradeGroups(primary: collected.uniAppGrades, secondary: collected.eamsGrades)
             // 合并考试安排（去重并保留字段最完整的一条）
-            let mergedExams = self.mergeExams(uniAppExams: uniAppExams, eamsExams: eamsExams)
+            let mergedExams = self.mergeExams(uniAppExams: collected.uniAppExams, eamsExams: collected.eamsExams)
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty && eamsSurveys.isEmpty,
+            if mergedTermGroups.isEmpty && mergedExams.isEmpty && collected.eamsProgram == nil && collected.eamsTextbooks.isEmpty && collected.eamsSurveys.isEmpty,
                let prev = self.latestData, !prev.allGrades.isEmpty {
                 // 如果本次网络完全失败且已有本地缓存，保留本地缓存
-                self.lastErrorMessage = lastErr?.localizedDescription
+                self.lastErrorMessage = collected.lastError?.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: prev)
-                if let err = lastErr {
+                if let err = collected.lastError {
                     finishSync(.failure(err))
                 } else {
                     finishSync(.success(prev))
@@ -321,8 +338,8 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 return
             }
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && eamsProgram == nil && eamsTextbooks.isEmpty && eamsSurveys.isEmpty,
-               let err = lastErr {
+            if mergedTermGroups.isEmpty && mergedExams.isEmpty && collected.eamsProgram == nil && collected.eamsTextbooks.isEmpty && collected.eamsSurveys.isEmpty,
+               let err = collected.lastError {
                 self.lastErrorMessage = err.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: nil)
                 finishSync(.failure(err))
@@ -332,9 +349,9 @@ public class AcademicService: NSObject, URLSessionDelegate {
             let oldSnapshot = self.latestData
             let finalExams = mergedExams.isEmpty ? (oldSnapshot?.exams ?? []) : mergedExams
             let finalGroups = mergedTermGroups.isEmpty ? (oldSnapshot?.termGroups ?? []) : mergedTermGroups
-            let finalProgram = eamsProgram ?? oldSnapshot?.programCompletion
-            let finalTextbooks = eamsTextbooks.isEmpty ? (oldSnapshot?.textbooks ?? []) : eamsTextbooks
-            let finalSurveys = eamsSurveys.isEmpty ? (oldSnapshot?.surveys ?? []) : eamsSurveys
+            let finalProgram = collected.eamsProgram ?? oldSnapshot?.programCompletion
+            let finalTextbooks = collected.eamsTextbooks.isEmpty ? (oldSnapshot?.textbooks ?? []) : collected.eamsTextbooks
+            let finalSurveys = collected.eamsSurveys.isEmpty ? (oldSnapshot?.surveys ?? []) : collected.eamsSurveys
 
             let newSnapshot = AcademicDataSnapshot(
                 exams: finalExams,
