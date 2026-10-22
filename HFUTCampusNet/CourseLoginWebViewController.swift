@@ -303,7 +303,6 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
            let match = regex.firstMatch(in: currentURL.path, range: NSRange(currentURL.path.startIndex..., in: currentURL.path)),
            let range = Range(match.range(at: 1), in: currentURL.path) {
             detectedStudentId = String(currentURL.path[range])
-            SettingsManager.shared.courseStudentId = detectedStudentId
         }
 
         // 读取所有 Cookie，严格提取 jxglstu 专属 SESSION + SRVID，避免被 cas.hfut.edu.cn 的同名 SESSION 覆盖
@@ -316,12 +315,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                 self.statusLabel.textColor = .systemOrange
                 return
             }
-            if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
-                SettingsManager.shared.courseSessionCookie = jxCookieHeader
-            }
-            if let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) {
-                SettingsManager.shared.casTgcCookie = tgc
-            }
+            let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies)
+            let casTgcCookie = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
 
             // 优先在当前已登录的 WKWebView 页面上下文内直接执行同源 fetch 获取课表 JSON（100% 复用页面自身有效会话）
             let inPageFetchScript = """
@@ -384,6 +379,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                     studentId: stdId,
                     semesterId: semId,
                     bizTypeId: bizId,
+                    cookieHeader: jxCookieHeader,
+                    casTgcCookie: casTgcCookie,
                     expectedGeneration: scheduleGeneration
                    ),
                    !schedule.lessons.isEmpty {
@@ -405,6 +402,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                         html: html,
                         studentId: detectedStudentId,
                         cookies: cookies,
+                        casTgcCookie: casTgcCookie,
                         expectedGeneration: scheduleGeneration
                     ) { [weak self] result in
                         DispatchQueue.main.async {

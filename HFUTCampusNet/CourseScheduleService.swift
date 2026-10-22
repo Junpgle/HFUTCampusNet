@@ -62,12 +62,17 @@ public class CourseScheduleService {
     }
 
     @discardableResult
-    private func saveSchedule(_ schedule: CourseScheduleData, generation: Int) -> Bool {
+    private func saveSchedule(
+        _ schedule: CourseScheduleData,
+        generation: Int,
+        metadataUpdate: (() -> Void)? = nil
+    ) -> Bool {
         stateLock.lock()
         guard scheduleGeneration == generation else {
             stateLock.unlock()
             return false
         }
+        metadataUpdate?()
         currentSchedule = schedule
 
         var shouldNotify = false
@@ -336,6 +341,8 @@ public class CourseScheduleService {
         studentId: String,
         semesterId: String,
         bizTypeId: String,
+        cookieHeader: String? = nil,
+        casTgcCookie: String? = nil,
         expectedGeneration: Int? = nil
     ) throws -> CourseScheduleData {
         let generation = expectedGeneration ?? beginScheduleUpdate()
@@ -346,15 +353,6 @@ public class CourseScheduleService {
             throw CourseSyncError.invalidResponse
         }
         let parsedLessons = try CourseScheduleService.parseDatumJSON(data: data)
-        if !studentId.isEmpty {
-            SettingsManager.shared.courseStudentId = studentId
-        }
-        if !semesterId.isEmpty {
-            SettingsManager.shared.courseSemesterId = semesterId
-        }
-        if !bizTypeId.isEmpty {
-            SettingsManager.shared.courseBizTypeId = bizTypeId
-        }
         let schedule = CourseScheduleData(
             studentId: studentId.isEmpty ? SettingsManager.shared.courseStudentId : studentId,
             semesterId: semesterId.isEmpty ? SettingsManager.shared.courseSemesterId : semesterId,
@@ -363,7 +361,23 @@ public class CourseScheduleService {
             lastSyncTime: Date(),
             lessons: parsedLessons
         )
-        guard saveSchedule(schedule, generation: generation) else {
+        guard saveSchedule(schedule, generation: generation, metadataUpdate: {
+            if !studentId.isEmpty {
+                SettingsManager.shared.courseStudentId = studentId
+            }
+            if !semesterId.isEmpty {
+                SettingsManager.shared.courseSemesterId = semesterId
+            }
+            if !bizTypeId.isEmpty {
+                SettingsManager.shared.courseBizTypeId = bizTypeId
+            }
+            if let cookieHeader, !cookieHeader.isEmpty {
+                SettingsManager.shared.courseSessionCookie = cookieHeader
+            }
+            if let casTgcCookie, !casTgcCookie.isEmpty {
+                SettingsManager.shared.casTgcCookie = casTgcCookie
+            }
+        }) else {
             throw Self.staleScheduleCancellation()
         }
         return schedule
@@ -374,6 +388,7 @@ public class CourseScheduleService {
         html: String,
         studentId: String,
         cookies: [HTTPCookie],
+        casTgcCookie: String? = nil,
         expectedGeneration: Int? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
@@ -383,32 +398,30 @@ public class CourseScheduleService {
             return
         }
         // 仅保存 jxglstu.hfut.edu.cn 专属的 SESSION 与 SRVID Cookie
-        if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
-            SettingsManager.shared.courseSessionCookie = jxCookieHeader
-        }
+        let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies)
 
         var detectedStd = studentId
         if let matchStd = matchRegex(pattern: #"var\s+studentId\s*=\s*(\d+)"#, in: html) {
             detectedStd = matchStd
         }
-        if !detectedStd.isEmpty {
-            SettingsManager.shared.courseStudentId = detectedStd
-        }
 
         var detectedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
         if let match = matchRegex(pattern: #"bizTypeId\s*:\s*(\d+)"#, in: html) {
             detectedBiz = match
-            SettingsManager.shared.courseBizTypeId = match
         }
 
         var detectedSem = SettingsManager.shared.courseSemesterId.isEmpty ? String(CourseCalendarHelper.inferSemesterId()) : SettingsManager.shared.courseSemesterId
         if let match = matchRegex(pattern: #"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)"#, in: html)
             ?? matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
             detectedSem = match
-            SettingsManager.shared.courseSemesterId = match
         }
 
-        fetchCourseData(studentId: detectedStd, semesterId: detectedSem, bizTypeId: detectedBiz) { [weak self] result in
+        fetchCourseData(
+            studentId: detectedStd,
+            semesterId: detectedSem,
+            bizTypeId: detectedBiz,
+            cookieHeader: jxCookieHeader
+        ) { [weak self] result in
             guard let self else { return }
             guard self.isCurrentScheduleGeneration(generation) else {
                 completion(.failure(Self.staleScheduleCancellation()))
@@ -416,7 +429,23 @@ public class CourseScheduleService {
             }
             switch result {
             case .success(let schedule):
-                guard self.saveSchedule(schedule, generation: generation) else {
+                guard self.saveSchedule(schedule, generation: generation, metadataUpdate: {
+                    if let jxCookieHeader, !jxCookieHeader.isEmpty {
+                        SettingsManager.shared.courseSessionCookie = jxCookieHeader
+                    }
+                    if !detectedStd.isEmpty {
+                        SettingsManager.shared.courseStudentId = detectedStd
+                    }
+                    if !detectedSem.isEmpty {
+                        SettingsManager.shared.courseSemesterId = detectedSem
+                    }
+                    if !detectedBiz.isEmpty {
+                        SettingsManager.shared.courseBizTypeId = detectedBiz
+                    }
+                    if let casTgcCookie, !casTgcCookie.isEmpty {
+                        SettingsManager.shared.casTgcCookie = casTgcCookie
+                    }
+                }) else {
                     completion(.failure(Self.staleScheduleCancellation()))
                     return
                 }
@@ -433,6 +462,7 @@ public class CourseScheduleService {
         studentId: String,
         semesterId: String,
         bizTypeId: String,
+        cookieHeader: String? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
         let base = "http://jxglstu.hfut.edu.cn/eams5-student"
@@ -445,9 +475,10 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         req.setValue("application/json, text/javascript, */*; q=0.01", forHTTPHeaderField: "Accept")
 
-        if let cookieHeader = buildCookieHeader() {
+        let requestCookieHeader = cookieHeader ?? buildCookieHeader()
+        if let requestCookieHeader {
             req.httpShouldHandleCookies = false
-            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            req.setValue(requestCookieHeader, forHTTPHeaderField: "Cookie")
         }
 
         URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
@@ -497,7 +528,14 @@ public class CourseScheduleService {
             }
 
             // 第二步：请求 ws/schedule-table/datum 获取具体排课列表
-            self?.fetchDatum(studentId: studentId, semesterId: semesterId, bizTypeId: bizTypeId, lessonIds: lessonIds, completion: completion)
+            self?.fetchDatum(
+                studentId: studentId,
+                semesterId: semesterId,
+                bizTypeId: bizTypeId,
+                lessonIds: lessonIds,
+                cookieHeader: requestCookieHeader,
+                completion: completion
+            )
         }.resume()
     }
 
@@ -506,6 +544,7 @@ public class CourseScheduleService {
         semesterId: String,
         bizTypeId: String,
         lessonIds: [Int],
+        cookieHeader: String? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
         let base = "http://jxglstu.hfut.edu.cn/eams5-student"
@@ -519,9 +558,10 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         req.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
 
-        if let cookieHeader = buildCookieHeader() {
+        let requestCookieHeader = cookieHeader ?? buildCookieHeader()
+        if let requestCookieHeader {
             req.httpShouldHandleCookies = false
-            req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            req.setValue(requestCookieHeader, forHTTPHeaderField: "Cookie")
         }
 
         guard let stdInt = Int(studentId) else {
