@@ -1436,7 +1436,12 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                         classSummary = roomName
                     }
 
-                    let fallbackTeacher = dto.teacherAssignmentList?.filter { !$0.isEmpty }.joined(separator: ",")
+                    let teacherAssignments = dto.teacherAssignmentList?
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty } ?? []
+                    let fallbackTeacher = teacherAssignments.isEmpty
+                        ? nil
+                        : teacherAssignments.joined(separator: ",")
 
                     for (idx, sched) in (dto.schedules ?? []).enumerated() {
                         // 仅保留在当前目标教室上课的课节（排除同一教学班在其他周次去机房/实验室的课节）
