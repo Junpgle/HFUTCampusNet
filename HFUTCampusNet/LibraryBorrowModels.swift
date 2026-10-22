@@ -486,8 +486,11 @@ public final class LibraryBorrowManager {
                 return
             }
 
-            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                completion(.failure(NSError(domain: "LibraryBorrowManager", code: 401, userInfo: [NSLocalizedDescriptionKey: "借阅凭证已失效"])))
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                let message = http.statusCode == 401 || http.statusCode == 403
+                    ? "借阅凭证已失效"
+                    : "借阅记录请求失败 (HTTP \(http.statusCode))"
+                completion(.failure(NSError(domain: "LibraryBorrowManager", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])))
                 return
             }
 
@@ -501,7 +504,8 @@ public final class LibraryBorrowManager {
                     throw NSError(domain: "LibraryBorrowManager", code: -3, userInfo: [NSLocalizedDescriptionKey: "响应 JSON 格式解析失败"])
                 }
 
-                if let code = json["code"] as? String, code != "0" {
+                let responseCode = (json["code"] as? String) ?? (json["code"] as? NSNumber)?.stringValue
+                if let code = responseCode, code != "0" {
                     let msg = json["message"] as? String ?? "请求失败"
                     throw NSError(domain: "LibraryBorrowManager", code: -4, userInfo: [NSLocalizedDescriptionKey: msg])
                 }
