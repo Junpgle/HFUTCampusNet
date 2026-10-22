@@ -142,6 +142,13 @@ public sealed class EmptyClassroomService
         AppEvents.RaiseEmptyClassroomUpdated();
     }
 
+    public void ClearNextDayStudyRoom()
+    {
+        SettingsManager.Shared.NextDayStudyRoom = null;
+        SettingsManager.Shared.Save();
+        AppEvents.RaiseEmptyClassroomUpdated();
+    }
+
     public void SetNextDayStudyRoom(ClassroomOccupationItem room)
     {
         SetNextDayStudyRoom(room, (StudyCampus)room.CampusId, room.BuildingCode, room.BuildingName, room.DateString);
@@ -638,6 +645,8 @@ public sealed class EmptyClassroomService
     {
         Task.Run(async () =>
         {
+            PromoteOrClearNextDayStudyRoom(TodayDateString());
+
             if (!await _syncLock.WaitAsync(0))
             {
                 callback?.Invoke(false, "正在同步中，请稍候...");
@@ -719,6 +728,25 @@ public sealed class EmptyClassroomService
                 AppEvents.RaiseEmptyClassroomUpdated();
             }
         });
+    }
+
+    private static void PromoteOrClearNextDayStudyRoom(string today)
+    {
+        var settings = SettingsManager.Shared;
+        var nextDayRoom = settings.NextDayStudyRoom;
+        if (nextDayRoom == null) return;
+
+        var comparison = string.CompareOrdinal(nextDayRoom.DateString, today);
+        if (comparison == 0)
+        {
+            settings.CurrentStudyRoom = nextDayRoom;
+        }
+        if (comparison <= 0)
+        {
+            settings.NextDayStudyRoom = null;
+            settings.Save();
+            AppEvents.RaiseEmptyClassroomUpdated();
+        }
     }
 
     private void AddSnapshotOrKeepCache(int campusId, string dateString, List<ClassroomOccupationItem> fetched, List<ClassroomOccupationItem> destination)

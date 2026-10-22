@@ -1096,12 +1096,18 @@ public sealed class EmptyClassroomWindow : Window
             .ToList();
 
         _roomsListView.Items.Clear();
-        var currentStudyRoom = EmptyClassroomService.Shared.CurrentStudyRoomItem();
+        var service = EmptyClassroomService.Shared;
+        var currentStudyRoom = service.CurrentStudyRoomItem();
+        var nextDayStudyRoom = SettingsManager.Shared.NextDayStudyRoom;
 
         foreach (var room in results)
         {
-            bool isCurrent = currentStudyRoom != null && currentStudyRoom.RoomId == room.RoomId;
-            var itemControl = CreateClassroomRowControl(room, isCurrent, !_isViewingTomorrow, nowMin);
+            var selectedRecord = isToday ? currentStudyRoom : nextDayStudyRoom;
+            bool isSelected = selectedRecord != null
+                && selectedRecord.RoomId == room.RoomId
+                && selectedRecord.CampusId == room.CampusId
+                && (isToday || selectedRecord.DateString == targetDate);
+            var itemControl = CreateClassroomRowControl(room, isSelected, isToday, nowMin);
             _roomsListView.Items.Add(itemControl);
         }
 
@@ -1116,7 +1122,6 @@ public sealed class EmptyClassroomWindow : Window
         _bottomStatusTextBlock.Text = $"查询 {results.Count} 间 · {currentLessonText} · {EmptyClassroomService.Shared.FormattedLastSync()}";
         _bottomStatusTextBlock.ToolTip = "班次数按当前校区、教学楼、楼层和搜索范围内的教务排课记录去重统计。双击教室或点击右侧按钮可设为自习室。";
 
-        var service = EmptyClassroomService.Shared;
         var campusRooms = service.CachedRooms.Where(r => r.CampusId == _selectedCampusId && r.DateString == targetDate).ToList();
         if (campusRooms.Count == 0)
         {
@@ -1165,17 +1170,17 @@ public sealed class EmptyClassroomWindow : Window
         }
     }
 
-    private Border CreateClassroomRowControl(ClassroomOccupationItem room, bool isCurrentStudy, bool isToday, int nowMin)
+    private Border CreateClassroomRowControl(ClassroomOccupationItem room, bool isSelectedStudyRoom, bool isToday, int nowMin)
     {
         var rowBorder = new Border
         {
             Margin = new Thickness(0, 0, 0, 8),
             CornerRadius = new CornerRadius(8),
             BorderThickness = new Thickness(1),
-            Background = isCurrentStudy
+            Background = isSelectedStudyRoom
                 ? new SolidColorBrush(Color.FromArgb(30, 10, 132, 255))
                 : ThemeManager.Shared.CardBackground,
-            BorderBrush = isCurrentStudy
+            BorderBrush = isSelectedStudyRoom
                 ? new SolidColorBrush(Color.FromRgb(10, 132, 255))
                 : ThemeManager.Shared.CardBorderBrush,
             Padding = new Thickness(14, 10, 14, 10)
@@ -1195,12 +1200,12 @@ public sealed class EmptyClassroomWindow : Window
             Text = room.RoomName,
             FontSize = 13.5,
             FontWeight = FontWeights.SemiBold,
-            Foreground = isCurrentStudy ? new SolidColorBrush(Color.FromRgb(10, 132, 255)) : ThemeManager.Shared.TextPrimary,
+            Foreground = isSelectedStudyRoom ? new SolidColorBrush(Color.FromRgb(10, 132, 255)) : ThemeManager.Shared.TextPrimary,
             VerticalAlignment = VerticalAlignment.Center
         };
         nameRow.Children.Add(nameBlock);
 
-        if (isCurrentStudy)
+        if (isSelectedStudyRoom)
         {
             var studyPill = new Border
             {
@@ -1298,25 +1303,31 @@ public sealed class EmptyClassroomWindow : Window
 
         var studyBtn = new Button
         {
-            Content = isCurrentStudy ? (isToday ? "取消自习" : "取消预约") : (isToday ? "设为自习" : "预约明日"),
+            Content = isSelectedStudyRoom ? (isToday ? "取消自习" : "取消预约") : (isToday ? "设为自习" : "预约明日"),
             Padding = new Thickness(10, 4, 10, 4),
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = isCurrentStudy ? Brushes.Red : Brushes.White,
-            Background = isCurrentStudy
+            Foreground = isSelectedStudyRoom ? Brushes.Red : Brushes.White,
+            Background = isSelectedStudyRoom
                 ? new SolidColorBrush(Color.FromArgb(40, 239, 68, 68))
                 : new SolidColorBrush(Color.FromRgb(10, 132, 255)),
             Cursor = Cursors.Hand
         };
         studyBtn.Click += (_, _) =>
         {
-            if (isCurrentStudy)
+            if (isSelectedStudyRoom)
             {
-                EmptyClassroomService.Shared.ClearCurrentStudyRoom();
+                if (isToday)
+                    EmptyClassroomService.Shared.ClearCurrentStudyRoom();
+                else
+                    EmptyClassroomService.Shared.ClearNextDayStudyRoom();
             }
             else
             {
-                EmptyClassroomService.Shared.SetCurrentStudyRoom(room);
+                if (isToday)
+                    EmptyClassroomService.Shared.SetCurrentStudyRoom(room);
+                else
+                    EmptyClassroomService.Shared.SetNextDayStudyRoom(room);
             }
             UpdateSummaryCard();
             FilterAndRefreshList();
