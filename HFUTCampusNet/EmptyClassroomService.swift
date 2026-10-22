@@ -375,7 +375,9 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                 SettingsManager.shared.nextDayStudyRoom = nil
             }
         }
-        if let curRoom = SettingsManager.shared.currentStudyRoom, curRoom.dateString < todayStr {
+        if let curRoom = SettingsManager.shared.currentStudyRoom,
+           curRoom.dateString < todayStr,
+           currentStudyRoomItem(on: todayStr) != nil {
             // 跨天后若旧自习室仍存在于今日缓存，则自动续期日期以便继续监测或提醒
             var updated = curRoom
             updated.dateString = todayStr
