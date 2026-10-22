@@ -479,6 +479,7 @@ public sealed class CourseScheduleService
             // 1. 如果没有真实 stdId 则先请求 /for-std/course-table 自动提取
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
             {
+                stdId = string.Empty;
                 using var pageReq = new HttpRequestMessage(HttpMethod.Get, "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
                 pageReq.Headers.TryAddWithoutValidation("Cookie", sessionCookie);
                 pageReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
@@ -894,7 +895,6 @@ public sealed class AcademicService
                         {
                             var studentId = SettingsManager.Shared.CourseStudentId;
                             if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
-                            if (string.IsNullOrEmpty(studentId)) studentId = "178506";
 
                             var newSnapshot = new AcademicDataSnapshot
                             {
@@ -1128,9 +1128,10 @@ public sealed class AcademicService
             })) return (new(), new(), null, new(), new());
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
             {
-                stdId = await CourseScheduleService.Shared.DiscoverStudentIdAsync(cookie, accountGeneration) ?? "178506";
-                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                var discoveredStudentId = await CourseScheduleService.Shared.DiscoverStudentIdAsync(cookie, accountGeneration);
+                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrWhiteSpace(discoveredStudentId))
                     return (new(), new(), null, new(), new());
+                stdId = discoveredStudentId;
             }
 
             var gTask = FetchGradesHtmlAsync(cookie, stdId);
@@ -1275,7 +1276,6 @@ public sealed class AcademicService
 
             var studentId = SettingsManager.Shared.CourseStudentId;
             if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
-            if (string.IsNullOrEmpty(studentId)) studentId = "178506";
 
             var newSnapshot = new AcademicDataSnapshot
             {

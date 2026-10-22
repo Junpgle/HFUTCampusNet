@@ -641,6 +641,7 @@ public sealed class EmptyClassroomService
             // 1. 若当前 stdId 为空或为默认值，先从 /for-std/course-table 自动发现真实 stdId
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
             {
+                stdId = null;
                 try
                 {
                     using var tableReq = new HttpRequestMessage(HttpMethod.Get, "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
