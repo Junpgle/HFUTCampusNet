@@ -5,10 +5,12 @@ on:
     branches: [ main, master ]
     paths:
       - 'HFUTCampusNet-Windows/**'
+      - '.github/workflows/build-windows.yml'
   pull_request:
     branches: [ main, master ]
     paths:
       - 'HFUTCampusNet-Windows/**'
+      - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
 permissions:
