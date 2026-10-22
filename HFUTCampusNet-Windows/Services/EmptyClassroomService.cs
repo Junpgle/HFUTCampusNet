@@ -183,7 +183,7 @@ public sealed class EmptyClassroomService
     {
         var nowMin = CurrentMinutesOfDay();
         var today = TodayDateString();
-        var room = CachedRooms.FirstOrDefault(r => r.RoomId == studyRoom.RoomId && r.DateString == today);
+        var room = FindSelectedRoomInCache(studyRoom, today);
         if (room == null)
         {
             return (null, false, null, new());
@@ -197,7 +197,7 @@ public sealed class EmptyClassroomService
         var nowMin = CurrentMinutesOfDay();
         var today = TodayDateString();
         var recs = CachedRooms
-            .Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && r.IsAllDayFree)
+            .Where(r => IsSameBuilding(r, room) && r.RoomId != room.RoomId && r.DateString == today && r.IsAllDayFree)
             .Take(limit)
             .Select(r => new ClassroomNearbyRecommendation { Room = r, Proximity = new ClassroomProximity { BadgeText = r.Floor == room.Floor ? "同楼层" : $"{r.Floor}楼" } })
             .ToList();
@@ -224,7 +224,7 @@ public sealed class EmptyClassroomService
     {
         var today = TodayDateString();
         return CachedRooms
-            .Where(r => r.BuildingName == room.BuildingName && r.RoomId != room.RoomId && r.DateString == today && !r.IsOccupiedAtPeriod(startUnit))
+            .Where(r => IsSameBuilding(r, room) && r.RoomId != room.RoomId && r.DateString == today && !r.IsOccupiedAtPeriod(startUnit))
             .Take(limit)
             .ToList();
     }
@@ -233,9 +233,31 @@ public sealed class EmptyClassroomService
         StudyRoomSelectionRecord studyRoom, int startUnit, int nowMin, int limit = 4)
     {
         var today = TodayDateString();
-        var room = CachedRooms.FirstOrDefault(r => r.RoomId == studyRoom.RoomId && r.DateString == today);
+        var room = FindSelectedRoomInCache(studyRoom, today);
         if (room == null) return new();
         return NearbySwitchRecommendations(room, startUnit, nowMin, limit);
+    }
+
+    private ClassroomOccupationItem? FindSelectedRoomInCache(StudyRoomSelectionRecord selection, string dateString)
+    {
+        var candidates = CachedRooms
+            .Where(r => r.RoomId == selection.RoomId && r.DateString == dateString)
+            .ToList();
+        return candidates.FirstOrDefault(r => r.CampusId == selection.CampusId)
+            ?? (selection.CampusId == 0 && candidates.Count == 1 ? candidates[0] : null);
+    }
+
+    private static bool IsSameBuilding(ClassroomOccupationItem candidate, ClassroomOccupationItem anchor)
+    {
+        if (candidate.CampusId != anchor.CampusId)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(candidate.BuildingCode) && !string.IsNullOrWhiteSpace(anchor.BuildingCode))
+        {
+            return string.Equals(candidate.BuildingCode, anchor.BuildingCode, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(candidate.BuildingName, anchor.BuildingName, StringComparison.OrdinalIgnoreCase);
     }
 
     public StudyCampus CurrentPreferredCampus => StudyCampus.Xuancheng;
