@@ -343,6 +343,7 @@ public class SettingsWindow : Window
             if (MessageBox.Show(this, "确定要清除所有保存的 Cookie、Token 及课表缓存吗？", "清除凭证", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
                 ElectricityService.Shared.CancelPendingRequests();
+                EmptyClassroomService.Shared.CancelPendingAuthentication();
                 CourseScheduleService.Shared.ClearSchedule(clearCourseCredentials: true);
                 SettingsManager.Shared.SessionCookie = "";
                 SettingsManager.Shared.HuixinAuthToken = "";

@@ -26,6 +26,8 @@ public sealed class EmptyClassroomService
     private readonly HttpClient _client;
     private Timer? _timer;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private readonly object _tokenGenerationLock = new();
+    private long _tokenGeneration;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly ConcurrentDictionary<string, bool> _campusSnapshotCompleteness = new();
     private List<CampusBuildingOption> _buildingCatalog = new();
@@ -454,15 +456,30 @@ public sealed class EmptyClassroomService
 
     public async Task<string?> EnsureValidTokenAsync(bool forceRelogin = false)
     {
+        long tokenGeneration;
+        lock (_tokenGenerationLock)
+        {
+            tokenGeneration = _tokenGeneration;
+        }
+
         await _tokenLock.WaitAsync();
         try
         {
+            if (!IsCurrentTokenGeneration(tokenGeneration))
+                return null;
+
             if (!forceRelogin)
             {
-                var savedJwt = SettingsManager.Shared.UniAppJwt?.Trim();
-                if (!string.IsNullOrEmpty(savedJwt))
+                lock (_tokenGenerationLock)
                 {
-                    return savedJwt;
+                    if (_tokenGeneration != tokenGeneration)
+                        return null;
+
+                    var savedJwt = SettingsManager.Shared.UniAppJwt?.Trim();
+                    if (!string.IsNullOrEmpty(savedJwt))
+                    {
+                        return savedJwt;
+                    }
                 }
             }
 
@@ -483,6 +500,9 @@ public sealed class EmptyClassroomService
 
             foreach (var rawPwd in candidatePasswords)
             {
+                if (!IsCurrentTokenGeneration(tokenGeneration))
+                    return null;
+
                 var encryptedPwd = RsaEncrypt(rawPwd, RsaPublicKeyBase64);
                 if (string.IsNullOrEmpty(encryptedPwd)) continue;
 
@@ -503,9 +523,15 @@ public sealed class EmptyClassroomService
                             var token = idTokenProp.GetString();
                             if (!string.IsNullOrEmpty(token))
                             {
-                                SettingsManager.Shared.UniAppJwt = token;
-                                SettingsManager.Shared.Save();
-                                return token;
+                                lock (_tokenGenerationLock)
+                                {
+                                    if (_tokenGeneration != tokenGeneration)
+                                        return null;
+
+                                    SettingsManager.Shared.UniAppJwt = token;
+                                    SettingsManager.Shared.Save();
+                                    return token;
+                                }
                             }
                         }
                     }
@@ -518,6 +544,22 @@ public sealed class EmptyClassroomService
         finally
         {
             _tokenLock.Release();
+        }
+    }
+
+    public void CancelPendingAuthentication()
+    {
+        lock (_tokenGenerationLock)
+        {
+            _tokenGeneration++;
+        }
+    }
+
+    private bool IsCurrentTokenGeneration(long tokenGeneration)
+    {
+        lock (_tokenGenerationLock)
+        {
+            return _tokenGeneration == tokenGeneration;
         }
     }
 
