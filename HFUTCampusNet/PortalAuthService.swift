@@ -159,7 +159,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
                 return
             }
             if case .online(let uid, _, _, _, _) = status,
-               (uid == user || uid == "校园网用户") {
+               uid == user {
                 completion(true, "当前设备已认证在线（学号: \(uid)），网络通畅！")
                 return
             }
