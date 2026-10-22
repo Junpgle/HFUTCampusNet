@@ -267,6 +267,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     // 完整 SSO 跳转由信息门户及其注册应用发起；本客户端不构造 ST/service。
     private var portalNavigationID = UUID()
     private var assistantViewRequestID = UUID()
+    private var portalSessionUsername = ""
 
     private init() {
         let w = NSWindow(
@@ -523,6 +524,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         emptyHistoryNavigationID = nil
         groupField.stringValue = ""
         portalNavigationID = UUID()
+        portalSessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         automaticNavigationAttempts.removeAll(keepingCapacity: true)
         displayingLogin = true
         nativeCASFormReady = false
@@ -710,6 +712,7 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         // Match the existing unified-login behavior by updating its existing credential fields.
         SettingsManager.shared.portalUsername = username
         SettingsManager.shared.casPassword = password
+        portalSessionUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         nativeCASFormReady = false
         preferWebLoginForCurrentCASPage = false
         casProbeToken = UUID()
@@ -1839,7 +1842,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         guard let current = webView.url else { return }
         guard webView === loginWebView, displayingLogin else { return }
         let host = current.host?.lowercased() ?? ""
-        captureSharedCASTGC()
+        captureSharedCASTGC(
+            from: webView,
+            pageURL: current,
+            navigationID: portalNavigationID,
+            username: portalSessionUsername
+        )
 
         if HFUTCASLoginSupport.isLoginPage(current) {
             inspectCASLoginPage(webView)
@@ -1918,10 +1926,19 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         }
     }
 
-    private func captureSharedCASTGC() {
-        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-            guard let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) else { return }
-            SettingsManager.shared.casTgcCookie = tgc
+    private func captureSharedCASTGC(from webView: WKWebView, pageURL: URL,
+                                     navigationID: UUID, username: String) {
+        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self, weak webView] cookies in
+            DispatchQueue.main.async {
+                guard let self = self, let webView = webView,
+                      self.portalNavigationID == navigationID,
+                      self.portalSessionUsername == username,
+                      webView === self.loginWebView,
+                      webView.url == pageURL,
+                      SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == username,
+                      let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) else { return }
+                SettingsManager.shared.casTgcCookie = tgc
+            }
         }
     }
 
