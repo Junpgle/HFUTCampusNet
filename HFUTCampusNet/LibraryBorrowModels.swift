@@ -157,6 +157,7 @@ public final class LibraryBorrowManager {
     public private(set) var totalBookshelfStatsCount: Int = 0
 
     public var onDataChanged: (() -> Void)?
+    private var pendingSyncCompletions: [(Result<[CampusBorrowedBook], Error>) -> Void] = []
 
     private init() {
         loadFromStorage()
@@ -241,11 +242,22 @@ public final class LibraryBorrowManager {
 
     /// 核心同步入口：自动利用 CAS TGC 换取图书馆 JWT Token，并拉取真实在借与借阅历史
     public func syncWithRemote(forceSSO: Bool = false, completion: ((Result<[CampusBorrowedBook], Error>) -> Void)? = nil) {
-        guard !isSyncing else {
-            completion?(.success(books))
+        if isSyncing {
+            if let completion {
+                pendingSyncCompletions.append(completion)
+            }
             return
         }
         isSyncing = true
+        pendingSyncCompletions = completion.map { [$0] } ?? []
+
+        let finishSync: (Result<[CampusBorrowedBook], Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.isSyncing = false
+            let completions = self.pendingSyncCompletions
+            self.pendingSyncCompletions.removeAll(keepingCapacity: false)
+            completions.forEach { $0(result) }
+        }
 
         let existingToken = SettingsManager.shared.libraryToken?.trimmingCharacters(in: .whitespacesAndNewlines)
         if !forceSSO, let token = existingToken, !token.isEmpty {
@@ -254,24 +266,21 @@ public final class LibraryBorrowManager {
                 guard let self else { return }
                 switch result {
                 case .success(let items):
-                    self.isSyncing = false
                     self.fetchLibraryStats(token: token)
-                    completion?(.success(items))
+                    finishSync(.success(items))
                 case .failure:
                     // Token 可能过期，退化为 CAS SSO 重新获取
                     self.loginViaCASTgc { ssoResult in
                         switch ssoResult {
                         case .success(let newToken):
                             self.fetchReaderRecord(token: newToken) { finalRes in
-                                self.isSyncing = false
                                 if case .success = finalRes {
                                     self.fetchLibraryStats(token: newToken)
                                 }
-                                completion?(finalRes)
+                                finishSync(finalRes)
                             }
                         case .failure(let err):
-                            self.isSyncing = false
-                            completion?(.failure(err))
+                            finishSync(.failure(err))
                         }
                     }
                 }
@@ -285,15 +294,13 @@ public final class LibraryBorrowManager {
             switch ssoResult {
             case .success(let newToken):
                 self.fetchReaderRecord(token: newToken) { finalRes in
-                    self.isSyncing = false
                     if case .success = finalRes {
                         self.fetchLibraryStats(token: newToken)
                     }
-                    completion?(finalRes)
+                    finishSync(finalRes)
                 }
             case .failure(let err):
-                self.isSyncing = false
-                completion?(.failure(err))
+                finishSync(.failure(err))
             }
         }
     }
