@@ -16,6 +16,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
     private var isMonitoring = false
     private var isPausedForSleep = false
     private var monitorGeneration = 0
+    private var syncGeneration = 0
     private let fileManager = FileManager.default
 
     private lazy var session: URLSession = {
@@ -161,12 +162,23 @@ public class AcademicService: NSObject, URLSessionDelegate {
     }
 
     public func clearCache() {
+        syncGeneration &+= 1
+        isSyncing = false
         self.latestData = nil
         try? fileManager.removeItem(at: cacheFileURL)
         SettingsManager.shared.notifiedGradeIds = []
         SettingsManager.shared.unreadGradeIds = []
+        lastErrorMessage = nil
+        let completions = pendingSyncCompletions
+        pendingSyncCompletions.removeAll(keepingCapacity: false)
+        let cancellation = NSError(
+            domain: "AcademicService",
+            code: NSURLErrorCancelled,
+            userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次学业数据同步已取消"]
+        )
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .academicDataDidUpdate, object: nil)
+            completions.forEach { $0(.failure(cancellation)) }
         }
     }
 
@@ -218,12 +230,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
         isSyncing = true
         pendingSyncCompletions = completion.map { [$0] } ?? []
         lastErrorMessage = nil
+        let generation = syncGeneration
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .academicDataDidUpdate, object: self.latestData)
         }
 
         let finishSync: (Result<AcademicDataSnapshot, Error>) -> Void = { [weak self] result in
-            guard let self else { return }
+            guard let self, self.syncGeneration == generation else { return }
             self.isSyncing = false
             let completions = self.pendingSyncCompletions
             self.pendingSyncCompletions.removeAll(keepingCapacity: false)
@@ -281,8 +294,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         }
 
         group.notify(queue: .main) { [weak self] in
-            guard let self = self else { return }
-            self.isSyncing = false
+            guard let self = self, self.syncGeneration == generation else { return }
 
             // 合并成绩（优先使用包含 semesterId 的 UniApp 数据，并补充 EAMS 独有的条目；若 UniApp 失败则使用 EAMS 数据）
             let mergedTermGroups = self.mergeTermGradeGroups(primary: uniAppGrades, secondary: eamsGrades)
