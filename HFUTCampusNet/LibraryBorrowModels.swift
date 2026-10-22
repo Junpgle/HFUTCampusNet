@@ -150,6 +150,8 @@ public final class LibraryBorrowManager {
 
     private let storageKey = "cn.edu.hfut.campusnet.borrow_records_v3"
     private let lastSyncKey = "cn.edu.hfut.campusnet.borrow_sync_time_v3"
+    private static let readerRecordPageSize = 100
+    private static let maximumReaderRecordPages = 100
 
     public private(set) var books: [CampusBorrowedBook] = []
     public private(set) var isSyncing: Bool = false
@@ -362,9 +364,28 @@ public final class LibraryBorrowManager {
         }.resume()
     }
 
-    /// 调用 GET https://lib.hfut.edu.cn/svc/circulate/readerRecord?page=1&status=&limit=100
+    /// 调用 readerRecord 分页接口，完整读取在借与历史记录。
     private func fetchReaderRecord(token: String, completion: @escaping (Result<[CampusBorrowedBook], Error>) -> Void) {
-        guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerRecord?page=1&status=&limit=100") else {
+        fetchReaderRecordPage(token: token, page: 1, accumulated: [], completion: completion)
+    }
+
+    private func fetchReaderRecordPage(
+        token: String,
+        page: Int,
+        accumulated: [CampusBorrowedBook],
+        completion: @escaping (Result<[CampusBorrowedBook], Error>) -> Void
+    ) {
+        guard page <= Self.maximumReaderRecordPages,
+              var components = URLComponents(string: "https://lib.hfut.edu.cn/svc/circulate/readerRecord") else {
+            completion(.failure(NSError(domain: "LibraryBorrowManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "无效的借阅查询 URL"])))
+            return
+        }
+        components.queryItems = [
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "status", value: ""),
+            URLQueryItem(name: "limit", value: String(Self.readerRecordPageSize))
+        ]
+        guard let url = components.url else {
             completion(.failure(NSError(domain: "LibraryBorrowManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "无效的借阅查询 URL"])))
             return
         }
@@ -443,11 +464,30 @@ public final class LibraryBorrowManager {
                     parsedBooks.append(book)
                 }
 
+                if parsedBooks.count == Self.readerRecordPageSize {
+                    guard page < Self.maximumReaderRecordPages else {
+                        completion(.failure(NSError(
+                            domain: "LibraryBorrowManager",
+                            code: -6,
+                            userInfo: [NSLocalizedDescriptionKey: "借阅记录超过分页上限，未覆盖本地数据"]
+                        )))
+                        return
+                    }
+                    self.fetchReaderRecordPage(
+                        token: token,
+                        page: page + 1,
+                        accumulated: accumulated + parsedBooks,
+                        completion: completion
+                    )
+                    return
+                }
+
+                let allBooks = accumulated + parsedBooks
                 DispatchQueue.main.async {
-                    self.books = parsedBooks
+                    self.books = allBooks
                     self.recordSync()
                     self.saveToStorage()
-                    completion(.success(parsedBooks))
+                    completion(.success(allBooks))
                 }
             } catch {
                 completion(.failure(error))
