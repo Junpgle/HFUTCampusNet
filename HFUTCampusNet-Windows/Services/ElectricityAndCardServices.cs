@@ -20,6 +20,8 @@ public sealed class ElectricityService
 
     private readonly object _stateLock = new();
     private long _requestGeneration;
+    private readonly object _tokenStateLock = new();
+    private long _tokenRequestGeneration;
     private readonly string _cacheFilePath;
     private readonly HttpClient _httpClient;
 
@@ -149,6 +151,18 @@ public sealed class ElectricityService
         }
     }
 
+    public void CancelPendingRequests()
+    {
+        lock (_stateLock)
+        {
+            _requestGeneration++;
+        }
+        lock (_tokenStateLock)
+        {
+            _tokenRequestGeneration++;
+        }
+    }
+
     public void FetchData(Action<ElectricityData?, string?>? completion = null)
     {
         _ = Task.Run(async () =>
@@ -190,7 +204,8 @@ public sealed class ElectricityService
                 return (null, StaleRequestMessage);
 
             // Token 可能失效，尝试通过已保存学号密码静默重新登录
-            var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            var (newToken, loginErr) = await ObtainHuiXinTokenAsync(
+                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, tokenValue));
             if (!IsCurrentRequest(generation, dorm))
                 return (null, StaleRequestMessage);
             if (!string.IsNullOrWhiteSpace(newToken))
@@ -207,7 +222,8 @@ public sealed class ElectricityService
         }
         else
         {
-            var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            var (newToken, loginErr) = await ObtainHuiXinTokenAsync(
+                tokenValue => TryPersistTokenForCurrentRequest(generation, dorm, tokenValue));
             if (!IsCurrentRequest(generation, dorm))
                 return (null, StaleRequestMessage);
             if (string.IsNullOrWhiteSpace(newToken))
@@ -234,8 +250,17 @@ public sealed class ElectricityService
     /// <summary>
     /// 静默调用慧新易校 OAuth 登录获取 Token（支持依次尝试校园网密码与信息门户密码，并正确编码特殊字符）
     /// </summary>
-    public async Task<(string? Token, string? ErrorMessage)> ObtainHuiXinTokenAsync()
+    public Task<(string? Token, string? ErrorMessage)> ObtainHuiXinTokenAsync() =>
+        ObtainHuiXinTokenAsync(tryPersistToken: null);
+
+    internal async Task<(string? Token, string? ErrorMessage)> ObtainHuiXinTokenAsync(Func<string, bool>? tryPersistToken)
     {
+        long tokenGeneration;
+        lock (_tokenStateLock)
+        {
+            tokenGeneration = _tokenRequestGeneration;
+        }
+
         var username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
         var portalPwd = (SettingsManager.Shared.PortalPassword ?? string.Empty).Trim();
         var casPwd = (SettingsManager.Shared.CasPassword ?? string.Empty).Trim();
@@ -277,7 +302,21 @@ public sealed class ElectricityService
                     var accessToken = tokenElem.GetString();
                     if (!string.IsNullOrWhiteSpace(accessToken))
                     {
-                        SettingsManager.Shared.HuixinAuthToken = accessToken;
+                        lock (_tokenStateLock)
+                        {
+                            if (tokenGeneration != _tokenRequestGeneration)
+                                return (null, "授权结果已过期，请重新操作");
+
+                            if (tryPersistToken != null)
+                            {
+                                if (!tryPersistToken(accessToken))
+                                    return (null, "授权结果已过期，请重新操作");
+                            }
+                            else
+                            {
+                                SettingsManager.Shared.HuixinAuthToken = accessToken;
+                            }
+                        }
                         return (accessToken, null);
                     }
                 }
@@ -515,6 +554,18 @@ public sealed class ElectricityService
             {
                 SettingsManager.Shared.HuixinAuthToken = null;
             }
+        }
+    }
+
+    private bool TryPersistTokenForCurrentRequest(long generation, DormIdentity dorm, string token)
+    {
+        lock (_stateLock)
+        {
+            if (!IsCurrentRequestLocked(generation, dorm))
+                return false;
+
+            SettingsManager.Shared.HuixinAuthToken = token;
+            return true;
         }
     }
 
@@ -758,8 +809,12 @@ public sealed class CampusCardService
 
     public CampusCardData? LatestData { get; private set; }
 
+    private readonly object _stateLock = new();
+    private long _requestGeneration;
     private readonly string _cacheFilePath;
     private readonly HttpClient _httpClient;
+
+    private const string StaleRequestMessage = "一卡通查询请求已更新，已忽略旧查询结果";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -825,13 +880,17 @@ public sealed class CampusCardService
 
     public void ClearCache()
     {
-        LatestData = null;
-        try
+        lock (_stateLock)
         {
-            if (File.Exists(_cacheFilePath))
-                File.Delete(_cacheFilePath);
+            _requestGeneration++;
+            LatestData = null;
+            try
+            {
+                if (File.Exists(_cacheFilePath))
+                    File.Delete(_cacheFilePath);
+            }
+            catch { }
         }
-        catch { }
 
         AppEvents.InvokeOnUI(AppEvents.RaiseCampusCardUpdated);
     }
@@ -853,23 +912,39 @@ public sealed class CampusCardService
     /// </summary>
     public async Task<(CampusCardData? Data, string? ErrorMessage)> FetchDataAsync()
     {
+        long generation;
+        lock (_stateLock)
+        {
+            generation = ++_requestGeneration;
+        }
+
         var token = SettingsManager.Shared.HuixinAuthToken;
         if (!string.IsNullOrWhiteSpace(token))
         {
-            return await ExecuteCardQueryAsync(token!, allowRetry: true);
+            return await ExecuteCardQueryAsync(token!, generation, allowRetry: true);
         }
 
-        var (newToken, loginErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+        var (newToken, loginErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync(
+            tokenValue => TryPersistTokenForCurrentRequest(generation, tokenValue));
+        if (!IsCurrentRequest(generation))
+            return (null, StaleRequestMessage);
         if (string.IsNullOrWhiteSpace(newToken))
         {
             return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
         }
 
-        return await ExecuteCardQueryAsync(newToken!, allowRetry: false);
+        return await ExecuteCardQueryAsync(newToken!, generation, allowRetry: false);
     }
 
-    private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(string token, bool allowRetry, bool useLegacyEndpoint = false)
+    private async Task<(CampusCardData? Data, string? ErrorMessage)> ExecuteCardQueryAsync(
+        string token,
+        long generation,
+        bool allowRetry,
+        bool useLegacyEndpoint = false)
     {
+        if (!IsCurrentRequest(generation))
+            return (null, StaleRequestMessage);
+
         var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
             ? token
             : $"bearer {token}";
@@ -885,8 +960,13 @@ public sealed class CampusCardService
             cardReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
 
             using var resp = await _httpClient.SendAsync(cardReq);
+            if (!IsCurrentRequest(generation))
+                return (null, StaleRequestMessage);
+
             int httpStatus = (int)resp.StatusCode;
             var respText = await resp.Content.ReadAsStringAsync();
+            if (!IsCurrentRequest(generation))
+                return (null, StaleRequestMessage);
 
             JsonDocument? doc = null;
             int jsonCode = httpStatus;
@@ -907,13 +987,16 @@ public sealed class CampusCardService
             {
                 if (httpStatus == 401 || httpStatus == 403 || jsonCode == 401 || jsonCode == 403)
                 {
-                    SettingsManager.Shared.HuixinAuthToken = null;
+                    ClearExpiredTokenIfCurrent(token, generation);
                     if (allowRetry)
                     {
-                        var (newToken, retryErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+                        var (newToken, retryErr) = await ElectricityService.Shared.ObtainHuiXinTokenAsync(
+                            tokenValue => TryPersistTokenForCurrentRequest(generation, tokenValue));
+                        if (!IsCurrentRequest(generation))
+                            return (null, StaleRequestMessage);
                         if (!string.IsNullOrWhiteSpace(newToken))
                         {
-                            return await ExecuteCardQueryAsync(newToken!, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint);
+                            return await ExecuteCardQueryAsync(newToken!, generation, allowRetry: false, useLegacyEndpoint: useLegacyEndpoint);
                         }
                         return (null, retryErr ?? "慧新易校授权已过期，请核对学号与密码");
                     }
@@ -923,7 +1006,7 @@ public sealed class CampusCardService
                 if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
                 {
                     if (!useLegacyEndpoint)
-                        return await ExecuteCardQueryAsync(token, allowRetry: false, useLegacyEndpoint: true);
+                        return await ExecuteCardQueryAsync(token, generation, allowRetry: false, useLegacyEndpoint: true);
                     return (null, "未能解析到校园一卡通账户信息");
                 }
 
@@ -949,7 +1032,7 @@ public sealed class CampusCardService
                 if (!hasCards || cardArrElem.ValueKind != JsonValueKind.Array || cardArrElem.GetArrayLength() == 0)
                 {
                     if (!useLegacyEndpoint)
-                        return await ExecuteCardQueryAsync(token, allowRetry: false, useLegacyEndpoint: true);
+                        return await ExecuteCardQueryAsync(token, generation, allowRetry: false, useLegacyEndpoint: true);
                     return (null, "未能解析到校园一卡通账户信息");
                 }
 
@@ -980,12 +1063,8 @@ public sealed class CampusCardService
                     LastUpdated = DateTime.Now
                 };
 
-                AppEvents.InvokeOnUI(() =>
-                {
-                    SaveCachedData(cardData);
-                    CheckLowBalanceAndBudgetWarning(cardData);
-                    AppEvents.RaiseCampusCardUpdated();
-                });
+                if (!await CommitFetchedDataAsync(cardData, generation).ConfigureAwait(false))
+                    return (null, StaleRequestMessage);
 
                 return (cardData, null);
             }
@@ -994,6 +1073,66 @@ public sealed class CampusCardService
         {
             return (null, ex.Message);
         }
+    }
+
+    private bool IsCurrentRequest(long generation)
+    {
+        lock (_stateLock)
+        {
+            return _requestGeneration == generation;
+        }
+    }
+
+    private void ClearExpiredTokenIfCurrent(string token, long generation)
+    {
+        lock (_stateLock)
+        {
+            if (_requestGeneration == generation &&
+                string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+            {
+                SettingsManager.Shared.HuixinAuthToken = null;
+            }
+        }
+    }
+
+    private bool TryPersistTokenForCurrentRequest(long generation, string token)
+    {
+        lock (_stateLock)
+        {
+            if (_requestGeneration != generation)
+                return false;
+
+            SettingsManager.Shared.HuixinAuthToken = token;
+            return true;
+        }
+    }
+
+    private Task<bool> CommitFetchedDataAsync(CampusCardData data, long generation)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AppEvents.InvokeOnUI(() =>
+        {
+            try
+            {
+                bool committed;
+                lock (_stateLock)
+                {
+                    committed = _requestGeneration == generation;
+                    if (committed)
+                    {
+                        SaveCachedData(data);
+                        CheckLowBalanceAndBudgetWarning(data);
+                        AppEvents.RaiseCampusCardUpdated();
+                    }
+                }
+                completion.TrySetResult(committed);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        });
+        return completion.Task;
     }
 
     private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(string authHeader, int size)
