@@ -50,6 +50,9 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     private var activeSyncTokenByCampus: [Int: UUID] = [:]
     private var lastRolloverDateString: String = EmptyClassroomService.todayDateString()
 
+    private let tokenStateLock = NSLock()
+    private var tokenGeneration = 0
+
     private var monitorTimer: Timer?
     private var isMonitoring = false
     private var isPausedForSleep = false
@@ -1562,9 +1565,14 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         forceRelogin: Bool,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
+        let requestGeneration = currentTokenGeneration()
         if !forceRelogin,
            let savedJwt = SettingsManager.shared.uniAppJwt?.trimmingCharacters(in: .whitespacesAndNewlines),
            !savedJwt.isEmpty {
+            guard isCurrentTokenGeneration(requestGeneration) else {
+                completion(.failure(tokenLoginCancelledError()))
+                return
+            }
             completion(.success(savedJwt))
             return
         }
@@ -1576,22 +1584,74 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         }
 
         // 获取候选教务密码列表（1. 教务系统学生信息推导的默认密码 Hfut@#$%+身份证后6位；2. 门户密码；3. 校园网密码）
-        resolveCandidatePasswords { [weak self] passwords in
+        resolveCandidatePasswords(tokenGeneration: requestGeneration) { [weak self] passwords in
             guard let self = self else { return }
+            guard self.isCurrentTokenGeneration(requestGeneration) else {
+                completion(.failure(self.tokenLoginCancelledError()))
+                return
+            }
             guard !passwords.isEmpty else {
                 completion(.failure(NSError(domain: "EmptyClassroom", code: 401, userInfo: [NSLocalizedDescriptionKey: "无法获取教务系统登录凭证，请先完成统一身份认证或教务授权"])))
                 return
             }
-            self.tryLoginUniAppSequential(username: username, passwords: passwords, index: 0, completion: completion)
+            self.tryLoginUniAppSequential(
+                username: username,
+                passwords: passwords,
+                index: 0,
+                tokenGeneration: requestGeneration,
+                completion: completion)
         }
+    }
+
+    public func cancelPendingAuthentication() {
+        tokenStateLock.lock()
+        tokenGeneration &+= 1
+        tokenStateLock.unlock()
+    }
+
+    private func currentTokenGeneration() -> Int {
+        tokenStateLock.lock()
+        defer { tokenStateLock.unlock() }
+        return tokenGeneration
+    }
+
+    private func isCurrentTokenGeneration(_ generation: Int) -> Bool {
+        tokenStateLock.lock()
+        defer { tokenStateLock.unlock() }
+        return tokenGeneration == generation
+    }
+
+    private func persistTokenIfCurrent(_ token: String, generation: Int) -> Bool {
+        tokenStateLock.lock()
+        defer { tokenStateLock.unlock() }
+        guard tokenGeneration == generation else { return false }
+        SettingsManager.shared.uniAppJwt = token
+        return true
+    }
+
+    private func persistDefaultPasswordIfCurrent(_ password: String, generation: Int) -> Bool {
+        tokenStateLock.lock()
+        defer { tokenStateLock.unlock() }
+        guard tokenGeneration == generation else { return false }
+        SettingsManager.shared.jxglstuDefaultPasswordCache = password
+        return true
+    }
+
+    private func tokenLoginCancelledError() -> NSError {
+        NSError(domain: "EmptyClassroom", code: 499, userInfo: [NSLocalizedDescriptionKey: "教务登录已取消"])
     }
 
     private func tryLoginUniAppSequential(
         username: String,
         passwords: [String],
         index: Int,
+        tokenGeneration: Int,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
+        guard isCurrentTokenGeneration(tokenGeneration) else {
+            completion(.failure(tokenLoginCancelledError()))
+            return
+        }
         guard index < passwords.count else {
             completion(.failure(NSError(domain: "EmptyClassroom", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录合工大教务移动端失败，请检查账号或重新执行统一身份认证"])))
             return
@@ -1599,7 +1659,12 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         let rawPwd = passwords[index]
         guard let encryptedPwd = Self.rsaEncrypt(rawPwd, publicKeyBase64: Self.rsaPublicKeyBase64) else {
-            tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+            tryLoginUniAppSequential(
+                username: username,
+                passwords: passwords,
+                index: index + 1,
+                tokenGeneration: tokenGeneration,
+                completion: completion)
             return
         }
 
@@ -1612,7 +1677,12 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         ]
 
         guard let loginURL = comps.url else {
-            tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+            tryLoginUniAppSequential(
+                username: username,
+                passwords: passwords,
+                index: index + 1,
+                tokenGeneration: tokenGeneration,
+                completion: completion)
             return
         }
 
@@ -1622,21 +1692,36 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         session.dataTask(with: req) { [weak self] data, response, _ in
             guard let self = self else { return }
+            guard self.isCurrentTokenGeneration(tokenGeneration) else {
+                completion(.failure(self.tokenLoginCancelledError()))
+                return
+            }
             if let data = data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let dataObj = json["data"] as? [String: Any],
                let idToken = dataObj["idToken"] as? String,
                !idToken.isEmpty {
-                SettingsManager.shared.uniAppJwt = idToken
+                guard self.persistTokenIfCurrent(idToken, generation: tokenGeneration) else {
+                    completion(.failure(self.tokenLoginCancelledError()))
+                    return
+                }
                 completion(.success(idToken))
             } else {
-                self.tryLoginUniAppSequential(username: username, passwords: passwords, index: index + 1, completion: completion)
+                self.tryLoginUniAppSequential(
+                    username: username,
+                    passwords: passwords,
+                    index: index + 1,
+                    tokenGeneration: tokenGeneration,
+                    completion: completion)
             }
         }.resume()
     }
 
     /// 自动从树维教务 `for-std/student-info/info/{studentId}` 提取身份证后6位拼接 `Hfut@#$%`（与 HFUT-Schedule 一致）
-    private func resolveCandidatePasswords(completion: @escaping ([String]) -> Void) {
+    private func resolveCandidatePasswords(
+        tokenGeneration: Int,
+        completion: @escaping ([String]) -> Void
+    ) {
         var list: [String] = []
         if let cachedDefault = SettingsManager.shared.jxglstuDefaultPasswordCache, !cachedDefault.isEmpty {
             list.append(cachedDefault)
@@ -1656,16 +1741,26 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             return
         }
 
-        fetchJxglstuDefaultPassword { derivedPwd in
+        fetchJxglstuDefaultPassword(tokenGeneration: tokenGeneration) { [weak self] derivedPwd in
+            guard let self = self, self.isCurrentTokenGeneration(tokenGeneration) else {
+                completion([])
+                return
+            }
             if let pwd = derivedPwd, !pwd.isEmpty {
-                SettingsManager.shared.jxglstuDefaultPasswordCache = pwd
+                guard self.persistDefaultPasswordIfCurrent(pwd, generation: tokenGeneration) else {
+                    completion([])
+                    return
+                }
                 list.insert(pwd, at: 0)
             }
             completion(list)
         }
     }
 
-    private func fetchJxglstuDefaultPassword(completion: @escaping (String?) -> Void) {
+    private func fetchJxglstuDefaultPassword(
+        tokenGeneration: Int,
+        completion: @escaping (String?) -> Void
+    ) {
         let performFetch: (@escaping (String?) -> Void) -> Void = { done in
             let stdId = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !stdId.isEmpty,
@@ -1700,11 +1795,19 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         }
 
         performFetch { firstTry in
+            guard self.isCurrentTokenGeneration(tokenGeneration) else {
+                completion(nil)
+                return
+            }
             if let pwd = firstTry {
                 completion(pwd)
             } else {
                 // 若尚未获取 studentId 或教务 Cookie 过期，先触发一次后台登录自动获取 studentId 与 Cookie 再重试
                 CourseScheduleService.shared.tryBackgroundLogin { success in
+                    guard self.isCurrentTokenGeneration(tokenGeneration) else {
+                        completion(nil)
+                        return
+                    }
                     if success {
                         performFetch(completion)
                     } else {

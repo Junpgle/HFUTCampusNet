@@ -952,6 +952,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         SettingsManager.shared.courseSessionCookie = nil
         SettingsManager.shared.casTgcCookie = nil
         SettingsManager.shared.huixinAuthToken = nil
+        EmptyClassroomService.shared.cancelPendingAuthentication()
         StudentPortraitEatService.shared.clearCache()
         SettingsManager.shared.uniAppJwt = nil
         SettingsManager.shared.jxglstuDefaultPasswordCache = nil
