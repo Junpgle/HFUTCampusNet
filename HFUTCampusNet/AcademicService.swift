@@ -670,6 +670,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         let bizTypeId = (rawBiz.isEmpty || rawBiz == "2") ? "23" : rawBiz
 
         let group = DispatchGroup()
+        let resultQueue = DispatchQueue(label: "AcademicService.eamsResultCollector")
 
         var htmlGrades: [TermGradeGroup]?
         var htmlExams: [ExamItem]?
@@ -690,15 +691,16 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if let urlStr = http?.url?.absoluteString, urlStr.contains("/login") || http?.statusCode == 302 {
-                    sessionExpired = true
+                    resultQueue.sync { sessionExpired = true }
                     return
                 }
                 if let data = data, let html = String(data: data, encoding: .utf8) {
                     if html.contains("/login") && html.contains("password") {
-                        sessionExpired = true
+                        resultQueue.sync { sessionExpired = true }
                         return
                     }
-                    htmlGrades = self?.parseEamsGradeHTML(html)
+                    let grades = self?.parseEamsGradeHTML(html)
+                    resultQueue.sync { htmlGrades = grades }
                 }
             }.resume()
         }
@@ -715,11 +717,12 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if let urlStr = http?.url?.absoluteString, urlStr.contains("/login") || http?.statusCode == 302 {
-                    sessionExpired = true
+                    resultQueue.sync { sessionExpired = true }
                     return
                 }
                 if let data = data, let html = String(data: data, encoding: .utf8) {
-                    htmlExams = self?.parseEamsExamHTML(html)
+                    let exams = self?.parseEamsExamHTML(html)
+                    resultQueue.sync { htmlExams = exams }
                 }
             }.resume()
         }
@@ -740,7 +743,8 @@ public class AcademicService: NSObject, URLSessionDelegate {
                     return
                 }
                 if let data = data {
-                    parsedProgram = self?.parseProgramCompletionJSON(data)
+                    let program = self?.parseProgramCompletionJSON(data)
+                    resultQueue.sync { parsedProgram = program }
                 }
             }.resume()
         }
@@ -757,7 +761,8 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if http?.statusCode == 200, let data = data {
-                    parsedTextbooks = self?.parseTextbooksJSON(data)
+                    let textbooks = self?.parseTextbooksJSON(data)
+                    resultQueue.sync { parsedTextbooks = textbooks }
                 }
             }.resume()
         }
@@ -774,23 +779,34 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if http?.statusCode == 200, let data = data {
-                    parsedSurveys = self?.parseLessonSurveysJSON(data)
+                    let surveys = self?.parseLessonSurveysJSON(data)
+                    resultQueue.sync { parsedSurveys = surveys }
                 }
             }.resume()
         }
 
         group.notify(queue: .global()) { [weak self] in
             guard let self = self else { return }
-            if sessionExpired && allowRetry {
+            let resultSnapshot = resultQueue.sync {
+                (grades: htmlGrades,
+                 exams: htmlExams,
+                 program: parsedProgram,
+                 textbooks: parsedTextbooks,
+                 surveys: parsedSurveys,
+                 sessionExpired: sessionExpired)
+            }
+            if resultSnapshot.sessionExpired && allowRetry {
                 CourseScheduleService.shared.tryBackgroundLogin { ok in
                     if ok {
                         self.requestEamsGradesAndExams(allowRetry: false, completion: completion)
                     } else {
-                        completion(htmlGrades, htmlExams, parsedProgram, parsedTextbooks, parsedSurveys, CourseScheduleService.CourseSyncError.needLogin)
+                        completion(resultSnapshot.grades, resultSnapshot.exams, resultSnapshot.program,
+                                   resultSnapshot.textbooks, resultSnapshot.surveys, CourseScheduleService.CourseSyncError.needLogin)
                     }
                 }
             } else {
-                completion(htmlGrades, htmlExams, parsedProgram, parsedTextbooks, parsedSurveys, nil)
+                completion(resultSnapshot.grades, resultSnapshot.exams, resultSnapshot.program,
+                           resultSnapshot.textbooks, resultSnapshot.surveys, nil)
             }
         }
     }
