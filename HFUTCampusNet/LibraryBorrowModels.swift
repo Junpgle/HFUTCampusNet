@@ -292,11 +292,17 @@ public final class LibraryBorrowManager {
             if let completion {
                 pendingSyncCompletions.append(completion)
             }
-            stateLock.unlock()
-            return
+            guard forceSSO else {
+                stateLock.unlock()
+                return
+            }
+        } else {
+            isSyncing = true
+            pendingSyncCompletions = completion.map { [$0] } ?? []
         }
-        isSyncing = true
-        pendingSyncCompletions = completion.map { [$0] } ?? []
+        // A forced SSO request supersedes any active fetch; its result completes
+        // all callers waiting on the previous request as well as this one.
+        syncGeneration &+= 1
         let generation = syncGeneration
         stateLock.unlock()
 
