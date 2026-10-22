@@ -17,6 +17,7 @@ public struct CampusBookHolding: Codable, Equatable {
     }
 
     public var isAvailable: Bool {
+        guard !status.contains("不可借") else { return false }
         return status.contains("可借") || status.contains("在馆")
     }
 }
