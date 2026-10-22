@@ -520,7 +520,7 @@ public final class LibraryBorrowManager {
                     let libraryDetail = item["libraryDetail"] as? [String: Any]
                     let detail = libraryDetail?["detail"] as? [String: Any]
 
-                    let itemId = (item["id"] as? String) ?? UUID().uuidString
+                    let itemId = (item["id"] as? String) ?? (item["id"] as? NSNumber)?.stringValue ?? UUID().uuidString
                     let title = (detail?["title"] as? String) ?? (item["title"] as? String) ?? "未知书名"
                     let author = (detail?["authors"] as? String) ?? (detail?["author"] as? String) ?? ""
                     let publisher = (detail?["publishers"] as? String) ?? ""
@@ -532,7 +532,7 @@ public final class LibraryBorrowManager {
                     let borrowDate = (item["createdTime"] as? String) ?? ""
                     let dueDate = (item["returnTime"] as? String) ?? ""
                     let realReturnDate = item["realReturnTime"] as? String
-                    let statusRaw = (item["status"] as? String) ?? "0"
+                    let statusRaw = (item["status"] as? String) ?? (item["status"] as? NSNumber)?.stringValue ?? "2"
 
                     let book = CampusBorrowedBook(
                         id: itemId,
