@@ -47,6 +47,7 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
     private var selectedCampusIndex: Int = 0 // 0: 全部校区, 1: 翡翠湖校区, 2: 屯溪路校区, 3: 宣城校区
     private var onlyWithHoldings: Bool = false
     private var isSearching: Bool = false
+    private var searchGeneration = 0
 
     private let campusPrefKey = "cn.edu.hfut.campusnet.library_campus_filter"
 
@@ -861,6 +862,8 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func performSearch(keyword: String) {
+        searchGeneration &+= 1
+        let generation = searchGeneration
         isSearching = true
         searchStatusLabel.stringValue = "正在通过校内 OPAC 引擎检索「\(keyword)」全校馆藏与借阅状态…"
         resultEmptyLabel.stringValue = "正在检索全校图书…"
@@ -868,6 +871,7 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
 
         searchService.search(keyword: keyword, page: 1, size: 20) { [weak self] result in
             guard let self else { return }
+            guard self.searchGeneration == generation else { return }
             self.isSearching = false
             switch result {
             case .success(let items):
