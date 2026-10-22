@@ -973,8 +973,7 @@ public sealed class EmptyClassroomWindow : Window
         var currentRecord = EmptyClassroomService.Shared.CurrentStudyRoomItem();
         if (currentRecord != null)
         {
-            var matchRoom = EmptyClassroomService.Shared.CachedRooms
-                .FirstOrDefault(r => r.RoomId == currentRecord.RoomId && r.DateString == todayStr);
+            var matchRoom = EmptyClassroomService.Shared.FindSelectedRoomInCache(currentRecord, todayStr);
 
             _summaryBadge.Text = "当前自习室";
             _summaryBadge.Background = new SolidColorBrush(Color.FromRgb(10, 132, 255));
@@ -1730,10 +1729,10 @@ public sealed class ClassroomSemesterScheduleWindow : Window
         _refreshBtn.ToolTip = "重新拉取该教室全学期排课数据";
         actionPanel.Children.Add(_refreshBtn);
 
-        bool isCurrentStudy = EmptyClassroomService.Shared.CurrentStudyRoomItem()?.RoomId == _room.RoomId;
+        bool isCurrentStudy = IsCurrentStudyRoom();
         _studyBtn = CreatePrimaryButton(isCurrentStudy ? "✅ 取消自习" : "⭐ 设为自习", (_, _) =>
         {
-            if (EmptyClassroomService.Shared.CurrentStudyRoomItem()?.RoomId == _room.RoomId)
+            if (IsCurrentStudyRoom())
             {
                 EmptyClassroomService.Shared.ClearCurrentStudyRoom();
             }
@@ -1795,12 +1794,22 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
     private void UpdateStudyButtonState()
     {
-        bool isCurrent = EmptyClassroomService.Shared.CurrentStudyRoomItem()?.RoomId == _room.RoomId;
+        bool isCurrent = IsCurrentStudyRoom();
         _studyBtn.Content = isCurrent ? "✅ 取消自习" : "⭐ 设为自习";
         _studyBtn.Background = isCurrent
             ? new SolidColorBrush(Color.FromArgb(40, 239, 68, 68))
             : new SolidColorBrush(Color.FromRgb(24, 112, 235));
         _studyBtn.Foreground = isCurrent ? Brushes.Red : Brushes.White;
+    }
+
+    private bool IsCurrentStudyRoom()
+    {
+        var service = EmptyClassroomService.Shared;
+        var current = service.CurrentStudyRoomItem();
+        var currentRoom = current == null
+            ? null
+            : service.FindSelectedRoomInCache(current, EmptyClassroomService.TodayDateString());
+        return currentRoom != null && currentRoom.RoomId == _room.RoomId && currentRoom.CampusId == _room.CampusId;
     }
 
     private void ApplyTheme()

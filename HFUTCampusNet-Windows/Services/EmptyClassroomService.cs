@@ -238,7 +238,7 @@ public sealed class EmptyClassroomService
         return NearbySwitchRecommendations(room, startUnit, nowMin, limit);
     }
 
-    private ClassroomOccupationItem? FindSelectedRoomInCache(StudyRoomSelectionRecord selection, string dateString)
+    internal ClassroomOccupationItem? FindSelectedRoomInCache(StudyRoomSelectionRecord selection, string dateString)
     {
         var candidates = CachedRooms
             .Where(r => r.RoomId == selection.RoomId && r.DateString == dateString)
