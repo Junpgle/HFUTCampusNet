@@ -1362,26 +1362,36 @@ public sealed class AcademicService
                     var dtStr = CleanHtml(tdMatches[3].Groups[1].Value); // 2026-11-05 08:30~10:30
                     var place = CleanHtml(tdMatches[4].Groups[1].Value);
                     var seat = CleanHtml(tdMatches[5].Groups[1].Value);
+                    var dateTimeMatch = Regex.Match(
+                        dtStr,
+                        @"^(?<date>\d{4}-\d{2}-\d{2})\s+(?<start>\d{1,2}:\d{2})~(?<end>\d{1,2}:\d{2})$");
+                    if (string.IsNullOrEmpty(name) || !dateTimeMatch.Success) continue;
 
-                    if (!string.IsNullOrEmpty(name) && dtStr.Contains('~'))
+                    var datePart = dateTimeMatch.Groups["date"].Value;
+                    var startTime = dateTimeMatch.Groups["start"].Value;
+                    var endTime = dateTimeMatch.Groups["end"].Value;
+                    var dateTimeFormats = new[] { "yyyy-MM-dd H:mm", "yyyy-MM-dd HH:mm" };
+                    if (!DateTime.TryParseExact(
+                            $"{datePart} {startTime}", dateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var startDateTime) ||
+                        !DateTime.TryParseExact(
+                            $"{datePart} {endTime}", dateTimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var endDateTime) ||
+                        endDateTime < startDateTime)
                     {
-                        var parts = dtStr.Split(' ');
-                        var datePart = parts[0];
-                        var times = parts.Length > 1 ? parts[1].Split('~') : new[] { "08:00", "10:00" };
-
-                        list.Add(new ExamItem
-                        {
-                            Id = $"{name}|{dtStr}",
-                            CourseName = name,
-                            ExamType = type,
-                            DateTimeString = dtStr,
-                            DateString = datePart,
-                            StartTimeString = times[0],
-                            EndTimeString = times.Length > 1 ? times[1] : "",
-                            Place = place,
-                            SeatNumber = seat
-                        });
+                        continue;
                     }
+
+                    list.Add(new ExamItem
+                    {
+                        Id = $"{name}|{dtStr}",
+                        CourseName = name,
+                        ExamType = type,
+                        DateTimeString = dtStr,
+                        DateString = datePart,
+                        StartTimeString = startDateTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+                        EndTimeString = endDateTime.ToString("HH:mm", CultureInfo.InvariantCulture),
+                        Place = place,
+                        SeatNumber = seat
+                    });
                 }
             }
         }
