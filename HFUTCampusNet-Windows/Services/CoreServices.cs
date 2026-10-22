@@ -646,7 +646,10 @@ public sealed class PortalAuthService
             }
 
             var status = await CheckStatusAsync();
-            if (status.Online) return (true, "校园网认证成功");
+            if (status.Online && string.Equals(status.Username, username, StringComparison.Ordinal))
+                return (true, "当前设备已使用该账号在线");
+            if (status.Online)
+                return (false, $"当前设备已以账号 {status.Username} 在线，未确认 {username} 登录成功");
             return (false, "认证未通过");
         }
         catch (Exception ex)
