@@ -3,7 +3,14 @@ import AppKit
 import WebKit
 
 public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-    public static let shared = UnifiedLoginWebViewController()
+    private static var sharedInstance: UnifiedLoginWebViewController?
+
+    public static var shared: UnifiedLoginWebViewController {
+        if let sharedInstance { return sharedInstance }
+        let instance = UnifiedLoginWebViewController()
+        sharedInstance = instance
+        return instance
+    }
 
     public static func clearCASLoginCookies() {
         let cookieStore = WKWebsiteDataStore.default().httpCookieStore
@@ -19,6 +26,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         }
     }
 
+    public static func invalidateAccountSession() {
+        sharedInstance?.cancelPendingSyncForAccountSwitch()
+        clearCASLoginCookies()
+    }
+
     private var webView: WKWebView!
     private var casLoginCoordinator: HFUTCASLoginCoordinator!
     private var progressIndicator: NSProgressIndicator!
@@ -27,6 +39,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     private var stepLabels: [NSTextField] = []
 
     private var isSyncingAll: Bool = false
+    private var isAccountAuthFlowEnabled = true
     private var syncCompletedCount: Int = 0
     private var syncSessionToken: UUID = UUID()
     private var electricitySyncFailure: String?
@@ -161,11 +174,23 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         window.contentView = containerView
     }
 
+    private func cancelPendingSyncForAccountSwitch() {
+        syncSessionToken = UUID()
+        isSyncingAll = false
+        syncCompletedCount = 0
+        electricitySyncFailure = nil
+        isAccountAuthFlowEnabled = false
+        webView.stopLoading()
+        casLoginCoordinator.setEnabled(false)
+        progressIndicator.stopAnimation(nil)
+    }
+
     public func showLoginWindow() {
         guard let window = self.window else { return }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+        isAccountAuthFlowEnabled = true
         isSyncingAll = false
         syncCompletedCount = 0
         syncSessionToken = UUID()
@@ -245,7 +270,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     }
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "casCredentialsHandler",
+        guard isAccountAuthFlowEnabled,
+              message.name == "casCredentialsHandler",
               message.webView === webView,
               message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
@@ -263,6 +289,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
         casLoginCoordinator.navigationFinished(in: webView)
+        guard isAccountAuthFlowEnabled else { return }
         guard let url = webView.url else { return }
 
         // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
@@ -346,7 +373,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if let url = navigationAction.request.url?.absoluteString {
             // 如果检测到 HuiXin OAuth 回调或者 EAMS 5.0 回调
-            if url.contains("synjones-auth=") {
+            if isAccountAuthFlowEnabled && url.contains("synjones-auth=") {
                 let token = url.components(separatedBy: "synjones-auth=").last?
                     .components(separatedBy: "&").first?
                     .components(separatedBy: "#").first?
@@ -365,11 +392,15 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     // MARK: - 检测 CAS 认证状态并触发全自动服务刷新
 
     private func checkCASAuthentication() {
-        guard !isSyncingAll else { return }
+        guard isAccountAuthFlowEnabled, !isSyncingAll else { return }
+        let sessionToken = syncSessionToken
 
         // 获取全部 Cookie 并结合 DOM 判断是否真正脱离登录表单
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
-            guard let self = self, !self.isSyncingAll else { return }
+            guard let self = self,
+                  self.isAccountAuthFlowEnabled,
+                  self.syncSessionToken == sessionToken,
+                  !self.isSyncingAll else { return }
 
             let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
             let hasTGC = tgc != nil
@@ -388,7 +419,10 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             })();
             """
             self.webView.evaluateJavaScript(domCheckJS) { [weak self] res, _ in
-                guard let self = self, !self.isSyncingAll else { return }
+                guard let self = self,
+                      self.isAccountAuthFlowEnabled,
+                      self.syncSessionToken == sessionToken,
+                      !self.isSyncingAll else { return }
                 let dict = res as? [String: Any]
                 let hasPwdInput = (dict?["hasPwd"] as? Bool) ?? (currentURL.contains("/cas/login") || currentURL.contains("/login?"))
                 let hasSuccessText = (dict?["hasSuccessText"] as? Bool) ?? false
@@ -403,17 +437,18 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     currentURL.contains("loginsuccess")
 
                 if hasTGC || redirectedToService || (currentURL.contains("cas.hfut.edu.cn") && hasSuccessText) {
-                    self.startFullSSORefreshChain(cookies: cookies)
+                    self.startFullSSORefreshChain(cookies: cookies, sessionToken: sessionToken)
                 }
             }
         }
     }
 
     /// 核心：全自动无缝 SSO 链式刷新
-    private func startFullSSORefreshChain(cookies: [HTTPCookie]) {
-        guard !isSyncingAll else { return }
+    private func startFullSSORefreshChain(cookies: [HTTPCookie], sessionToken: UUID) {
+        guard isAccountAuthFlowEnabled,
+              self.syncSessionToken == sessionToken,
+              !isSyncingAll else { return }
         isSyncingAll = true
-        let sessionToken = self.syncSessionToken
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
@@ -423,6 +458,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
         self.webView.evaluateJavaScript("document.getElementById('username') ? document.getElementById('username').value : ''") { val, _ in
+            guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
             if let user = val as? String, !user.isEmpty {
                 SettingsManager.shared.portalUsername = user
             }
@@ -452,6 +488,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     // MARK: - 1. 同步教务系统课表
 
     private func syncCourseTable(cookies: [HTTPCookie], sessionToken: UUID) {
+        guard isAccountAuthFlowEnabled, syncSessionToken == sessionToken else { return }
         updateStep(index: 1, text: "2. 教务课表同步", status: .inProgress)
 
         // 仅当 cookies 中已包含 jxglstu 专属 Cookie 时才更新，绝不用 cas.hfut.edu.cn 的同名 SESSION 覆盖
@@ -461,27 +498,32 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
         // 通过 CAS TGC 票据执行单点登录，自动解析最新 studentId / semesterId / bizTypeId 并拉取课表
         CourseScheduleService.shared.tryBackgroundLogin { [weak self] _ in
-            CourseScheduleService.shared.syncSchedule(
-                studentId: SettingsManager.shared.courseStudentId,
-                semesterId: SettingsManager.shared.courseSemesterId,
-                bizTypeId: SettingsManager.shared.courseBizTypeId
-            ) { [weak self] result in
-                // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室、考试安排与成绩单
-                EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
-                AcademicService.shared.syncAll(silent: true)
-                DispatchQueue.main.async {
-                    guard let self = self, self.syncSessionToken == sessionToken else { return }
-                    switch result {
-                    case .success(let schedule):
-                        self.updateStep(index: 1, text: "2. 课表 (\(schedule.lessons.count)节)", status: .success)
-                    case .failure:
-                        if let cached = CourseScheduleService.shared.currentSchedule, !cached.lessons.isEmpty {
-                            self.updateStep(index: 1, text: "2. 课表 (缓存\(cached.lessons.count)节)", status: .success)
-                        } else {
-                            self.updateStep(index: 1, text: "2. 课表同步失败", status: .failure)
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
+                CourseScheduleService.shared.syncSchedule(
+                    studentId: SettingsManager.shared.courseStudentId,
+                    semesterId: SettingsManager.shared.courseSemesterId,
+                    bizTypeId: SettingsManager.shared.courseBizTypeId
+                ) { result in
+                    DispatchQueue.main.async {
+                        guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
+                        // 课表同步拿到教务 Cookie 与 studentId 后，自动联动刷新空教室、考试安排与成绩单。
+                        // 账号切换后不再从旧回调启动新一轮服务请求。
+                        EmptyClassroomService.shared.syncTodayAndTomorrowStudyRooms(forceRefresh: true) { _ in }
+                        AcademicService.shared.syncAll(silent: true)
+                        switch result {
+                        case .success(let schedule):
+                            self.updateStep(index: 1, text: "2. 课表 (\(schedule.lessons.count)节)", status: .success)
+                        case .failure:
+                            if let cached = CourseScheduleService.shared.currentSchedule, !cached.lessons.isEmpty {
+                                self.updateStep(index: 1, text: "2. 课表 (缓存\(cached.lessons.count)节)", status: .success)
+                            } else {
+                                self.updateStep(index: 1, text: "2. 课表同步失败", status: .failure)
+                            }
                         }
+                        self.checkAllSyncFinished(sessionToken: sessionToken)
                     }
-                    self.checkAllSyncFinished(sessionToken: sessionToken)
                 }
             }
         }
@@ -490,6 +532,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     // MARK: - 2. 同步慧新易校电费
 
     private func syncHuiXinElectricity(cookieHeader: String, sessionToken: UUID) {
+        guard isAccountAuthFlowEnabled, syncSessionToken == sessionToken else { return }
         updateStep(index: 2, text: "3. 电费与校园卡", status: .inProgress)
         updateStep(index: 3, text: "4. 校园网与历史用量", status: .inProgress)
 
@@ -507,30 +550,35 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         let config = URLSessionConfiguration.default
         let delegate = RedirectCaptureDelegate { [weak self] capturedToken in
             guard let self = self else { return }
-            if let token = capturedToken {
-                SettingsManager.shared.huixinAuthToken = token
-            }
-            // 在拿到最新 huixinAuthToken 后再调用慧新易校校园网流量兜底接口与校园卡接口
-            self.syncCampusNetwork(sessionToken: sessionToken)
-            CampusCardService.shared.fetchData { _ in }
+            DispatchQueue.main.async {
+                guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
+                if let token = capturedToken {
+                    SettingsManager.shared.huixinAuthToken = token
+                }
+                // 在拿到当前账号的令牌后再启动慧新易校关联查询。
+                self.syncCampusNetwork(sessionToken: sessionToken)
+                CampusCardService.shared.fetchData { _ in }
 
-            ElectricityService.shared.fetchData { [weak self] elecResult in
-                DispatchQueue.main.async {
-                    guard let self = self, self.syncSessionToken == sessionToken else { return }
-                    switch elecResult {
-                    case .success(let elec):
-                        let balStr = elec.displayBalance
-                        self.updateStep(index: 2, text: "3. 电费 (\(balStr))", status: .success)
-                    case .failure(let error):
-                        if !SettingsManager.shared.isDormConfigured {
-                            self.updateStep(index: 2, text: "3. 电费 (未填宿舍)", status: .success)
-                        } else {
-                            self.electricitySyncFailure = error.localizedDescription
-                            self.updateStep(index: 2, text: "3. 电费查询失败", status: .failure)
-                            self.statusDetailLabel.stringValue = "电费查询失败：\(error.localizedDescription)"
+                ElectricityService.shared.fetchData { [weak self] elecResult in
+                    DispatchQueue.main.async {
+                        guard let self = self,
+                              self.isAccountAuthFlowEnabled,
+                              self.syncSessionToken == sessionToken else { return }
+                        switch elecResult {
+                        case .success(let elec):
+                            let balStr = elec.displayBalance
+                            self.updateStep(index: 2, text: "3. 电费 (\(balStr))", status: .success)
+                        case .failure(let error):
+                            if !SettingsManager.shared.isDormConfigured {
+                                self.updateStep(index: 2, text: "3. 电费 (未填宿舍)", status: .success)
+                            } else {
+                                self.electricitySyncFailure = error.localizedDescription
+                                self.updateStep(index: 2, text: "3. 电费查询失败", status: .failure)
+                                self.statusDetailLabel.stringValue = "电费查询失败：\(error.localizedDescription)"
+                            }
                         }
+                        self.checkAllSyncFinished(sessionToken: sessionToken)
                     }
-                    self.checkAllSyncFinished(sessionToken: sessionToken)
                 }
             }
         }
@@ -547,10 +595,13 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     // MARK: - 3. 同步校园网自服务与历史用量
 
     private func syncCampusNetwork(sessionToken: UUID) {
+        guard isAccountAuthFlowEnabled, syncSessionToken == sessionToken else { return }
         // 从慧新易校拉取本期校园网流量与余额（支持校外/热点访问）
         ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
             DispatchQueue.main.async {
-                guard let self = self, self.syncSessionToken == sessionToken else { return }
+                guard let self = self,
+                      self.isAccountAuthFlowEnabled,
+                      self.syncSessionToken == sessionToken else { return }
                 CampusNetworkClient.shared.applyHuiXinFallback(usedFlow: flow, balance: balance)
                 self.updateStep(index: 3, text: "4. 校园网与历史已同步", status: .success)
                 self.checkAllSyncFinished(sessionToken: sessionToken)
@@ -559,7 +610,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     }
 
     private func checkAllSyncFinished(sessionToken: UUID) {
-        guard self.syncSessionToken == sessionToken else { return }
+        guard isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
         syncCompletedCount += 1
         if syncCompletedCount >= 3 {
             progressIndicator.stopAnimation(nil)
@@ -581,7 +632,9 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
             // 3 秒后自动关闭并打开桌面组件
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                guard let self = self, self.syncSessionToken == sessionToken else { return }
+                guard let self = self,
+                      self.isAccountAuthFlowEnabled,
+                      self.syncSessionToken == sessionToken else { return }
                 if SettingsManager.shared.showDesktopWidget {
                     DesktopWidgetController.shared.showWindow(nil)
                 }

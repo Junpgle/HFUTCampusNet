@@ -43,6 +43,12 @@ public class ElectricityService {
         return generation
     }
 
+    public func cancelPendingRequests() {
+        stateLock.lock()
+        requestGeneration &+= 1
+        stateLock.unlock()
+    }
+
     private func isCurrentGeneration(_ generation: Int) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
