@@ -12,6 +12,18 @@ CONTENTS_DIR="$BUNDLE_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 CACHE_DIR="$DIR/.swift_cache"
+APP_MARKETING_VERSION="${HFUTCAMPUSNET_VERSION:-}"
+if [ -z "$APP_MARKETING_VERSION" ]; then
+    if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+        APP_MARKETING_VERSION="${GITHUB_REF_NAME:-}"
+    else
+        APP_MARKETING_VERSION="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+    fi
+fi
+APP_MARKETING_VERSION="${APP_MARKETING_VERSION#v}"
+if [[ ! "$APP_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    APP_MARKETING_VERSION="2.2.0"
+fi
 
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
@@ -77,7 +89,7 @@ if [ -f "$DIR/HFUTCampusNet/AppIcon.icns" ]; then
     cp "$DIR/HFUTCampusNet/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 fi
 
-cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
+cat << EOF > "$CONTENTS_DIR/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -95,9 +107,9 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.2.0</string>
+    <string>$APP_MARKETING_VERSION</string>
     <key>CFBundleVersion</key>
-    <string>2.2.0</string>
+    <string>$APP_MARKETING_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
