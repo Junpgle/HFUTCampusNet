@@ -11,6 +11,11 @@ public struct GitHubReleaseInfo {
     public let publishedAt: String?
 }
 
+private struct SemanticVersion {
+    let components: [Int]
+    let prereleaseIdentifiers: [String]
+}
+
 public class UpdateChecker {
     public static let shared = UpdateChecker()
 
@@ -25,8 +30,11 @@ public class UpdateChecker {
 
     private init() {}
 
-    /// 当前客户端版本号（从 Info.plist 读取，兜底为 2.2.0）
+    /// 当前客户端发布版本（优先读取完整发布标签，兜底为数字 Bundle 版本）
     public var currentVersion: String {
+        if let tag = Bundle.main.infoDictionary?["HFUTCAMPUSNETReleaseTag"] as? String, !tag.isEmpty {
+            return normalizeVersion(tag)
+        }
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
@@ -278,28 +286,128 @@ public class UpdateChecker {
         }
     }
 
-    /// 去除前导 v/V 及附加构建后缀，提取纯版本号部分
+    /// 去除前导 v/V，保留预发布和构建元数据
     public func normalizeVersion(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasPrefix("v") || s.hasPrefix("V") {
             s.removeFirst()
-        }
-        if let dashIdx = s.firstIndex(of: "-") {
-            s = String(s[..<dashIdx])
         }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 语义化版本号对比：判断 remoteVer 是否严格大于 localVer
     public func isVersion(_ remoteVer: String, newerThan localVer: String) -> Bool {
-        let rParts = normalizeVersion(remoteVer).split(separator: ".").map { Int($0) ?? 0 }
-        let lParts = normalizeVersion(localVer).split(separator: ".").map { Int($0) ?? 0 }
-        let maxCount = max(rParts.count, lParts.count)
+        guard let remote = parseSemanticVersion(remoteVer), let local = parseSemanticVersion(localVer) else {
+            return isLegacyNumericVersion(remoteVer, newerThan: localVer)
+        }
+
+        for (remoteComponent, localComponent) in zip(remote.components, local.components) {
+            if remoteComponent != localComponent {
+                return remoteComponent > localComponent
+            }
+        }
+
+        if remote.prereleaseIdentifiers.isEmpty != local.prereleaseIdentifiers.isEmpty {
+            return remote.prereleaseIdentifiers.isEmpty
+        }
+
+        for (remoteIdentifier, localIdentifier) in zip(remote.prereleaseIdentifiers, local.prereleaseIdentifiers) {
+            if remoteIdentifier == localIdentifier {
+                continue
+            }
+
+            let remoteIsNumeric = remoteIdentifier.allSatisfy(isASCIIDigit)
+            let localIsNumeric = localIdentifier.allSatisfy(isASCIIDigit)
+            if remoteIsNumeric && localIsNumeric {
+                if remoteIdentifier.count != localIdentifier.count {
+                    return remoteIdentifier.count > localIdentifier.count
+                }
+                return localIdentifier.utf8.lexicographicallyPrecedes(remoteIdentifier.utf8)
+            }
+            if remoteIsNumeric != localIsNumeric {
+                return !remoteIsNumeric
+            }
+            return localIdentifier.utf8.lexicographicallyPrecedes(remoteIdentifier.utf8)
+        }
+
+        return remote.prereleaseIdentifiers.count > local.prereleaseIdentifiers.count
+    }
+
+    private func parseSemanticVersion(_ raw: String) -> SemanticVersion? {
+        let normalized = normalizeVersion(raw)
+        let buildParts = normalized.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        guard buildParts.count <= 2 else { return nil }
+
+        if buildParts.count == 2 {
+            let buildIdentifiers = buildParts[1].split(separator: ".", omittingEmptySubsequences: false)
+            guard !buildIdentifiers.isEmpty,
+                  buildIdentifiers.allSatisfy({ isValidVersionIdentifier(String($0), allowNumericLeadingZero: true) }) else {
+                return nil
+            }
+        }
+
+        let versionAndPrerelease = String(buildParts[0])
+        let prereleaseParts = versionAndPrerelease.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard prereleaseParts.count <= 2 else { return nil }
+
+        let coreParts = prereleaseParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard coreParts.count == 3 else { return nil }
+        var components: [Int] = []
+        for part in coreParts {
+            let value = String(part)
+            guard !value.isEmpty,
+                  value.allSatisfy(isASCIIDigit),
+                  (value.count == 1 || !value.hasPrefix("0")),
+                  let number = Int(value) else {
+                return nil
+            }
+            components.append(number)
+        }
+
+        var prereleaseIdentifiers: [String] = []
+        if prereleaseParts.count == 2 {
+            let identifiers = prereleaseParts[1].split(separator: ".", omittingEmptySubsequences: false)
+            guard !identifiers.isEmpty,
+                  identifiers.allSatisfy({ isValidVersionIdentifier(String($0), allowNumericLeadingZero: false) }) else {
+                return nil
+            }
+            prereleaseIdentifiers = identifiers.map(String.init)
+        }
+
+        return SemanticVersion(components: components, prereleaseIdentifiers: prereleaseIdentifiers)
+    }
+
+    private func isValidVersionIdentifier(_ value: String, allowNumericLeadingZero: Bool) -> Bool {
+        guard !value.isEmpty,
+              value.unicodeScalars.allSatisfy({
+                  let scalar = $0.value
+                  return (48...57).contains(scalar) || (65...90).contains(scalar) || (97...122).contains(scalar) || scalar == 45
+              }) else {
+            return false
+        }
+        let isNumeric = value.allSatisfy(isASCIIDigit)
+        return allowNumericLeadingZero || !isNumeric || value.count == 1 || !value.hasPrefix("0")
+    }
+
+    private func isASCIIDigit(_ character: Character) -> Bool {
+        character >= "0" && character <= "9"
+    }
+
+    private func isLegacyNumericVersion(_ remoteVer: String, newerThan localVer: String) -> Bool {
+        func components(_ raw: String) -> [Int] {
+            let normalized = normalizeVersion(raw)
+            let core = normalized.split(whereSeparator: { $0 == "-" || $0 == "+" }).first.map(String.init) ?? normalized
+            return core.split(separator: ".").map { Int($0) ?? 0 }
+        }
+
+        let remote = components(remoteVer)
+        let local = components(localVer)
+        let maxCount = max(remote.count, local.count)
         for i in 0..<maxCount {
-            let r = i < rParts.count ? rParts[i] : 0
-            let l = i < lParts.count ? lParts[i] : 0
-            if r > l { return true }
-            if r < l { return false }
+            let remoteComponent = i < remote.count ? remote[i] : 0
+            let localComponent = i < local.count ? local[i] : 0
+            if remoteComponent > localComponent { return true }
+            if remoteComponent < localComponent { return false }
         }
         return false
     }

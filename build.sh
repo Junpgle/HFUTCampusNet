@@ -12,18 +12,20 @@ CONTENTS_DIR="$BUNDLE_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 CACHE_DIR="$DIR/.swift_cache"
-APP_MARKETING_VERSION="${HFUTCAMPUSNET_VERSION:-}"
-if [ -z "$APP_MARKETING_VERSION" ]; then
+APP_RELEASE_TAG="${HFUTCAMPUSNET_VERSION:-}"
+if [ -z "$APP_RELEASE_TAG" ]; then
     if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-        APP_MARKETING_VERSION="${GITHUB_REF_NAME:-}"
+        APP_RELEASE_TAG="${GITHUB_REF_NAME:-}"
     else
-        APP_MARKETING_VERSION="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+        APP_RELEASE_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
     fi
 fi
-APP_MARKETING_VERSION="${APP_MARKETING_VERSION#v}"
-if [[ "$APP_MARKETING_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-+].*)?$ ]]; then
+APP_RELEASE_TAG="${APP_RELEASE_TAG#v}"
+APP_RELEASE_TAG="${APP_RELEASE_TAG#V}"
+if [[ "$APP_RELEASE_TAG" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-+][0-9A-Za-z.-]+)?$ ]]; then
     APP_MARKETING_VERSION="${BASH_REMATCH[1]}"
 else
+    APP_RELEASE_TAG="2.2.0"
     APP_MARKETING_VERSION="2.2.0"
 fi
 
@@ -112,6 +114,8 @@ cat << EOF > "$CONTENTS_DIR/Info.plist"
     <string>$APP_MARKETING_VERSION</string>
     <key>CFBundleVersion</key>
     <string>$APP_MARKETING_VERSION</string>
+    <key>HFUTCAMPUSNETReleaseTag</key>
+    <string>$APP_RELEASE_TAG</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSUIElement</key>
