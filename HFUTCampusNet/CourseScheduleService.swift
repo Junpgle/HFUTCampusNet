@@ -593,7 +593,12 @@ public class CourseScheduleService {
             throw CourseSyncError.invalidResponse
         }
 
-        let courseMap = Dictionary(uniqueKeysWithValues: lessons.map { ($0.id, $0) })
+        var courseMap: [String: RawCourse] = [:]
+        for lesson in lessons {
+            let courseId = lesson.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !courseId.isEmpty, courseMap[courseId] == nil else { continue }
+            courseMap[courseId] = lesson
+        }
 
         var courseItems: [CourseLesson] = []
 
