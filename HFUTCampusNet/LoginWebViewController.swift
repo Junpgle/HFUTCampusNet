@@ -10,6 +10,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     private var statusLabel: NSTextField!
     private var isCapturingSession: Bool = false
     private var sessionToken: UUID = UUID()
+    private var sessionUsername = ""
 
     private init() {
         let window = NSWindow(
@@ -85,6 +86,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
         isCapturingSession = false
         sessionToken = UUID()
+        sessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
@@ -99,9 +101,14 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "selfServiceCredentialsHandler",
+              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == sessionUsername,
               let dict = message.body as? [String: String] else { return }
         if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
+            guard sessionUsername.isEmpty || u == sessionUsername else { return }
             SettingsManager.shared.portalUsername = u
+            if sessionUsername.isEmpty {
+                sessionUsername = u
+            }
         }
         if let p = dict["password"], !p.isEmpty {
             SettingsManager.shared.portalPassword = p
@@ -138,6 +145,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
+        guard SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == sessionUsername else { return }
         if let urlStr = webView.url?.absoluteString, urlStr.contains("/Self/login") {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -215,16 +223,31 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     // 捕获 Cookie 并就地直接提取页面数据！
     private func checkAndCaptureSession() {
         guard !isCapturingSession else { return }
+        let expectedSessionToken = sessionToken
+        let expectedUsername = sessionUsername
+        guard !expectedUsername.isEmpty,
+              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else { return }
         // 先检查 HTML 内容
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak self] result, _ in
-            guard let self = self, !self.isCapturingSession else { return }
+            guard let self = self,
+                  self.sessionToken == expectedSessionToken,
+                  self.sessionUsername == expectedUsername,
+                  SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername,
+                  !self.isCapturingSession else { return }
             let text = (result as? String) ?? ""
 
             // 如果页面中包含了自服务的特征词
             if text.contains("可用流量") || text.contains("已用流量") || text.contains("消费保护") || text.contains("账户余额") {
                 self.isCapturingSession = true
                 // 先提取最新的 xywzz 自服务专属 JSESSIONID Cookie，避免混入其它站点同名 JSESSIONID
-                self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+                    guard let self = self else { return }
+                    guard self.sessionToken == expectedSessionToken,
+                          self.sessionUsername == expectedUsername,
+                          SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else {
+                        self.isCapturingSession = false
+                        return
+                    }
                     var matchedSid: String?
                     for cookie in cookies where cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
                         if cookie.domain.lowercased().contains("xywzz") || cookie.path.contains("/Self") {
@@ -237,7 +260,14 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                     if let sid = matchedSid {
                         SettingsManager.shared.sessionCookie = sid
                     }
-                    self.webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML : ''") { htmlResult, _ in
+                    self.webView.evaluateJavaScript("document.documentElement ? document.documentElement.outerHTML : ''") { [weak self] htmlResult, _ in
+                        guard let self = self else { return }
+                        guard self.sessionToken == expectedSessionToken,
+                              self.sessionUsername == expectedUsername,
+                              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else {
+                            self.isCapturingSession = false
+                            return
+                        }
                         if let fullHtml = htmlResult as? String {
                             CampusNetworkClient.shared.applyParsedDashboardHTML(fullHtml)
                         }
@@ -250,7 +280,10 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                 // 延时 1.5 秒自动关闭窗口
                 let token = self.sessionToken
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                    guard let self = self, self.sessionToken == token else { return }
+                    guard let self = self,
+                          self.sessionToken == token,
+                          self.sessionUsername == expectedUsername,
+                          SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else { return }
                     self.window?.close()
                 }
             }
@@ -259,6 +292,8 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     @objc private func promptManualCookie() {
         NSApp.activate(ignoringOtherApps: true)
+        let expectedSessionToken = sessionToken
+        let expectedUsername = sessionUsername
         let alert = NSAlert()
         alert.messageText = "手动填入自服务 JSESSIONID"
         alert.informativeText = "若你已在浏览器中打开了自服务网页，可按 F12 -> Application -> Cookies 复制 JSESSIONID 的值填入下方："
@@ -273,6 +308,9 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         alert.addButton(withTitle: "取消")
 
         if alert.runModal() == .alertFirstButtonReturn {
+            guard sessionToken == expectedSessionToken,
+                  sessionUsername == expectedUsername,
+                  SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else { return }
             let cookieVal = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cookieVal.isEmpty {
                 SettingsManager.shared.sessionCookie = cookieVal
