@@ -221,6 +221,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
         silent: Bool = false,
         completion: ((Result<AcademicDataSnapshot, Error>) -> Void)? = nil
     ) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.syncAll(silent: silent, completion: completion)
+            }
+            return
+        }
+
         if isSyncing {
             if let completion {
                 pendingSyncCompletions.append(completion)
