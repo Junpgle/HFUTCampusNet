@@ -361,10 +361,10 @@ public sealed class EmptyClassroomService
 
     public void FetchRooms(CampusBuildingOption building, string dateString, bool forceRefresh, Action<List<ClassroomOccupationItem>?, string?> callback)
     {
-        SyncTodayAndTomorrowStudyRooms(building.CampusId, forceRefresh, (_, _) =>
+        SyncTodayAndTomorrowStudyRooms(building.CampusId, forceRefresh, (success, error) =>
         {
             var rooms = CachedBuildingRooms(building, dateString);
-            callback(rooms, null);
+            callback(rooms, success ? null : error);
         });
     }
 
