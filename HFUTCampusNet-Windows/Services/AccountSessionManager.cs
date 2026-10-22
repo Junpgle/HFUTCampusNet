@@ -21,6 +21,7 @@ public static class AccountSessionManager
         if (!preserveCourseWebViewCookies)
             CourseLoginWebWindow.ClearAuthCookiesForAccountSwitch();
         ElectricityService.Shared.ClearAccountScopedCache();
+        CampusHistoryManager.Shared.ClearElectricityHistory();
         EmptyClassroomService.Shared.CancelPendingAuthentication();
         CourseScheduleService.Shared.ClearSchedule();
         CampusCardService.Shared.ClearCache();

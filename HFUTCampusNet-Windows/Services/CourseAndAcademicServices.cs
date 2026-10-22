@@ -651,6 +651,13 @@ public sealed class CourseScheduleService
 
     public async Task<string?> DiscoverStudentIdAsync(string cookie)
     {
+        int scheduleGeneration;
+        lock (_scheduleStateLock)
+        {
+            scheduleGeneration = _scheduleGeneration;
+        }
+        var accountGeneration = AccountSessionManager.Generation;
+
         try
         {
             var cleanCookie = cookie.Contains("SESSION=") ? cookie : $"SESSION={cookie}";
@@ -667,8 +674,15 @@ public sealed class CourseScheduleService
                 if (m.Success)
                 {
                     var stdId = m.Groups[1].Value;
-                    SettingsManager.Shared.CourseStudentId = stdId;
-                    SettingsManager.Shared.Save();
+                    lock (_scheduleStateLock)
+                    {
+                        if (scheduleGeneration != _scheduleGeneration ||
+                            accountGeneration != AccountSessionManager.Generation)
+                            return null;
+
+                        SettingsManager.Shared.CourseStudentId = stdId;
+                        SettingsManager.Shared.Save();
+                    }
                     return stdId;
                 }
             }
