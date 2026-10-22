@@ -191,6 +191,8 @@ public class UpdateChecker {
 
                 guard let first = list.first else {
                     // 仓库尚未发布任何 Release，视为当前已是最新
+                    self.availableUpdate = nil
+                    NotificationCenter.default.post(name: .updateCheckDidFinish, object: nil)
                     completion?(.success(nil))
                     if showManual {
                         self.showUpToDateAlert(latestVersion: self.currentVersion)
