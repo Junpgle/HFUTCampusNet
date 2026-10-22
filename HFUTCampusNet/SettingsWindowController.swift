@@ -945,7 +945,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private func handleAccountSwitchIfNeeded() {
         let currentU = SettingsManager.shared.portalUsername
-        guard !initialUsername.isEmpty, !currentU.isEmpty, currentU != initialUsername else { return }
+        guard !initialUsername.isEmpty, currentU != initialUsername else { return }
         initialUsername = currentU
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
