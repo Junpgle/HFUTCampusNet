@@ -10,7 +10,13 @@ public class CourseScheduleService {
 
     public private(set) var currentSchedule: CourseScheduleData?
 
+    private let stateLock = NSLock()
+    private var scheduleGeneration = 0
     private let fileManager = FileManager.default
+
+    public var cacheGenerationToken: Int {
+        currentScheduleGeneration()
+    }
     private var cacheFileURL: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appDir = appSupport.appendingPathComponent("cn.edu.hfut.campusnet.monitor", isDirectory: true)
@@ -41,26 +47,64 @@ public class CourseScheduleService {
     }
 
     public func saveSchedule(_ schedule: CourseScheduleData) {
-        self.currentSchedule = schedule
+        _ = saveSchedule(schedule, generation: currentScheduleGeneration())
+    }
+
+    @discardableResult
+    private func saveSchedule(_ schedule: CourseScheduleData, generation: Int) -> Bool {
+        stateLock.lock()
+        guard scheduleGeneration == generation else {
+            stateLock.unlock()
+            return false
+        }
+        currentSchedule = schedule
+
+        var shouldNotify = false
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .prettyPrinted
             let data = try encoder.encode(schedule)
             try data.write(to: cacheFileURL, options: .atomic)
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: schedule)
-            }
+            shouldNotify = true
         } catch {
             print("⚠️ 保存课表缓存失败: \(error)")
         }
+        stateLock.unlock()
+        if shouldNotify {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrentScheduleGeneration(generation) else { return }
+                NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: schedule)
+            }
+        }
+        return true
     }
 
     public func clearSchedule() {
+        stateLock.lock()
+        scheduleGeneration &+= 1
         self.currentSchedule = nil
         try? fileManager.removeItem(at: cacheFileURL)
+        stateLock.unlock()
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: nil)
         }
+    }
+
+    private func currentScheduleGeneration() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return scheduleGeneration
+    }
+
+    private func isCurrentScheduleGeneration(_ generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return scheduleGeneration == generation
+    }
+
+    private static func accountSwitchCancellation() -> NSError {
+        NSError(domain: "CourseScheduleService", code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次课表同步已取消"])
     }
 
     // MARK: - 网络同步接口
@@ -131,6 +175,24 @@ public class CourseScheduleService {
         bizTypeId: String? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
+        let generation = currentScheduleGeneration()
+        let finish: (Result<CourseScheduleData, Error>) -> Void = { [weak self] result in
+            guard let self else {
+                completion(result)
+                return
+            }
+            guard self.isCurrentScheduleGeneration(generation) else {
+                completion(.failure(Self.accountSwitchCancellation()))
+                return
+            }
+            if case .success(let schedule) = result,
+               !self.saveSchedule(schedule, generation: generation) {
+                completion(.failure(Self.accountSwitchCancellation()))
+                return
+            }
+            completion(result)
+        }
+
         let sem = (semesterId ?? SettingsManager.shared.courseSemesterId).trimmingCharacters(in: .whitespaces)
         let semFinal = sem.isEmpty ? String(CourseCalendarHelper.inferSemesterId()) : sem
         let biz = (bizTypeId ?? SettingsManager.shared.courseBizTypeId).trimmingCharacters(in: .whitespaces)
@@ -141,9 +203,13 @@ public class CourseScheduleService {
             // 若尚未获取过学生 ID，先尝试通过统一身份认证自动后台登录教务系统并提取当前登录学生的 stdId
             tryBackgroundLogin { [weak self] loginSuccess in
                 guard let self = self else { return }
+                guard self.isCurrentScheduleGeneration(generation) else {
+                    finish(.failure(Self.accountSwitchCancellation()))
+                    return
+                }
                 let discoveredStd = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespaces)
                 guard loginSuccess, !discoveredStd.isEmpty else {
-                    completion(.failure(CourseSyncError.needLogin))
+                    finish(.failure(CourseSyncError.needLogin))
                     return
                 }
                 let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
@@ -151,10 +217,9 @@ public class CourseScheduleService {
                 self.fetchCourseData(studentId: discoveredStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
                     switch retryResult {
                     case .success(let schedule):
-                        self.saveSchedule(schedule)
-                        completion(.success(schedule))
+                        finish(.success(schedule))
                     case .failure(let retryErr):
-                        completion(.failure(retryErr))
+                        finish(.failure(retryErr))
                     }
                 }
             }
@@ -163,54 +228,64 @@ public class CourseScheduleService {
 
         // 尝试用现有 Cookie 请求
         fetchCourseData(studentId: std, semesterId: semFinal, bizTypeId: bizFinal) { [weak self] result in
+            guard let self else { return }
+            guard self.isCurrentScheduleGeneration(generation) else {
+                finish(.failure(Self.accountSwitchCancellation()))
+                return
+            }
             switch result {
             case .success(let schedule):
-                self?.saveSchedule(schedule)
-                completion(.success(schedule))
+                finish(.success(schedule))
             case .failure(let error):
                 // 如果会话过期或返回空课程列表（可能因会话失效或学期 ID 变更），尝试后台自动 SSO 登录并重新探测最新元数据后重试
                 if let syncErr = error as? CourseSyncError,
                    case .needLogin = syncErr {
-                    self?.tryBackgroundLogin { loginSuccess in
+                    self.tryBackgroundLogin { loginSuccess in
+                        guard self.isCurrentScheduleGeneration(generation) else {
+                            finish(.failure(Self.accountSwitchCancellation()))
+                            return
+                        }
                         if loginSuccess {
                             let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
                             let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
                             let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
-                            self?.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                            self.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
                                 switch retryResult {
                                 case .success(let schedule):
-                                    self?.saveSchedule(schedule)
-                                    completion(.success(schedule))
+                                    finish(.success(schedule))
                                 case .failure(let retryErr):
-                                    completion(.failure(retryErr))
+                                    finish(.failure(retryErr))
                                 }
                             }
                         } else {
-                            completion(.failure(CourseSyncError.needLogin))
+                            finish(.failure(CourseSyncError.needLogin))
                         }
                     }
                 } else if let syncErr = error as? CourseSyncError,
                           case .emptySchedule = syncErr {
-                    self?.tryBackgroundLogin { loginSuccess in
+                    self.tryBackgroundLogin { loginSuccess in
+                        guard self.isCurrentScheduleGeneration(generation) else {
+                            finish(.failure(Self.accountSwitchCancellation()))
+                            return
+                        }
                         if loginSuccess {
                             let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
                             let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
                             let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
-                            self?.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                            self.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
                                 switch retryResult {
                                 case .success(let schedule):
-                                    self?.saveSchedule(schedule)
-                                    completion(.success(schedule))
+                                    finish(.success(schedule))
                                 case .failure(let retryErr):
-                                    completion(.failure(retryErr))
+                                    finish(.failure(retryErr))
                                 }
                             }
                         } else {
-                            completion(.failure(CourseSyncError.emptySchedule))
+                            finish(.failure(CourseSyncError.emptySchedule))
                         }
                     }
                 } else {
-                    completion(.failure(error))
+                    finish(.failure(error))
                 }
             }
         }
@@ -221,8 +296,13 @@ public class CourseScheduleService {
         _ jsonString: String,
         studentId: String,
         semesterId: String,
-        bizTypeId: String
+        bizTypeId: String,
+        expectedGeneration: Int? = nil
     ) throws -> CourseScheduleData {
+        let generation = expectedGeneration ?? currentScheduleGeneration()
+        guard isCurrentScheduleGeneration(generation) else {
+            throw Self.accountSwitchCancellation()
+        }
         guard let data = jsonString.data(using: .utf8) else {
             throw CourseSyncError.invalidResponse
         }
@@ -244,7 +324,9 @@ public class CourseScheduleService {
             lastSyncTime: Date(),
             lessons: parsedLessons
         )
-        self.saveSchedule(schedule)
+        guard saveSchedule(schedule, generation: generation) else {
+            throw Self.accountSwitchCancellation()
+        }
         return schedule
     }
 
@@ -253,8 +335,14 @@ public class CourseScheduleService {
         html: String,
         studentId: String,
         cookies: [HTTPCookie],
+        expectedGeneration: Int? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
+        let generation = expectedGeneration ?? currentScheduleGeneration()
+        guard isCurrentScheduleGeneration(generation) else {
+            completion(.failure(Self.accountSwitchCancellation()))
+            return
+        }
         // 仅保存 jxglstu.hfut.edu.cn 专属的 SESSION 与 SRVID Cookie
         if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
             SettingsManager.shared.courseSessionCookie = jxCookieHeader
@@ -282,9 +370,17 @@ public class CourseScheduleService {
         }
 
         fetchCourseData(studentId: detectedStd, semesterId: detectedSem, bizTypeId: detectedBiz) { [weak self] result in
+            guard let self else { return }
+            guard self.isCurrentScheduleGeneration(generation) else {
+                completion(.failure(Self.accountSwitchCancellation()))
+                return
+            }
             switch result {
             case .success(let schedule):
-                self?.saveSchedule(schedule)
+                guard self.saveSchedule(schedule, generation: generation) else {
+                    completion(.failure(Self.accountSwitchCancellation()))
+                    return
+                }
                 completion(.success(schedule))
             case .failure(let error):
                 completion(.failure(error))

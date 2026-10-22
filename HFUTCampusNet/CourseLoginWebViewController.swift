@@ -11,6 +11,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
     private var statusLabel: NSTextField!
     private var isSyncing: Bool = false
     private var sessionToken: UUID = UUID()
+    private var sessionUsername = ""
 
     private init() {
         let window = NSWindow(
@@ -108,6 +109,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         statusLabel.textColor = .secondaryLabelColor
         isSyncing = false
         sessionToken = UUID()
+        sessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         webView.load(request)
     }
 
@@ -158,8 +160,11 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
               message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
                 || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
               let dict = message.body as? [String: String] else { return }
+        let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentUsername == sessionUsername else { return }
         if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
             SettingsManager.shared.portalUsername = u
+            sessionUsername = u
         }
         if let p = dict["password"], !p.isEmpty {
             SettingsManager.shared.casPassword = p
@@ -263,7 +268,15 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
 
     private func triggerAutoExtraction() {
         guard !isSyncing else { return }
+        let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentUsername == sessionUsername else {
+            progressIndicator.stopAnimation(nil)
+            statusLabel.stringValue = "账号已切换，请重新加载教务页面后再同步课表。"
+            statusLabel.textColor = .systemOrange
+            return
+        }
         isSyncing = true
+        let scheduleGeneration = CourseScheduleService.shared.cacheGenerationToken
         progressIndicator.startAnimation(nil)
         statusLabel.stringValue = "正在从当前页面直接提取排课数据..."
         statusLabel.textColor = NSColor.systemBlue
@@ -286,6 +299,13 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         // 读取所有 Cookie，严格提取 jxglstu 专属 SESSION + SRVID，避免被 cas.hfut.edu.cn 的同名 SESSION 覆盖
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self else { return }
+            guard CourseScheduleService.shared.cacheGenerationToken == scheduleGeneration else {
+                self.isSyncing = false
+                self.progressIndicator.stopAnimation(nil)
+                self.statusLabel.stringValue = "账号已切换，本次课表提取已取消。"
+                self.statusLabel.textColor = .systemOrange
+                return
+            }
             if let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies) {
                 SettingsManager.shared.courseSessionCookie = jxCookieHeader
             }
@@ -349,9 +369,19 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                    let stdId = wrapper["stdId"],
                    let semId = wrapper["semId"],
                    let bizId = wrapper["bizId"],
-                   let schedule = try? CourseScheduleService.shared.applyDatumJSONString(datumStr, studentId: stdId, semesterId: semId, bizTypeId: bizId),
+                   let schedule = try? CourseScheduleService.shared.applyDatumJSONString(
+                    datumStr,
+                    studentId: stdId,
+                    semesterId: semId,
+                    bizTypeId: bizId,
+                    expectedGeneration: scheduleGeneration
+                   ),
                    !schedule.lessons.isEmpty {
                     DispatchQueue.main.async {
+                        guard CourseScheduleService.shared.cacheGenerationToken == scheduleGeneration else {
+                            self.isSyncing = false
+                            return
+                        }
                         self.handleSyncSuccess(schedule)
                     }
                     return
@@ -364,10 +394,15 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                     CourseScheduleService.shared.fetchAndApplyFromHTML(
                         html: html,
                         studentId: detectedStudentId,
-                        cookies: cookies
+                        cookies: cookies,
+                        expectedGeneration: scheduleGeneration
                     ) { [weak self] result in
                         DispatchQueue.main.async {
                             guard let self = self else { return }
+                            guard CourseScheduleService.shared.cacheGenerationToken == scheduleGeneration else {
+                                self.isSyncing = false
+                                return
+                            }
                             switch result {
                             case .success(let schedule):
                                 self.handleSyncSuccess(schedule)
