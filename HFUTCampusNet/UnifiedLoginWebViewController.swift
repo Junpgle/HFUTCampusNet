@@ -42,6 +42,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     private var isAccountAuthFlowEnabled = true
     private var syncCompletedCount: Int = 0
     private var syncSessionToken: UUID = UUID()
+    private var loginSessionUsernameAtStart = ""
+    private var loginSessionStudentIdAtStart = ""
     private var electricitySyncFailure: String?
 
     private init() {
@@ -194,6 +196,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         isSyncingAll = false
         syncCompletedCount = 0
         syncSessionToken = UUID()
+        loginSessionUsernameAtStart = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        loginSessionStudentIdAtStart = SettingsManager.shared.courseStudentId
         electricitySyncFailure = nil
         casLoginCoordinator.setEnabled(true)
         updateStep(index: 0, text: "1. 统一身份认证", status: .waiting)
@@ -457,12 +461,49 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         updateStep(index: 0, text: "1. 统一身份认证", status: .success)
 
         // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
-        self.webView.evaluateJavaScript("document.getElementById('username') ? document.getElementById('username').value : ''") { val, _ in
-            guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
-            if let user = val as? String, !user.isEmpty {
-                SettingsManager.shared.portalUsername = user
+        self.webView.evaluateJavaScript("document.getElementById('username') ? document.getElementById('username').value : ''") { [weak self] val, _ in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
+                if let user = val as? String, !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    SettingsManager.shared.portalUsername = user.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                self.clearPreviousAccountDataIfNeeded()
+                self.startAccountDataRefresh(cookies: cookies, sessionToken: sessionToken)
             }
         }
+    }
+
+    private func clearPreviousAccountDataIfNeeded() {
+        let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !loginSessionUsernameAtStart.isEmpty,
+              !currentUsername.isEmpty,
+              currentUsername != loginSessionUsernameAtStart else { return }
+
+        CourseScheduleService.shared.clearSchedule()
+        SettingsManager.shared.sessionCookie = nil
+        SettingsManager.shared.courseSessionCookie = nil
+        SettingsManager.shared.huixinAuthToken = nil
+        ElectricityService.shared.cancelPendingRequests()
+        EmptyClassroomService.shared.cancelPendingAuthentication()
+        StudentPortraitEatService.shared.clearCache()
+        SettingsManager.shared.uniAppJwt = nil
+        SettingsManager.shared.jxglstuDefaultPasswordCache = nil
+        if SettingsManager.shared.courseStudentId == loginSessionStudentIdAtStart {
+            SettingsManager.shared.courseStudentId = ""
+            loginSessionStudentIdAtStart = ""
+        }
+        CampusCardService.shared.clearCache()
+        AcademicService.shared.clearCache()
+        LibraryBorrowManager.shared.clearCache()
+        NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: nil)
+
+        loginSessionUsernameAtStart = currentUsername
+        loginSessionStudentIdAtStart = SettingsManager.shared.courseStudentId
+    }
+
+    private func startAccountDataRefresh(cookies: [HTTPCookie], sessionToken: UUID) {
+        guard isAccountAuthFlowEnabled, syncSessionToken == sessionToken else { return }
 
         let casCookies = cookies.filter {
             let dom = $0.domain.lowercased()
