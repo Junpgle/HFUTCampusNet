@@ -33,6 +33,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private var lastDashboardAttemptTime: Date? = nil
     private var latestRedirectSessionId: String? = nil
 
+    private func isCurrentPortalAccount(_ username: String) -> Bool {
+        SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == username
+    }
+
     // 系统网络路径监视器 (Wi-Fi 断开/重连毫秒级感知)
     private var pathMonitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "cn.edu.hfut.network.pathmonitor")
@@ -378,6 +382,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private func fetchDashboardData() {
         guard !isFetchingDashboard else { return }
         lastDashboardAttemptTime = Date()
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             silentLoginSelfServiceAndFetch()
             return
@@ -394,6 +399,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
+            guard self.isCurrentPortalAccount(username) else {
+                self.isFetchingDashboard = false
+                return
+            }
             self.isFetchingDashboard = false
 
             if let error = error {
@@ -460,6 +469,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     /// 获取当前自服务平台在线设备列表 (dashboard/getOnlineList)
     public func fetchOnlineDevices(completion: (() -> Void)? = nil) {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             completion?()
             return
@@ -475,6 +485,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         session.dataTask(with: req) { [weak self] data, _, error in
             guard let self = self else {
                 completion?()
+                return
+            }
+            guard self.isCurrentPortalAccount(username) else {
+                DispatchQueue.main.async { completion?() }
                 return
             }
             guard error == nil, let data = data,
@@ -515,6 +529,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             DispatchQueue.main.async {
+                guard self.isCurrentPortalAccount(username) else {
+                    completion?()
+                    return
+                }
                 var updated = self.latestData
                 updated.onlineDevices = sessions
                 self.latestData = updated
@@ -535,6 +553,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     /// 强制注销指定在线设备 (dashboard/tooffline?sessionid=xxx)
     public func kickOnlineDevice(sessionId: String, completion: @escaping (Bool, String) -> Void) {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             completion(false, "自服务会话未就绪，请稍后重试")
             return
@@ -550,6 +569,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         session.dataTask(with: req) { [weak self] data, _, error in
             guard let self = self else { return }
+            guard self.isCurrentPortalAccount(username) else {
+                DispatchQueue.main.async { completion(false, "账号已切换，本次操作已取消") }
+                return
+            }
             if let error = error {
                 DispatchQueue.main.async {
                     completion(false, "网络异常: \(error.localizedDescription)")
@@ -564,6 +587,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             DispatchQueue.main.async {
+                guard self.isCurrentPortalAccount(username) else {
+                    completion(false, "账号已切换，本次操作已取消")
+                    return
+                }
                 if ok {
                     var updated = self.latestData
                     updated.onlineDevices.removeAll { $0.sessionId == sessionId }
@@ -595,6 +622,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         session.dataTask(with: step1Req) { [weak self] data, response, error in
             guard let self = self else { return }
+            guard self.isCurrentPortalAccount(username) else {
+                self.isFetchingDashboard = false
+                return
+            }
             guard error == nil, let data = data,
                   let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
                 self.isFetchingDashboard = false
@@ -636,6 +667,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
             self.session.dataTask(with: step2Req) { [weak self] _, _, _ in
                 guard let self = self else { return }
+                guard self.isCurrentPortalAccount(username) else {
+                    self.isFetchingDashboard = false
+                    return
+                }
 
                 // 4. 计算 MD5 密码并提交 POST /Self/login/verify
                 let md5Password = Insecure.MD5.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -655,6 +690,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 self.latestRedirectSessionId = nil
                 self.session.dataTask(with: step3Req) { [weak self] verifyData, verifyResp, _ in
                     guard let self = self else { return }
+                    guard self.isCurrentPortalAccount(username) else {
+                        self.isFetchingDashboard = false
+                        return
+                    }
                     self.isFetchingDashboard = false
 
                     var finalSid = self.latestRedirectSessionId ?? sid
