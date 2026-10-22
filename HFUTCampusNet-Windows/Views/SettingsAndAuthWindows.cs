@@ -692,6 +692,10 @@ public class SettingsWindow : Window
     private void SaveSettings()
     {
         var s = SettingsManager.Shared;
+        var previousDormCampus = s.DormCampus;
+        var previousDormBuilding = s.DormBuilding;
+        var previousDormRoom = s.DormRoom;
+        var previousDormEndNumber = s.DormEndNumber;
 
         s.PortalUsername = _portalUsernameBox.Text.Trim();
         s.PortalPassword = _portalPasswordBox.Password;
@@ -732,6 +736,16 @@ public class SettingsWindow : Window
         s.AutoCheckUpdate = _updateCheck.IsChecked == true;
 
         s.Save();
+
+        bool dormIdentityChanged =
+            !string.Equals(previousDormCampus, s.DormCampus, StringComparison.Ordinal) ||
+            !string.Equals(previousDormBuilding, s.DormBuilding, StringComparison.Ordinal) ||
+            !string.Equals(previousDormRoom, s.DormRoom, StringComparison.Ordinal) ||
+            !string.Equals(previousDormEndNumber, s.DormEndNumber, StringComparison.Ordinal);
+        if (dormIdentityChanged)
+        {
+            ElectricityService.Shared.InvalidateCacheIfDormChanged();
+        }
     }
 
     private void UpdateCookieStatusLabel()

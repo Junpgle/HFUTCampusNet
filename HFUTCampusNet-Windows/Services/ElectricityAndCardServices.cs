@@ -18,8 +18,29 @@ public sealed class ElectricityService
 
     public ElectricityData? LatestData { get; private set; }
 
+    private readonly object _stateLock = new();
+    private long _requestGeneration;
     private readonly string _cacheFilePath;
     private readonly HttpClient _httpClient;
+
+    private const string StaleRequestMessage = "宿舍信息或查询请求已更新，已忽略旧查询结果";
+
+    private readonly record struct DormIdentity(string Campus, string Building, string Room, string EndNumber)
+    {
+        public bool IsConfigured => !string.IsNullOrWhiteSpace(Building) && !string.IsNullOrWhiteSpace(Room);
+
+        public static DormIdentity Capture(SettingsManager settings) => new(
+            settings.DormCampus ?? "宣城校区",
+            settings.DormBuilding ?? string.Empty,
+            settings.DormRoom ?? string.Empty,
+            settings.DormEndNumber ?? "11");
+
+        public bool Matches(SettingsManager settings) =>
+            string.Equals(Campus, settings.DormCampus ?? "宣城校区", StringComparison.Ordinal) &&
+            string.Equals(Building, settings.DormBuilding ?? string.Empty, StringComparison.Ordinal) &&
+            string.Equals(Room, settings.DormRoom ?? string.Empty, StringComparison.Ordinal) &&
+            string.Equals(EndNumber, settings.DormEndNumber ?? "11", StringComparison.Ordinal);
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -96,24 +117,30 @@ public sealed class ElectricityService
     /// </summary>
     public void InvalidateCacheIfDormChanged()
     {
-        if (LatestData is { } cached &&
-            SettingsManager.Shared.IsDormConfigured &&
-            cached.Campus == SettingsManager.Shared.DormCampus &&
-            cached.Building == SettingsManager.Shared.DormBuilding &&
-            cached.Room == SettingsManager.Shared.DormRoom &&
-            cached.EndNumber == SettingsManager.Shared.DormEndNumber)
+        bool hadDataOrCache;
+        lock (_stateLock)
         {
-            return;
-        }
+            _requestGeneration++;
+            var dorm = DormIdentity.Capture(SettingsManager.Shared);
+            if (LatestData is { } cached &&
+                dorm.IsConfigured &&
+                cached.Campus == dorm.Campus &&
+                cached.Building == dorm.Building &&
+                cached.Room == dorm.Room &&
+                cached.EndNumber == dorm.EndNumber)
+            {
+                return;
+            }
 
-        bool hadDataOrCache = LatestData != null || File.Exists(_cacheFilePath);
-        LatestData = null;
-        try
-        {
-            if (File.Exists(_cacheFilePath))
-                File.Delete(_cacheFilePath);
+            hadDataOrCache = LatestData != null || File.Exists(_cacheFilePath);
+            LatestData = null;
+            try
+            {
+                if (File.Exists(_cacheFilePath))
+                    File.Delete(_cacheFilePath);
+            }
+            catch { }
         }
-        catch { }
 
         CampusHistoryManager.Shared.ClearElectricityHistory();
         if (hadDataOrCache)
@@ -139,7 +166,14 @@ public sealed class ElectricityService
     /// </summary>
     public async Task<(ElectricityData? Data, string? ErrorMessage)> FetchDataAsync()
     {
-        if (!SettingsManager.Shared.IsDormConfigured)
+        var dorm = DormIdentity.Capture(SettingsManager.Shared);
+        long generation;
+        lock (_stateLock)
+        {
+            generation = ++_requestGeneration;
+        }
+
+        if (!dorm.IsConfigured)
         {
             return (null, "尚未配置宿舍楼栋与房间号，请在「设置」中填写您的宿舍信息");
         }
@@ -147,19 +181,25 @@ public sealed class ElectricityService
         var token = SettingsManager.Shared.HuixinAuthToken;
         if (!string.IsNullOrWhiteSpace(token))
         {
-            var (firstData, firstErr, isConfigErr) = await ExecuteFeeQueryAsync(token!);
+            var (firstData, firstErr, isConfigErr) = await ExecuteFeeQueryAsync(token!, generation, dorm);
             if (firstData != null)
             {
                 return (firstData, null);
             }
+            if (!IsCurrentRequest(generation, dorm))
+                return (null, StaleRequestMessage);
 
             // Token 可能失效，尝试通过已保存学号密码静默重新登录
             var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            if (!IsCurrentRequest(generation, dorm))
+                return (null, StaleRequestMessage);
             if (!string.IsNullOrWhiteSpace(newToken))
             {
-                var (retryData, retryErr, _) = await ExecuteFeeQueryAsync(newToken!);
+                var (retryData, retryErr, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm);
                 if (retryData != null)
                     return (retryData, null);
+                if (!IsCurrentRequest(generation, dorm))
+                    return (null, StaleRequestMessage);
                 return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : retryErr);
             }
 
@@ -168,11 +208,13 @@ public sealed class ElectricityService
         else
         {
             var (newToken, loginErr) = await ObtainHuiXinTokenAsync();
+            if (!IsCurrentRequest(generation, dorm))
+                return (null, StaleRequestMessage);
             if (string.IsNullOrWhiteSpace(newToken))
             {
                 return (null, loginErr ?? "慧新易校授权失败，请核对学号与密码");
             }
-            var (data, err, _) = await ExecuteFeeQueryAsync(newToken!);
+            var (data, err, _) = await ExecuteFeeQueryAsync(newToken!, generation, dorm);
             return (data, err);
         }
     }
@@ -249,12 +291,18 @@ public sealed class ElectricityService
         return (null, lastError ?? "慧新易校授权失败，请核对学号与密码");
     }
 
-    private async Task<(ElectricityData? Data, string? ErrorMessage, bool IsRoomConfigError)> ExecuteFeeQueryAsync(string token)
+    private async Task<(ElectricityData? Data, string? ErrorMessage, bool IsRoomConfigError)> ExecuteFeeQueryAsync(
+        string token,
+        long generation,
+        DormIdentity dorm)
     {
-        var campus = SettingsManager.Shared.DormCampus ?? "宣城校区";
-        var building = SettingsManager.Shared.DormBuilding ?? string.Empty;
-        var room = SettingsManager.Shared.DormRoom ?? string.Empty;
-        var endNumber = SettingsManager.Shared.DormEndNumber ?? "11";
+        if (!IsCurrentRequest(generation, dorm))
+            return (null, StaleRequestMessage, false);
+
+        var campus = dorm.Campus;
+        var building = dorm.Building;
+        var room = dorm.Room;
+        var endNumber = dorm.EndNumber;
 
         var authHeader = token.StartsWith("bearer ", StringComparison.OrdinalIgnoreCase)
             ? token
@@ -307,15 +355,20 @@ public sealed class ElectricityService
             req.Headers.TryAddWithoutValidation("Authorization", authHeader);
             req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
             using var resp = await _httpClient.SendAsync(req);
+            if (!IsCurrentRequest(generation, dorm))
+                return (null, StaleRequestMessage, false);
+
             int statusCode = (int)resp.StatusCode;
             if (statusCode == 401 || statusCode == 403)
             {
-                SettingsManager.Shared.HuixinAuthToken = null;
+                ClearExpiredTokenIfCurrent(token, generation, dorm);
                 return (null, "登录凭据已过期", false);
             }
 
             var respBytes = await resp.Content.ReadAsByteArrayAsync();
             var respText = Encoding.UTF8.GetString(respBytes);
+            if (!IsCurrentRequest(generation, dorm))
+                return (null, StaleRequestMessage, false);
 
             using var doc = JsonDocument.Parse(respText);
             var root = doc.RootElement;
@@ -329,7 +382,7 @@ public sealed class ElectricityService
                 codeElem.TryGetInt32(out int jsonCode) &&
                 (jsonCode == 401 || jsonCode == 403))
             {
-                SettingsManager.Shared.HuixinAuthToken = null;
+                ClearExpiredTokenIfCurrent(token, generation, dorm);
                 return (null, "登录凭据已过期", false);
             }
 
@@ -431,16 +484,8 @@ public sealed class ElectricityService
                 RawDetails = stringMap
             };
 
-            AppEvents.InvokeOnUI(() =>
-            {
-                SaveCachedData(elecData);
-                if (elecData.BalanceRMB.HasValue)
-                {
-                    CampusHistoryManager.Shared.RecordElectricity(elecData.BalanceRMB.Value, elecData.RemainingKWh);
-                }
-                CheckLowBalanceWarning(elecData);
-                AppEvents.RaiseDormElectricityUpdated();
-            });
+            if (!await CommitFetchedDataAsync(elecData, generation, dorm).ConfigureAwait(false))
+                return (null, StaleRequestMessage, false);
 
             return (elecData, null, false);
         }
@@ -448,6 +493,61 @@ public sealed class ElectricityService
         {
             return (null, ex.Message, false);
         }
+    }
+
+    private bool IsCurrentRequest(long generation, DormIdentity dorm)
+    {
+        lock (_stateLock)
+        {
+            return IsCurrentRequestLocked(generation, dorm);
+        }
+    }
+
+    private bool IsCurrentRequestLocked(long generation, DormIdentity dorm) =>
+        _requestGeneration == generation && dorm.Matches(SettingsManager.Shared);
+
+    private void ClearExpiredTokenIfCurrent(string token, long generation, DormIdentity dorm)
+    {
+        lock (_stateLock)
+        {
+            if (IsCurrentRequestLocked(generation, dorm) &&
+                string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
+            {
+                SettingsManager.Shared.HuixinAuthToken = null;
+            }
+        }
+    }
+
+    private Task<bool> CommitFetchedDataAsync(ElectricityData data, long generation, DormIdentity dorm)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AppEvents.InvokeOnUI(() =>
+        {
+            try
+            {
+                bool committed;
+                lock (_stateLock)
+                {
+                    committed = IsCurrentRequestLocked(generation, dorm);
+                    if (committed)
+                    {
+                        SaveCachedData(data);
+                        if (data.BalanceRMB.HasValue)
+                        {
+                            CampusHistoryManager.Shared.RecordElectricity(data.BalanceRMB.Value, data.RemainingKWh);
+                        }
+                        CheckLowBalanceWarning(data);
+                        AppEvents.RaiseDormElectricityUpdated();
+                    }
+                }
+                completion.TrySetResult(committed);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        });
+        return completion.Task;
     }
 
     private void CheckLowBalanceWarning(ElectricityData data)
