@@ -947,6 +947,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         let currentU = SettingsManager.shared.portalUsername
         guard !initialUsername.isEmpty, !currentU.isEmpty, currentU != initialUsername else { return }
         initialUsername = currentU
+        CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil
         SettingsManager.shared.casTgcCookie = nil
@@ -959,7 +960,6 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             courseStudentIdField?.stringValue = ""
             initialStdId = ""
         }
-        CourseScheduleService.shared.clearSchedule()
         CampusCardService.shared.clearCache()
         AcademicService.shared.clearCache()
         LibraryBorrowManager.shared.clearCache()

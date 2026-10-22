@@ -113,6 +113,34 @@ public class CourseScheduleService {
         return scheduleGeneration == generation
     }
 
+    private func saveDiscoveredCourseMetadata(
+        cookieHeader: String,
+        studentId: String?,
+        semesterId: String?,
+        bizTypeId: String?,
+        cookies: [HTTPCookie],
+        generation: Int
+    ) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard scheduleGeneration == generation else { return false }
+
+        for cookie in cookies {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+        SettingsManager.shared.courseSessionCookie = cookieHeader
+        if let studentId, !studentId.isEmpty {
+            SettingsManager.shared.courseStudentId = studentId
+        }
+        if let semesterId, !semesterId.isEmpty {
+            SettingsManager.shared.courseSemesterId = semesterId
+        }
+        if let bizTypeId, !bizTypeId.isEmpty {
+            SettingsManager.shared.courseBizTypeId = bizTypeId
+        }
+        return true
+    }
+
     private static func staleScheduleCancellation() -> NSError {
         NSError(domain: "CourseScheduleService", code: NSURLErrorCancelled,
                 userInfo: [NSLocalizedDescriptionKey: "课表状态已更新，本次过期请求已取消"])
@@ -212,7 +240,7 @@ public class CourseScheduleService {
         let std = (studentId ?? SettingsManager.shared.courseStudentId).trimmingCharacters(in: .whitespaces)
         if std.isEmpty {
             // 若尚未获取过学生 ID，先尝试通过统一身份认证自动后台登录教务系统并提取当前登录学生的 stdId
-            tryBackgroundLogin { [weak self] loginSuccess in
+            tryBackgroundLogin(generation: generation) { [weak self] loginSuccess in
                 guard let self = self else { return }
                 guard self.isCurrentScheduleGeneration(generation) else {
                     finish(.failure(Self.staleScheduleCancellation()))
@@ -251,7 +279,7 @@ public class CourseScheduleService {
                 // 如果会话过期或返回空课程列表（可能因会话失效或学期 ID 变更），尝试后台自动 SSO 登录并重新探测最新元数据后重试
                 if let syncErr = error as? CourseSyncError,
                    case .needLogin = syncErr {
-                    self.tryBackgroundLogin { loginSuccess in
+                    self.tryBackgroundLogin(generation: generation) { loginSuccess in
                         guard self.isCurrentScheduleGeneration(generation) else {
                             finish(.failure(Self.staleScheduleCancellation()))
                             return
@@ -274,7 +302,7 @@ public class CourseScheduleService {
                     }
                 } else if let syncErr = error as? CourseSyncError,
                           case .emptySchedule = syncErr {
-                    self.tryBackgroundLogin { loginSuccess in
+                    self.tryBackgroundLogin(generation: generation) { loginSuccess in
                         guard self.isCurrentScheduleGeneration(generation) else {
                             finish(.failure(Self.staleScheduleCancellation()))
                             return
@@ -655,22 +683,43 @@ public class CourseScheduleService {
     // MARK: - 后台 CAS SSO 与账号自动登录辅助
 
     public func tryBackgroundLogin(completion: @escaping (Bool) -> Void) {
+        tryBackgroundLogin(generation: currentScheduleGeneration(), completion: completion)
+    }
+
+    private func tryBackgroundLogin(generation: Int, completion: @escaping (Bool) -> Void) {
+        guard isCurrentScheduleGeneration(generation) else {
+            completion(false)
+            return
+        }
+
         // 优先使用统一身份认证 CAS TGC 票据无缝单点登录教务系统
         if let tgc = SettingsManager.shared.casTgcCookie?.trimmingCharacters(in: .whitespacesAndNewlines), !tgc.isEmpty {
-            loginViaCASTgc(tgc: tgc) { [weak self] success in
+            loginViaCASTgc(tgc: tgc, generation: generation) { [weak self] success in
+                guard let self, self.isCurrentScheduleGeneration(generation) else {
+                    completion(false)
+                    return
+                }
                 if success {
                     completion(true)
                 } else {
-                    self?.loginViaSaltPassword(completion: completion)
+                    self.loginViaSaltPassword(generation: generation, completion: completion)
                 }
             }
             return
         }
-        loginViaSaltPassword(completion: completion)
+        loginViaSaltPassword(generation: generation, completion: completion)
     }
 
     /// 在已建立教务会话的 URLSession 中请求 /for-std/course-table，自动提取 SESSION/SRVID 与 studentId/semesterId/bizTypeId
-    private func discoverCourseTableMetadata(using session: URLSession, completion: @escaping (Bool) -> Void) {
+    private func discoverCourseTableMetadata(
+        using session: URLSession,
+        generation: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard isCurrentScheduleGeneration(generation) else {
+            completion(false)
+            return
+        }
         guard let tableURL = URL(string: "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table") else {
             completion(false)
             return
@@ -679,7 +728,9 @@ public class CourseScheduleService {
         tableReq.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
         session.dataTask(with: tableReq) { [weak self] tData, tResp, tErr in
-            guard let self = self, tErr == nil,
+            guard let self = self,
+                  self.isCurrentScheduleGeneration(generation),
+                  tErr == nil,
                   let tHttp = tResp as? HTTPURLResponse,
                   let tFinalURL = tHttp.url?.absoluteString,
                   !tFinalURL.contains("/login") else {
@@ -688,37 +739,47 @@ public class CourseScheduleService {
             }
 
             let allCookies = session.configuration.httpCookieStorage?.cookies ?? []
-            for c in allCookies {
-                HTTPCookieStorage.shared.setCookie(c)
-            }
             guard let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: allCookies) else {
                 completion(false)
                 return
             }
-            SettingsManager.shared.courseSessionCookie = jxCookieHeader
 
             // 从重定向 URL 或 HTML 中提取 studentId、bizTypeId、semesterId
+            var studentId: String?
+            var discoveredBizTypeId: String?
+            var discoveredSemesterId: String?
             if let stdFromURL = self.matchRegex(pattern: #"/for-std/course-table/info/(\d+)"#, in: tFinalURL) {
-                SettingsManager.shared.courseStudentId = stdFromURL
+                studentId = stdFromURL
             }
             if let tData = tData, let html = String(data: tData, encoding: .utf8) {
                 if let stdFromHTML = self.matchRegex(pattern: #"var\s+studentId\s*=\s*(\d+)"#, in: html) {
-                    SettingsManager.shared.courseStudentId = stdFromHTML
+                    studentId = stdFromHTML
                 }
                 if let biz = self.matchRegex(pattern: #"bizTypeId\s*:\s*(\d+)"#, in: html) {
-                    SettingsManager.shared.courseBizTypeId = biz
+                    discoveredBizTypeId = biz
                 }
                 if let sem = self.matchRegex(pattern: #"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)"#, in: html)
                     ?? self.matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
-                    SettingsManager.shared.courseSemesterId = sem
+                    discoveredSemesterId = sem
                 }
+            }
+            guard self.saveDiscoveredCourseMetadata(
+                cookieHeader: jxCookieHeader,
+                studentId: studentId,
+                semesterId: discoveredSemesterId,
+                bizTypeId: discoveredBizTypeId,
+                cookies: allCookies,
+                generation: generation
+            ) else {
+                completion(false)
+                return
             }
             completion(true)
         }.resume()
     }
 
     /// 通过 CAS TGC Cookie 执行单点登录获取教务系统专属 SESSION + SRVID 及最新 studentId/semesterId/bizTypeId
-    private func loginViaCASTgc(tgc: String, completion: @escaping (Bool) -> Void) {
+    private func loginViaCASTgc(tgc: String, generation: Int, completion: @escaping (Bool) -> Void) {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
@@ -751,7 +812,9 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
         ssoSession.dataTask(with: req) { [weak self] _, response, error in
-            guard let self = self, error == nil,
+            guard let self = self,
+                  self.isCurrentScheduleGeneration(generation),
+                  error == nil,
                   let http = response as? HTTPURLResponse,
                   let finalURL = http.url?.absoluteString,
                   finalURL.contains("jxglstu.hfut.edu.cn"),
@@ -761,14 +824,14 @@ public class CourseScheduleService {
                 return
             }
 
-            self.discoverCourseTableMetadata(using: ssoSession) { ok in
+            self.discoverCourseTableMetadata(using: ssoSession, generation: generation) { ok in
                 ssoSession.finishTasksAndInvalidate()
                 completion(ok)
             }
         }.resume()
     }
 
-    private func loginViaSaltPassword(completion: @escaping (Bool) -> Void) {
+    private func loginViaSaltPassword(generation: Int, completion: @escaping (Bool) -> Void) {
         let u = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespaces)
         var candidates: [String] = []
         if let defaultPwd = SettingsManager.shared.jxglstuDefaultPasswordCache?.trimmingCharacters(in: .whitespacesAndNewlines), !defaultPwd.isEmpty {
@@ -792,7 +855,7 @@ public class CourseScheduleService {
         config.httpShouldSetCookies = true
         let session = URLSession(configuration: config)
 
-        trySaltPasswordSequential(using: session, username: u, passwords: candidates, index: 0) { ok in
+        trySaltPasswordSequential(using: session, username: u, passwords: candidates, index: 0, generation: generation) { ok in
             session.finishTasksAndInvalidate()
             completion(ok)
         }
@@ -803,8 +866,13 @@ public class CourseScheduleService {
         username: String,
         passwords: [String],
         index: Int,
+        generation: Int,
         completion: @escaping (Bool) -> Void
     ) {
+        guard isCurrentScheduleGeneration(generation) else {
+            completion(false)
+            return
+        }
         guard index < passwords.count else {
             completion(false)
             return
@@ -821,6 +889,7 @@ public class CourseScheduleService {
 
         session.dataTask(with: saltReq) { [weak self] data, _, _ in
             guard let self = self,
+                  self.isCurrentScheduleGeneration(generation),
                   let data = data,
                   let salt = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !salt.isEmpty else {
@@ -848,7 +917,7 @@ public class CourseScheduleService {
             loginReq.httpBody = try? JSONSerialization.data(withJSONObject: postBody)
 
             session.dataTask(with: loginReq) { [weak self] lData, _, _ in
-                guard let self = self else {
+                guard let self = self, self.isCurrentScheduleGeneration(generation) else {
                     completion(false)
                     return
                 }
@@ -856,13 +925,14 @@ public class CourseScheduleService {
                    let json = try? JSONSerialization.jsonObject(with: lData) as? [String: Any],
                    let result = json["result"] as? Bool, result == true {
                     // 登录成功后进一步访问 /for-std/course-table 以自动获取 SESSION、SRVID、studentId、semesterId
-                    self.discoverCourseTableMetadata(using: session, completion: completion)
+                    self.discoverCourseTableMetadata(using: session, generation: generation, completion: completion)
                 } else {
                     self.trySaltPasswordSequential(
                         using: session,
                         username: username,
                         passwords: passwords,
                         index: index + 1,
+                        generation: generation,
                         completion: completion
                     )
                 }
