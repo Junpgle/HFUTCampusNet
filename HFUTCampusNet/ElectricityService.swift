@@ -5,6 +5,8 @@ public class ElectricityService {
     public static let shared = ElectricityService()
 
     public private(set) var latestData: ElectricityData?
+    private let stateLock = NSLock()
+    private var requestGeneration = 0
 
     private let cacheURL: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -33,26 +35,67 @@ public class ElectricityService {
         self.latestData = cached
     }
 
-    private func saveCachedData(_ data: ElectricityData) {
+    private func beginFetchGeneration() -> Int {
+        stateLock.lock()
+        requestGeneration &+= 1
+        let generation = requestGeneration
+        stateLock.unlock()
+        return generation
+    }
+
+    private func isCurrentGeneration(_ generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return requestGeneration == generation
+    }
+
+    private func clearToken(generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard requestGeneration == generation else { return false }
+        SettingsManager.shared.huixinAuthToken = nil
+        return true
+    }
+
+    private func saveCachedData(_ data: ElectricityData, generation: Int) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard requestGeneration == generation,
+              data.campus == SettingsManager.shared.dormCampus,
+              data.building == SettingsManager.shared.dormBuilding,
+              data.room == SettingsManager.shared.dormRoom,
+              data.endNumber == SettingsManager.shared.dormEndNumber else {
+            return false
+        }
         self.latestData = data
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: cacheURL, options: .atomic)
         }
+        return true
+    }
+
+    private static func cancelledRequestError() -> NSError {
+        NSError(domain: "cn.edu.hfut.electricity", code: NSURLErrorCancelled,
+                userInfo: [NSLocalizedDescriptionKey: "宿舍配置或电费请求已更新，本次旧请求已取消"])
     }
 
     /// 当用户修改宿舍校区/楼栋/房间号/端口时，清理余额缓存并切换到对应历史分区。
     public func invalidateCacheIfDormChanged() {
+        stateLock.lock()
+        requestGeneration &+= 1
         if let cached = self.latestData,
            SettingsManager.shared.isDormConfigured,
            cached.campus == SettingsManager.shared.dormCampus,
            cached.building == SettingsManager.shared.dormBuilding,
            cached.room == SettingsManager.shared.dormRoom,
            cached.endNumber == SettingsManager.shared.dormEndNumber {
+            stateLock.unlock()
             return
         }
         let hadDataOrCache = (self.latestData != nil) || FileManager.default.fileExists(atPath: cacheURL.path)
         self.latestData = nil
         try? FileManager.default.removeItem(at: cacheURL)
+        stateLock.unlock()
         CampusHistoryManager.shared.activateElectricityHistory(
             campus: SettingsManager.shared.dormCampus,
             building: SettingsManager.shared.dormBuilding,
@@ -72,6 +115,7 @@ public class ElectricityService {
 
     /// 查询宿舍电费信息（支持静默自动登录）
     public func fetchData(completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
+        let generation = beginFetchGeneration()
         guard SettingsManager.shared.isDormConfigured else {
             let err = NSError(domain: "cn.edu.hfut.electricity", code: 400, userInfo: [NSLocalizedDescriptionKey: "尚未配置宿舍楼栋与房间号，请在「设置」中填写您的宿舍信息"])
             DispatchQueue.main.async {
@@ -81,7 +125,11 @@ public class ElectricityService {
         }
 
         if let token = SettingsManager.shared.huixinAuthToken, !token.isEmpty {
-            self.executeFeeQuery(token: token) { [weak self] result in
+            self.executeFeeQuery(token: token, generation: generation) { [weak self] result in
+                guard let self, self.isCurrentGeneration(generation) else {
+                    completion?(.failure(Self.cancelledRequestError()))
+                    return
+                }
                 switch result {
                 case .success(let data):
                     completion?(.success(data))
@@ -91,12 +139,12 @@ public class ElectricityService {
                         completion?(.failure(firstErr))
                         return
                     }
-                    self?.loginHuiXinAndRetry(completion: completion)
+                    self?.loginHuiXinAndRetry(generation: generation, completion: completion)
                 }
             }
         } else {
             // 没有 Token，直接尝试通过已保存学号密码静默登录
-            self.loginHuiXinAndRetry(completion: completion)
+            self.loginHuiXinAndRetry(generation: generation, completion: completion)
         }
     }
 
@@ -172,11 +220,22 @@ public class ElectricityService {
         tryCandidate(at: 0)
     }
 
-    private func loginHuiXinAndRetry(completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
+    private func loginHuiXinAndRetry(
+        generation: Int,
+        completion: ((Result<ElectricityData, Error>) -> Void)? = nil
+    ) {
+        guard isCurrentGeneration(generation) else {
+            completion?(.failure(Self.cancelledRequestError()))
+            return
+        }
         obtainHuiXinToken { [weak self] result in
+            guard let self, self.isCurrentGeneration(generation) else {
+                completion?(.failure(Self.cancelledRequestError()))
+                return
+            }
             switch result {
             case .success(let token):
-                self?.executeFeeQuery(token: token, completion: completion)
+                self.executeFeeQuery(token: token, generation: generation, completion: completion)
             case .failure(let err):
                 completion?(.failure(err))
             }
@@ -184,7 +243,15 @@ public class ElectricityService {
     }
 
     /// 执行电费接口查询
-    private func executeFeeQuery(token: String, completion: ((Result<ElectricityData, Error>) -> Void)? = nil) {
+    private func executeFeeQuery(
+        token: String,
+        generation: Int,
+        completion: ((Result<ElectricityData, Error>) -> Void)? = nil
+    ) {
+        guard isCurrentGeneration(generation) else {
+            completion?(.failure(Self.cancelledRequestError()))
+            return
+        }
         let campus = SettingsManager.shared.dormCampus
         let building = SettingsManager.shared.dormBuilding
         let room = SettingsManager.shared.dormRoom
@@ -245,6 +312,10 @@ public class ElectricityService {
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
+            guard self.isCurrentGeneration(generation) else {
+                DispatchQueue.main.async { completion?(.failure(Self.cancelledRequestError())) }
+                return
+            }
 
             if let error = error {
                 DispatchQueue.main.async { completion?(.failure(error)) }
@@ -253,7 +324,10 @@ public class ElectricityService {
 
             let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
             if httpStatus == 401 || httpStatus == 403 {
-                SettingsManager.shared.huixinAuthToken = nil
+                guard self.clearToken(generation: generation) else {
+                    DispatchQueue.main.async { completion?(.failure(Self.cancelledRequestError())) }
+                    return
+                }
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
@@ -268,7 +342,10 @@ public class ElectricityService {
 
             // 检查是否有 401 权限问题
             if let code = jsonObject["code"] as? Int, code == 401 || code == 403 {
-                SettingsManager.shared.huixinAuthToken = nil
+                guard self.clearToken(generation: generation) else {
+                    DispatchQueue.main.async { completion?(.failure(Self.cancelledRequestError())) }
+                    return
+                }
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
@@ -369,7 +446,10 @@ public class ElectricityService {
             }
 
             DispatchQueue.main.async {
-                self.saveCachedData(elecData)
+                guard self.saveCachedData(elecData, generation: generation) else {
+                    completion?(.failure(Self.cancelledRequestError()))
+                    return
+                }
 
                 // 记录至历史统计管理器
                 CampusHistoryManager.shared.recordElectricity(elecData)
