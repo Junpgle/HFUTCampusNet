@@ -247,7 +247,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     }
 
     public func lastSyncDate(for campus: StudyCampus) -> Date? {
-        return lastSyncTimeByCampus[campus.rawValue] ?? lastSyncTime
+        if !lastSyncTimeByCampus.isEmpty {
+            return lastSyncTimeByCampus[campus.rawValue]
+        }
+        return lastSyncTime
     }
 
     /// 供顶部筛选栏刷新按钮旁展示的简短上次刷新时间（如「上次刷新 19:12 (刚刚)」）
