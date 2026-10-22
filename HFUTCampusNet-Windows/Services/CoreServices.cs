@@ -855,6 +855,7 @@ public sealed class CampusNetworkClient
     private readonly HttpClient _selfServiceClient;
     private readonly object _accountStateLock = new();
     private int _isFetchingSelfService = 0;
+    private int _lastPortalFlowMonthKey;
 
     private CampusNetworkClient()
     {
@@ -888,6 +889,7 @@ public sealed class CampusNetworkClient
         lock (_accountStateLock)
         {
             LatestData = new CampusNetworkData();
+            _lastPortalFlowMonthKey = 0;
         }
         Interlocked.Exchange(ref _isFetchingSelfService, 0);
         AppEvents.InvokeOnUI(AppEvents.RaiseNetworkDataUpdated);
@@ -916,6 +918,7 @@ public sealed class CampusNetworkClient
     public void FetchData()
     {
         var accountGeneration = AccountSessionManager.Generation;
+        var requestMonthKey = DateTime.Now.Year * 100 + DateTime.Now.Month;
         Task.Run(async () =>
         {
             try
@@ -927,13 +930,15 @@ public sealed class CampusNetworkClient
                     if (!TryUpdateForAccount(accountGeneration, () =>
                     {
                         LatestData.IsLoggedIn = true;
-                        if (flowMB > 0)
+                        var currentMonthKey = DateTime.Now.Year * 100 + DateTime.Now.Month;
+                        if (flowMB > 0 && requestMonthKey == currentMonthKey)
                         {
                             var curMB = LatestData.UsedMB ?? 0.0;
-                            if (curMB == 0 || flowMB >= curMB)
+                            if (_lastPortalFlowMonthKey != requestMonthKey || curMB == 0 || flowMB >= curMB)
                             {
                                 LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
                             }
+                            _lastPortalFlowMonthKey = requestMonthKey;
                         }
                         // 网关在部分网络状态下会返回 0；不要用它覆盖自服务里的真实余额，
                         // 也不要在自服务同步前把占位值替换成误导性的 0.00 元。
