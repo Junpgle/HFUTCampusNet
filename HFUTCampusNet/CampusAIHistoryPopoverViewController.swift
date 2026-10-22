@@ -164,12 +164,12 @@ final class CampusAIHistoryPopoverViewController: NSViewController, NSTableViewD
     }
 
     @objc private func previousPageClicked() {
-        guard !isLoading, !isDeleting, currentPageNumber > 1 else { return }
+        guard !isLoading, !isDeleting, hasPreviousPage else { return }
         onPageRequested?(currentPageNumber - 1)
     }
 
     @objc private func nextPageClicked() {
-        guard !isLoading, !isDeleting, currentPageNumber < pageCount else { return }
+        guard !isLoading, !isDeleting, hasNextPage else { return }
         onPageRequested?(currentPageNumber + 1)
     }
 

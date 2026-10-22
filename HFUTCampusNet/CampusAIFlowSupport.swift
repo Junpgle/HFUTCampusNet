@@ -193,9 +193,10 @@ enum CampusAIHistoryResponse {
         guard records.isEmpty || !entries.isEmpty else { return nil }
 
         let pageNumber = positiveInteger(payload["pageNum"]) ?? requestedPageNumber
-        let pageCount = max(1, positiveInteger(payload["pages"]) ?? 1)
+        let reportedPageCount = positiveInteger(payload["pages"])
         let hasPreviousPage = boolean(payload["hasPreviousPage"]) ?? (pageNumber > 1)
-        let hasNextPage = boolean(payload["hasNextPage"]) ?? (pageNumber < pageCount)
+        let hasNextPage = boolean(payload["hasNextPage"]) ?? reportedPageCount.map { pageNumber < $0 } ?? false
+        let pageCount = max(pageNumber, reportedPageCount ?? (hasNextPage ? pageNumber + 1 : pageNumber))
         return CampusAIHistoryPage(
             entries: entries,
             pageNumber: pageNumber,
