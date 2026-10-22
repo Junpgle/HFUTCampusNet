@@ -886,6 +886,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         fetchBuildings(forceRefresh: forceRefresh) { [weak self] bResult in
             guard let self = self else { return }
+            guard self.activeSyncTokenByCampus[campusKey] == syncToken else { return }
             switch bResult {
             case .failure(let err):
                 self.lastErrorMessage = err.localizedDescription
@@ -921,8 +922,13 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     dateString: todayStr,
                     campus: targetCampus,
                     buildingIds: targetBuildingIds,
-                    forceRefresh: forceRefresh
+                    forceRefresh: forceRefresh,
+                    syncToken: syncToken
                 ) { res in
+                    guard self.activeSyncTokenByCampus[campusKey] == syncToken else {
+                        group.leave()
+                        return
+                    }
                     if case .success(let rooms) = res {
                         self.studyRoomsByDate["\(targetCampus.rawValue)|\(todayStr)"] = rooms
                         todaySucceeded = true
@@ -937,8 +943,13 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     dateString: tomorrowStr,
                     campus: targetCampus,
                     buildingIds: targetBuildingIds,
-                    forceRefresh: forceRefresh
+                    forceRefresh: forceRefresh,
+                    syncToken: syncToken
                 ) { res in
+                    guard self.activeSyncTokenByCampus[campusKey] == syncToken else {
+                        group.leave()
+                        return
+                    }
                     if case .success(let rooms) = res {
                         self.studyRoomsByDate["\(targetCampus.rawValue)|\(tomorrowStr)"] = rooms
                         tomorrowSucceeded = true
@@ -949,6 +960,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                 }
 
                 group.notify(queue: .main) {
+                    guard self.activeSyncTokenByCampus[campusKey] == syncToken else { return }
                     if let err = firstError, (!todaySucceeded && !tomorrowSucceeded) || (forceRefresh && !todaySucceeded) {
                         self.lastErrorMessage = err.localizedDescription
                         finishSync(.failure(err))
@@ -1162,6 +1174,24 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         forceRefresh: Bool = false,
         completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
     ) {
+        fetchRooms(
+            dateString: dateString,
+            campus: campus,
+            buildingIds: buildingIds,
+            forceRefresh: forceRefresh,
+            syncToken: nil,
+            completion: completion
+        )
+    }
+
+    private func fetchRooms(
+        dateString: String,
+        campus: StudyCampus,
+        buildingIds: [Int]?,
+        forceRefresh: Bool,
+        syncToken: UUID?,
+        completion: @escaping (Result<[EmptyClassroomItem], Error>) -> Void
+    ) {
         let sortedIds = (buildingIds ?? []).sorted()
         let cacheKey = "\(campus.rawValue)|\(dateString)|\(sortedIds.map(String.init).joined(separator: ","))"
         if !forceRefresh, let cached = roomsCache[cacheKey] {
@@ -1171,6 +1201,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         ensureValidToken(forceRelogin: false) { [weak self] tokenResult in
             guard let self = self else { return }
+            if let syncToken, self.activeSyncTokenByCampus[campus.rawValue] != syncToken {
+                completion(.success([]))
+                return
+            }
             switch tokenResult {
             case .failure(let err):
                 completion(.failure(err))
@@ -1181,6 +1215,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     campus: campus,
                     buildingIds: sortedIds,
                     cacheKey: cacheKey,
+                    syncToken: syncToken,
                     allowRetry: true,
                     completion: completion
                 )
@@ -1194,6 +1229,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         campus: StudyCampus,
         buildingIds: [Int],
         cacheKey: String,
+        syncToken: UUID? = nil,
         allowRetry: Bool,
         currentPage: Int = 1,
         cacheResult: Bool = true,
@@ -1223,6 +1259,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         session.dataTask(with: req) { [weak self] data, response, error in
             guard let self = self else { return }
+            if let syncToken, self.activeSyncTokenByCampus[campus.rawValue] != syncToken {
+                completion(.success(accumulatedRooms))
+                return
+            }
             if let error = error {
                 completion(.failure(error))
                 return
@@ -1257,6 +1297,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                         campus: campus,
                         buildingIds: buildingIds,
                         cacheKey: cacheKey,
+                        syncToken: syncToken,
                         allowRetry: true,
                         currentPage: currentPage + 1,
                         cacheResult: true,
@@ -1275,7 +1316,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     }
                     return a.inferredRoomNumber < b.inferredRoomNumber
                 }
-                if cacheResult {
+                let syncIsCurrent = syncToken.map {
+                    activeSyncTokenByCampus[campus.rawValue] == $0
+                } ?? true
+                if cacheResult && syncIsCurrent {
                     self.roomsCache[cacheKey] = sortedRooms
                     if !buildingIds.isEmpty {
                         let grouped = Dictionary(grouping: sortedRooms, by: { $0.buildingId })
@@ -1283,8 +1327,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                             self.roomsCache["\(campus.rawValue)|\(dateString)|\(bid)"] = grouped[bid] ?? []
                         }
                     }
-                    DispatchQueue.main.async {
-                        self.recordCampusSyncTime(campus)
+                    if syncToken == nil {
+                        DispatchQueue.main.async {
+                            self.recordCampusSyncTime(campus)
+                        }
                     }
                 }
                 completion(.success(sortedRooms))
@@ -1301,6 +1347,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                             campus: campus,
                             buildingIds: buildingIds,
                             cacheKey: cacheKey,
+                            syncToken: syncToken,
                             allowRetry: false,
                             currentPage: currentPage,
                             cacheResult: cacheResult,
