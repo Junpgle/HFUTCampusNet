@@ -55,6 +55,14 @@ public class CampusCardService {
         return dataGeneration == generation
     }
 
+    private func beginFetchGeneration() -> Int {
+        stateLock.lock()
+        dataGeneration &+= 1
+        let generation = dataGeneration
+        stateLock.unlock()
+        return generation
+    }
+
     private func clearHuixinToken(generation: Int) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -77,9 +85,7 @@ public class CampusCardService {
 
     /// 拉取校园卡余额与近期消费账单（自动复用或静默获取慧新易校 Token）
     public func fetchData(completion: ((Result<CampusCardData, Error>) -> Void)? = nil) {
-        stateLock.lock()
-        let generation = dataGeneration
-        stateLock.unlock()
+        let generation = beginFetchGeneration()
 
         if let token = SettingsManager.shared.huixinAuthToken, !token.isEmpty {
             executeCardQuery(token: token, allowRetry: true, generation: generation, completion: completion)
