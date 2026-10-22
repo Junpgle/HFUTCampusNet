@@ -194,6 +194,7 @@ public final class StudentPortraitEatService {
     public private(set) var lastErrorMessage: String?
     private let stateLock = NSLock()
     private var syncing = false
+    private var pendingSyncCompletions: [(Result<StudentPortraitEatData, Error>) -> Void] = []
     private let cacheURL: URL = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let directory = root.appendingPathComponent("cn.edu.hfut.campusnet.monitor", isDirectory: true)
@@ -226,32 +227,39 @@ public final class StudentPortraitEatService {
     /// 使用已保存的 EHALL Token 拉取画像；首次或过期时通过独立 CAS OAuth 重新授权。
     public func sync(completion: ((Result<StudentPortraitEatData, Error>) -> Void)? = nil) {
         stateLock.lock()
-        guard !syncing else {
-            let cached = latestData
+        if syncing {
+            if let completion {
+                pendingSyncCompletions.append(completion)
+            }
             stateLock.unlock()
-            if let cached { DispatchQueue.main.async { completion?(.success(cached)) } }
             return
         }
         syncing = true
+        pendingSyncCompletions = completion.map { [$0] } ?? []
         stateLock.unlock()
 
         let finish: (Result<StudentPortraitEatData, Error>) -> Void = { [weak self] result in
             guard let self else { return }
             self.stateLock.lock()
-            self.syncing = false
-            self.stateLock.unlock()
             if case .success(let data) = result {
                 self.latestData = data
                 self.lastErrorMessage = nil
-                if let encoded = try? JSONEncoder().encode(data) {
-                    try? encoded.write(to: self.cacheURL, options: .atomic)
-                }
             } else if case .failure(let error) = result {
                 self.lastErrorMessage = error.localizedDescription
             }
+            self.syncing = false
+            let completions = self.pendingSyncCompletions
+            self.pendingSyncCompletions.removeAll(keepingCapacity: false)
+            self.stateLock.unlock()
+
+            if case .success(let data) = result {
+                if let encoded = try? JSONEncoder().encode(data) {
+                    try? encoded.write(to: self.cacheURL, options: .atomic)
+                }
+            }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .studentPortraitDidUpdate, object: self.latestData)
-                completion?(result)
+                completions.forEach { $0(result) }
             }
         }
 
