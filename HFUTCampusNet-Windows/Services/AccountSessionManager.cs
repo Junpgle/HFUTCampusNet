@@ -54,7 +54,6 @@ public static class AccountSessionManager
                     CourseLoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 CampusNetworkClient.Shared.ClearAccountScopedData();
                 ElectricityService.Shared.ClearAccountScopedCache();
-                CampusHistoryManager.Shared.ClearElectricityHistory();
                 EmptyClassroomService.Shared.CancelPendingAuthentication();
                 CourseScheduleService.Shared.ClearSchedule();
                 CampusCardService.Shared.ClearCache();

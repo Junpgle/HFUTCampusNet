@@ -197,6 +197,8 @@ public sealed class CampusHistoryManager
 
     private readonly string _historyFile;
     private readonly object _lock = new();
+    private Dictionary<string, List<ElectricityDailyRecord>> _archivedElectricityRecords = new(StringComparer.Ordinal);
+    private string _activeElectricityDormKey = string.Empty;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -421,6 +423,19 @@ public sealed class CampusHistoryManager
         AppEvents.RaiseHistoryStatsUpdated();
     }
 
+    public bool ActivateCurrentElectricityDorm()
+    {
+        var targetDormKey = CreateElectricityDormKey(SettingsManager.Shared);
+        bool changed;
+        lock (_lock)
+        {
+            changed = SwitchElectricityDormLocked(targetDormKey);
+            if (changed) Save();
+        }
+        if (changed) AppEvents.RaiseHistoryStatsUpdated();
+        return changed;
+    }
+
     public void ClearElectricityHistory()
     {
         lock (_lock)
@@ -433,22 +448,40 @@ public sealed class CampusHistoryManager
 
     private void Save()
     {
+        var temporaryFile = _historyFile + ".tmp";
         try
         {
-            var data = new { Flow = FlowRecords, Electricity = ElectricityRecords };
+            var data = new
+            {
+                ElectricityDormKey = _activeElectricityDormKey,
+                ArchivedElectricityRecords = _archivedElectricityRecords,
+                Flow = FlowRecords,
+                Electricity = ElectricityRecords
+            };
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_historyFile, json, Encoding.UTF8);
+            File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+            File.Move(temporaryFile, _historyFile, overwrite: true);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CampusHistoryManager] Save failed: {ex.Message}");
+            try
+            {
+                if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+            }
+            catch { }
+        }
     }
 
     private void Load()
     {
+        _activeElectricityDormKey = CreateElectricityDormKey(SettingsManager.Shared);
         try
         {
             if (!File.Exists(_historyFile)) return;
             var json = File.ReadAllText(_historyFile, Encoding.UTF8);
             using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
             if (doc.RootElement.TryGetProperty("Flow", out var flowProp))
             {
                 FlowRecords = JsonSerializer.Deserialize<List<FlowDailyRecord>>(flowProp.GetRawText()) ?? new();
@@ -457,9 +490,86 @@ public sealed class CampusHistoryManager
             {
                 ElectricityRecords = JsonSerializer.Deserialize<List<ElectricityDailyRecord>>(elecProp.GetRawText()) ?? new();
             }
+            if (root.TryGetProperty("ArchivedElectricityRecords", out var archivedProp))
+            {
+                try
+                {
+                    var archived = JsonSerializer.Deserialize<Dictionary<string, List<ElectricityDailyRecord>>>(archivedProp.GetRawText());
+                    if (archived != null)
+                        _archivedElectricityRecords = new Dictionary<string, List<ElectricityDailyRecord>>(archived, StringComparer.Ordinal);
+                }
+                catch (JsonException ex)
+                {
+                    Debug.WriteLine($"Electricity history archive is invalid: {ex.Message}");
+                }
+            }
+
+            var currentDormKey = CreateElectricityDormKey(SettingsManager.Shared);
+            bool needsSave = false;
+            bool hasPersistedDormKey = root.TryGetProperty("ElectricityDormKey", out var dormKeyProp) &&
+                dormKeyProp.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(dormKeyProp.GetString());
+            if (hasPersistedDormKey)
+            {
+                _activeElectricityDormKey = dormKeyProp.GetString()!;
+                if (!SwitchElectricityDormLocked(currentDormKey))
+                    _archivedElectricityRecords.Remove(currentDormKey);
+                else
+                    needsSave = true;
+            }
+            else
+            {
+                // Legacy records belong to the dorm currently configured in settings.
+                BackupHistoryBeforeElectricityPartitionMigration();
+                _activeElectricityDormKey = currentDormKey;
+                _archivedElectricityRecords.Remove(currentDormKey);
+                needsSave = true;
+            }
+
+            if (needsSave) Save();
         }
         catch { }
     }
+
+    private bool SwitchElectricityDormLocked(string targetDormKey)
+    {
+        if (string.Equals(_activeElectricityDormKey, targetDormKey, StringComparison.Ordinal))
+            return false;
+
+        if (!string.IsNullOrEmpty(_activeElectricityDormKey))
+            _archivedElectricityRecords[_activeElectricityDormKey] = ElectricityRecords.ToList();
+
+        if (_archivedElectricityRecords.Remove(targetDormKey, out var targetRecords))
+            ElectricityRecords = targetRecords ?? new();
+        else
+            ElectricityRecords = new();
+
+        _activeElectricityDormKey = targetDormKey;
+        return true;
+    }
+
+    private static string CreateElectricityDormKey(SettingsManager settings) => JsonSerializer.Serialize(new[]
+    {
+        settings.DormCampus ?? "宣城校区",
+        settings.DormBuilding ?? string.Empty,
+        settings.DormRoom ?? string.Empty,
+        settings.DormEndNumber ?? "11"
+    });
+
+    private void BackupHistoryBeforeElectricityPartitionMigration()
+    {
+        if (!File.Exists(_historyFile)) return;
+        var backupFile = _historyFile + ".pre-dorm-history-partition.bak";
+        if (File.Exists(backupFile)) return;
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Electricity history migration backup failed: {ex.Message}");
+        }
+    }
+
 }
 
 #endregion

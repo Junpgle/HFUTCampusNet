@@ -115,10 +115,11 @@ public sealed class ElectricityService
     }
 
     /// <summary>
-    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号/端口时，清理不匹配的旧宿舍缓存与旧宿舍历史记录
+    /// 当用户在偏好设置中修改了宿舍校区/楼栋/房间号/端口时，清理旧宿舍缓存并切换历史分区
     /// </summary>
     public void InvalidateCacheIfDormChanged()
     {
+        CampusHistoryManager.Shared.ActivateCurrentElectricityDorm();
         bool hadDataOrCache;
         lock (_stateLock)
         {
@@ -144,7 +145,6 @@ public sealed class ElectricityService
             catch { }
         }
 
-        CampusHistoryManager.Shared.ClearElectricityHistory();
         if (hadDataOrCache)
         {
             AppEvents.InvokeOnUI(AppEvents.RaiseDormElectricityUpdated);
