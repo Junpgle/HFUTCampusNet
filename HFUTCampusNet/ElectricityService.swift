@@ -36,7 +36,7 @@ public class ElectricityService {
     private func saveCachedData(_ data: ElectricityData) {
         self.latestData = data
         if let encoded = try? JSONEncoder().encode(data) {
-            try? encoded.write(to: cacheURL)
+            try? encoded.write(to: cacheURL, options: .atomic)
         }
     }
 
