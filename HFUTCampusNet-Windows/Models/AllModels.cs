@@ -1123,7 +1123,13 @@ public sealed class CampusCardTransaction
     public string TurnoverType { get => TxType; set => TxType = value; }
     public double AmountRMB { get; set; }
     public double? BalanceAfterRMB { get; set; }
-    public bool IsExpense { get; set; } = true;
+    public bool IsRecharge =>
+        TurnoverType.Contains("充值") || TurnoverType.Contains("补助") ||
+        MerchantName.Contains("充值") || MerchantName.Contains("补助");
+    public bool IsRefund =>
+        TurnoverType.Contains("退款") || TurnoverType.Contains("退费") || TurnoverType.Contains("冲正") ||
+        MerchantName.Contains("退款") || MerchantName.Contains("退费") || MerchantName.Contains("冲正");
+    public bool IsExpense => !IsRecharge && !IsRefund;
     public string Time => TimeString;
     public string Merchant => CleanMerchantName;
     public double AmountYuan => AmountRMB;
@@ -1157,7 +1163,8 @@ public sealed class CampusCardTransaction
     {
         get
         {
-            if (!IsExpense) return "充值转账";
+            if (IsRefund) return "退款退费";
+            if (IsRecharge) return "充值转账";
             var m = MerchantName;
             if (m.Contains("超市") || m.Contains("便利")) return "超市购物";
             if (m.Contains("洗浴") || m.Contains("水控") || m.Contains("开水")) return "洗浴水控";
@@ -1265,7 +1272,7 @@ public sealed class CampusCardData
     public double CurrentMonthRechargedRMB(DateTime? now = null)
     {
         var prefix = (now ?? DateTime.Now).ToString("yyyy-MM");
-        return Transactions.Where(t => t.MonthPrefixString == prefix && !t.IsExpense).Sum(t => t.AmountRMB);
+        return Transactions.Where(t => t.MonthPrefixString == prefix && t.IsRecharge).Sum(t => t.AmountRMB);
     }
 
     public ExpenseStructureBreakdownResult ExpenseStructureBreakdown()

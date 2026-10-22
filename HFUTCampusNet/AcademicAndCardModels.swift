@@ -743,10 +743,19 @@ public struct CampusCardTransaction: Codable, Identifiable, Equatable {
         return Int(t.prefix(2))
     }
 
-    /// 是否属于支出消费类（排除圈存/充值）
-    public var isExpense: Bool {
-        !turnoverType.contains("充值") && !turnoverType.contains("补助") && !merchantName.contains("充值")
+    public var isRecharge: Bool {
+        turnoverType.contains("充值") || turnoverType.contains("补助") ||
+        merchantName.contains("充值") || merchantName.contains("补助")
     }
+
+    public var isRefund: Bool {
+        [turnoverType, merchantName].contains { value in
+            value.contains("退款") || value.contains("退费") || value.contains("冲正")
+        }
+    }
+
+    /// 是否属于支出消费类；退款和充值都不计入消费额。
+    public var isExpense: Bool { !isRecharge && !isRefund }
 
     /// 简化商户显示名称
     public var cleanMerchantName: String {
@@ -760,7 +769,10 @@ public struct CampusCardTransaction: Codable, Identifiable, Equatable {
 
     /// 智能识别消费场景与三餐时段分类
     public var sceneCategoryTag: String {
-        if !isExpense {
+        if isRefund {
+            return "退款退费"
+        }
+        if isRecharge {
             return "圈存充值"
         }
         let m = cleanMerchantName
@@ -862,7 +874,7 @@ public struct CampusCardData: Codable, Equatable {
     public func currentMonthRechargedRMB(at now: Date = Date()) -> Double {
         let monthPrefix = String(CourseCalendarHelper.dateString(from: now).prefix(7))
         return transactions
-            .filter { $0.monthPrefixString == monthPrefix && !$0.isExpense }
+            .filter { $0.monthPrefixString == monthPrefix && $0.isRecharge }
             .reduce(0.0) { $0 + $1.amountRMB }
     }
 
