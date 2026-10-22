@@ -121,7 +121,11 @@ public sealed class CourseScheduleService
     public void ClearSchedule()
     {
         CurrentSchedule = null;
-        SaveCache();
+        try
+        {
+            if (File.Exists(_cacheFile)) File.Delete(_cacheFile);
+        }
+        catch { }
         AppEvents.RaiseCourseScheduleUpdated();
     }
 
