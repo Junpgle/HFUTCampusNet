@@ -795,10 +795,13 @@ public sealed class EmptyClassroomService
                     return;
                 }
 
-                if (CachedRooms.Count > 0)
+                bool hasRelevantCachedRooms = CachedRooms.Any(room =>
+                    campusesToSync.Contains(room.CampusId) &&
+                    (room.DateString == today || room.DateString == tomorrow));
+                if (hasRelevantCachedRooms)
                 {
                     LastSyncTime = DateTime.Now;
-                    callback?.Invoke(true, "已加载本地缓存数据");
+                    callback?.Invoke(false, "目标校区同步失败，已保留本地缓存数据");
                     return;
                 }
 
@@ -809,7 +812,9 @@ public sealed class EmptyClassroomService
                     fallback.AddRange(GenerateDefaultClassroomCatalog(c, today));
                     fallback.AddRange(GenerateDefaultClassroomCatalog(c, tomorrow));
                 }
-                CachedRooms = fallback;
+                var mergedFallback = CachedRooms.Where(room => !campusesToSync.Contains(room.CampusId)).ToList();
+                mergedFallback.AddRange(fallback);
+                CachedRooms = mergedFallback;
                 LastSyncTime = DateTime.Now;
                 SaveCache();
                 AppEvents.RaiseEmptyClassroomUpdated();
