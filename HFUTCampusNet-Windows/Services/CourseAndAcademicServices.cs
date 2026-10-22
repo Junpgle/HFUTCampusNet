@@ -465,9 +465,15 @@ public sealed class CourseScheduleService
         if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
         try
         {
-            var semId = SettingsManager.Shared.CourseSemesterId;
-            var stdId = SettingsManager.Shared.CourseStudentId;
-            var bizId = SettingsManager.Shared.CourseBizTypeId;
+            string semId = string.Empty;
+            string stdId = string.Empty;
+            string bizId = string.Empty;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                semId = SettingsManager.Shared.CourseSemesterId;
+                stdId = SettingsManager.Shared.CourseStudentId;
+                bizId = SettingsManager.Shared.CourseBizTypeId;
+            })) return null;
             if (string.IsNullOrEmpty(bizId) || bizId == "2") bizId = "23";
 
             // 1. 如果没有真实 stdId 则先请求 /for-std/course-table 自动提取

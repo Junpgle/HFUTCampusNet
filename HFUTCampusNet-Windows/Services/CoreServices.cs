@@ -664,20 +664,40 @@ public sealed class PortalAuthService
         catch { }
     }
 
-    public void Login(string? username, string? password, Action<bool, string>? callback = null)
+    public void Login(
+        string? username,
+        string? password,
+        Action<bool, string>? callback = null,
+        long? expectedAccountGeneration = null)
     {
-        var u = !string.IsNullOrEmpty(username) ? username : SettingsManager.Shared.PortalUsername;
-        var p = !string.IsNullOrEmpty(password) ? password : SettingsManager.Shared.PortalPassword;
+        var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var u = username ?? string.Empty;
+        var p = password ?? string.Empty;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            if (string.IsNullOrEmpty(u)) u = SettingsManager.Shared.PortalUsername;
+            if (string.IsNullOrEmpty(p)) p = SettingsManager.Shared.PortalPassword;
+        })) return;
         if (string.IsNullOrEmpty(u) || string.IsNullOrEmpty(p))
         {
-            callback?.Invoke(false, "未配置校园网认证账号或密码");
+            AppEvents.InvokeOnUI(() =>
+            {
+                if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                    callback?.Invoke(false, "未配置校园网认证账号或密码");
+            });
             return;
         }
 
         Task.Run(async () =>
         {
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
             var (ok, msg) = await LoginAsync(u, p);
-            AppEvents.InvokeOnUI(() => callback?.Invoke(ok, msg));
+            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+            AppEvents.InvokeOnUI(() =>
+            {
+                if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                    callback?.Invoke(ok, msg);
+            });
         });
     }
 
@@ -825,10 +845,14 @@ public sealed class CampusNetworkClient
                     // 在线状态也要定期刷新自服务仪表盘。以前这里仅更新网关数据，
                     // 导致自服务的月流量与余额在在线时一直停留在旧值。
                     bool dashboardRefreshed = false;
-                    bool hasSelfServiceAuth =
-                        !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie) ||
-                        (!string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalUsername) &&
-                         !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword));
+                    bool hasSelfServiceAuth = false;
+                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                    {
+                        hasSelfServiceAuth =
+                            !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie) ||
+                            (!string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalUsername) &&
+                             !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword));
+                    })) return;
                     if (hasSelfServiceAuth)
                     {
                         try { dashboardRefreshed = await FetchDashboardDataAsync(accountGeneration); } catch { }
@@ -837,7 +861,10 @@ public sealed class CampusNetworkClient
 
                     // 成功解析仪表盘时 ApplyParsedDashboardHTML 已会刷新设备列表；
                     // 解析失败但会话仍有效时，仍单独更新在线设备。
-                    if (!dashboardRefreshed && !string.IsNullOrWhiteSpace(SettingsManager.Shared.SessionCookie))
+                    string? sessionCookie = null;
+                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        sessionCookie = SettingsManager.Shared.SessionCookie)) return;
+                    if (!dashboardRefreshed && !string.IsNullOrWhiteSpace(sessionCookie))
                     {
                         try { await FetchOnlineDevicesAsync(accountGeneration); } catch { }
                     }
@@ -871,8 +898,14 @@ public sealed class CampusNetworkClient
                     bool dashOk = false;
                     try
                     {
-                        if (!string.IsNullOrEmpty(SettingsManager.Shared.SessionCookie) ||
-                            (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) && !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword)))
+                        bool hasSelfServiceAuth = false;
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            hasSelfServiceAuth = !string.IsNullOrEmpty(SettingsManager.Shared.SessionCookie) ||
+                                (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) &&
+                                 !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword));
+                        })) return;
+                        if (hasSelfServiceAuth)
                         {
                             dashOk = await FetchDashboardDataAsync(accountGeneration);
                         }
@@ -885,7 +918,8 @@ public sealed class CampusNetworkClient
                         // Fallback 慧新易校
                         try
                         {
-                            var (hxFlow, hxBalance) = await ElectricityService.Shared.FetchSchoolNetInfoFromHuiXinAsync();
+                            var (hxFlow, hxBalance) = await ElectricityService.Shared.FetchSchoolNetInfoFromHuiXinAsync(
+                                accountGeneration);
                             if (!IsCurrentAccount(accountGeneration)) return;
                             if (!string.IsNullOrEmpty(hxFlow) || !string.IsNullOrEmpty(hxBalance))
                             {
@@ -977,17 +1011,26 @@ public sealed class CampusNetworkClient
         try
         {
             if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
-            var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+            string? cookie = null;
+            string? username = null;
+            string? password = null;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                cookie = SettingsManager.Shared.SessionCookie?.Trim();
+                username = SettingsManager.Shared.PortalUsername;
+                password = SettingsManager.Shared.PortalPassword;
+            })) return (false, "账号已切换", new());
             if (string.IsNullOrEmpty(cookie))
             {
-                if (!string.IsNullOrEmpty(SettingsManager.Shared.PortalUsername) &&
-                    !string.IsNullOrEmpty(SettingsManager.Shared.PortalPassword))
+                if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
                 {
                     var (loginOk, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
                     if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
                     if (loginOk)
                     {
-                        cookie = SettingsManager.Shared.SessionCookie?.Trim();
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                            cookie = SettingsManager.Shared.SessionCookie?.Trim()))
+                            return (false, "账号已切换", new());
                     }
                 }
             }
@@ -1221,7 +1264,9 @@ public sealed class CampusNetworkClient
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         if (!IsCurrentAccount(accountGeneration)) return false;
-        var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+        string? cookie = null;
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            cookie = SettingsManager.Shared.SessionCookie?.Trim())) return false;
         if (string.IsNullOrEmpty(cookie))
         {
             var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
@@ -1280,7 +1325,13 @@ public sealed class CampusNetworkClient
         {
             try
             {
-                var cookie = SettingsManager.Shared.SessionCookie?.Trim();
+                string? cookie = null;
+                if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                    cookie = SettingsManager.Shared.SessionCookie?.Trim()))
+                {
+                    callback(false, "账号已切换");
+                    return;
+                }
                 if (string.IsNullOrEmpty(cookie))
                 {
                     callback(false, "自服务会话未就绪，请先登录自服务系统");

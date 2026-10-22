@@ -626,7 +626,9 @@ public sealed class EmptyClassroomService
         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return null;
         try
         {
-            var stdId = SettingsManager.Shared.CourseStudentId?.Trim();
+            string? stdId = null;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                stdId = SettingsManager.Shared.CourseStudentId?.Trim())) return null;
             var cookie = await CourseScheduleService.Shared.EnsureSessionAsync(
                 expectedAccountGeneration: accountGeneration);
             if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(cookie))

@@ -249,6 +249,7 @@ public class SettingsWindow : Window
         var testNetBtn = CreateSecondaryButton("⚡ 一键测试 Portal 登录", () =>
         {
             SaveSettings();
+            var accountGeneration = AccountSessionManager.Generation;
             CampusNetworkClient.Shared.ClearManualLogout();
             PortalAuthService.Shared.Login(_portalUsernameBox.Text, _portalPasswordBox.Password, (ok, msg) =>
             {
@@ -257,7 +258,7 @@ public class SettingsWindow : Window
                     MessageBox.Show(this, ok ? "校园网认证成功！" : $"认证失败：{msg}", "校园网测试", MessageBoxButton.OK,
                         ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
                 });
-            });
+            }, expectedAccountGeneration: accountGeneration);
         });
         testNetBtn.Margin = new Thickness(10, 0, 0, 0);
         ssoRow.Children.Add(ssoBtn);
@@ -316,7 +317,7 @@ public class SettingsWindow : Window
                         MessageBox.Show(this, $"慧新生活授权失败：{err ?? "请核对学号与密码"}", "授权提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
                 });
-            });
+            }, accountGeneration);
         });
 
         var refreshStatusBtn = CreateSecondaryButton("🔄 刷新凭证状态", () =>
@@ -1316,10 +1317,15 @@ public class UnifiedLoginWebWindow : Window
         // Auto-fill credentials if on login form
         if (currentUrl.Contains("cas.hfut.edu.cn") || currentUrl.Contains("/login"))
         {
-            string username = SettingsManager.Shared.PortalUsername;
-            string password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.CasPassword)
-                ? SettingsManager.Shared.CasPassword
-                : SettingsManager.Shared.PortalPassword;
+            string username = string.Empty;
+            string password = string.Empty;
+            if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+            {
+                username = SettingsManager.Shared.PortalUsername;
+                password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.CasPassword)
+                    ? SettingsManager.Shared.CasPassword
+                    : SettingsManager.Shared.PortalPassword;
+            })) return;
 
             if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
             {
@@ -1428,7 +1434,9 @@ public class UnifiedLoginWebWindow : Window
                     try
                     {
                         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
-                        await ElectricityService.Shared.ObtainHuiXinTokenAsync();
+                        await ElectricityService.Shared.ObtainHuiXinTokenAsync(
+                            tryPersistToken: null,
+                            expectedAccountGeneration: accountGeneration);
                         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                         ElectricityService.Shared.FetchData();
                         CampusCardService.Shared.FetchData();
@@ -1689,10 +1697,15 @@ public class LoginWebWindow : Window
         // 强力轮询自动填充账号与密码（持续尝试 20 次，间隔 200ms）并自动提交登录
         if (currentUrl.Contains("/Self/login") || currentUrl.Contains("login"))
         {
-            string username = SettingsManager.Shared.PortalUsername;
-            string password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword)
-                ? SettingsManager.Shared.PortalPassword
-                : SettingsManager.Shared.CasPassword;
+            string username = string.Empty;
+            string password = string.Empty;
+            if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+            {
+                username = SettingsManager.Shared.PortalUsername;
+                password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword)
+                    ? SettingsManager.Shared.PortalPassword
+                    : SettingsManager.Shared.CasPassword;
+            })) return;
 
             if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
             {
@@ -2312,10 +2325,15 @@ public class CourseLoginWebWindow : Window
         if (currentUrl.Contains("/login") || currentUrl.Contains("cas.hfut.edu.cn"))
         {
             _statusText.Text = "请登录信息门户（已自动填充账号密码，登录后将自动进入教务并同步课表）...";
-            string username = SettingsManager.Shared.PortalUsername;
-            string password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.CasPassword)
-                ? SettingsManager.Shared.CasPassword
-                : SettingsManager.Shared.PortalPassword;
+            string username = string.Empty;
+            string password = string.Empty;
+            if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+            {
+                username = SettingsManager.Shared.PortalUsername;
+                password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.CasPassword)
+                    ? SettingsManager.Shared.CasPassword
+                    : SettingsManager.Shared.PortalPassword;
+            })) return;
 
             if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
             {

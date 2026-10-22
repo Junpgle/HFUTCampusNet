@@ -834,13 +834,14 @@ public sealed class TrayMenuController : IDisposable
         var portalLoginItem = CreateStyledMenuItem("⚡ 一键认证校园网 (Portal 登录)", null);
         portalLoginItem.Click += (_, _) =>
         {
+            var accountGeneration = AccountSessionManager.Generation;
             CampusNetworkClient.Shared.ClearManualLogout();
             PortalAuthService.Shared.Login(null, null, (ok, msg) =>
             {
                 ShowNotification(ok ? "校园网认证成功" : "校园网认证提示", msg,
                     ok ? WinForms.ToolTipIcon.Info : WinForms.ToolTipIcon.Warning);
                 CampusNetworkClient.Shared.FetchData();
-            });
+            }, expectedAccountGeneration: accountGeneration);
         };
         rootItem.Items.Add(portalLoginItem);
 
