@@ -59,6 +59,19 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
         pendingCredentials = nil
     }
 
+    var hasPendingCredentials: Bool {
+        pendingCredentials != nil
+    }
+
+    func stageCredentials(username: String, password: String) {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUsername.isEmpty, !password.isEmpty else {
+            pendingCredentials = nil
+            return
+        }
+        pendingCredentials = (normalizedUsername, password)
+    }
+
     @discardableResult
     func commitPendingCredentials() -> (previousUsername: String, currentUsername: String)? {
         guard let credentials = pendingCredentials else { return nil }

@@ -165,22 +165,18 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
               let dict = message.body as? [String: String] else { return }
         let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUsername == sessionUsername else { return }
-        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
-            SettingsManager.shared.portalUsername = u
-            sessionUsername = u
-        }
-        if let p = dict["password"], !p.isEmpty {
-            SettingsManager.shared.casPassword = p
-        }
+        casLoginCoordinator.stageCredentials(
+            username: dict["username"] ?? "",
+            password: dict["password"] ?? ""
+        )
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
         casLoginCoordinator.navigationFinished(in: webView)
         guard let currentURL = webView.url else { return }
-        let urlStr = currentURL.absoluteString
 
-        // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
+        // 自动填充已保存的信息门户账号与密码，并暂存本次登录输入，等待教务页确认后提交
         if HFUTCASLoginSupport.isOfficialHTTPSPage(currentURL),
            !HFUTCASLoginSupport.isCASHost(currentURL),
            currentURL.path.localizedCaseInsensitiveContains("/login") {
@@ -255,14 +251,16 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         }
 
         // 检查是否到达课表页面
-        if urlStr.contains("/for-std/course-table/info/") || urlStr.contains("/for-std/course-table") {
+        let isAuthenticatedCoursePage = currentURL.host?.lowercased() == "jxglstu.hfut.edu.cn"
+            && currentURL.path.hasPrefix("/eams5-student/for-std/course-table")
+        if isAuthenticatedCoursePage {
             commitAuthenticatedCredentialsIfNeeded()
             triggerAutoExtraction()
         } else if HFUTCASLoginSupport.isCASHost(currentURL) {
             statusLabel.stringValue = "请使用 CAS 原生登录面板输入验证码并继续。"
             statusLabel.textColor = .secondaryLabelColor
         } else if currentURL.path.localizedCaseInsensitiveContains("/login") {
-            statusLabel.stringValue = "已自动填充已存账号密码（首次登录输入后将自动保存）..."
+            statusLabel.stringValue = "已自动填充已存账号密码（首次登录成功后保存）..."
             statusLabel.textColor = .secondaryLabelColor
         } else {
             statusLabel.stringValue = "已加载，如已登录可点击右下角「从当前页读取课表」"

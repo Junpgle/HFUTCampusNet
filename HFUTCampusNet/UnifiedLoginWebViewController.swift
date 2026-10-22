@@ -283,12 +283,10 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
               message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
                 || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
               let dict = message.body as? [String: String] else { return }
-        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
-            SettingsManager.shared.portalUsername = u
-        }
-        if let p = dict["password"], !p.isEmpty {
-            SettingsManager.shared.casPassword = p
-        }
+        casLoginCoordinator.stageCredentials(
+            username: dict["username"] ?? "",
+            password: dict["password"] ?? ""
+        )
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -297,7 +295,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         guard isAccountAuthFlowEnabled else { return }
         guard let url = webView.url else { return }
 
-        // 自动填充已保存的信息门户账号与密码，并监听用户输入自动保存
+        // 自动填充已保存的信息门户账号与密码，并暂存本次登录输入，等待认证成功后提交
         if HFUTCASLoginSupport.isOfficialHTTPSPage(url),
            !HFUTCASLoginSupport.isCASHost(url),
            url.path.localizedCaseInsensitiveContains("/login") {
@@ -409,7 +407,6 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
             let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
             let hasTGC = tgc != nil
-            if let tgc { SettingsManager.shared.casTgcCookie = tgc }
 
             let currentURL = self.webView.url?.absoluteString ?? ""
             guard !currentURL.isEmpty else { return }
@@ -441,20 +438,28 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     currentURL.contains("jxglstu.hfut.edu.cn") ||
                     currentURL.contains("loginsuccess")
 
-                if hasTGC || redirectedToService || (currentURL.contains("cas.hfut.edu.cn") && hasSuccessText) {
-                    self.startFullSSORefreshChain(cookies: cookies, sessionToken: sessionToken)
-                }
+                let authenticationConfirmed = hasTGC || redirectedToService
+                    || (currentURL.contains("cas.hfut.edu.cn") && hasSuccessText)
+                guard authenticationConfirmed,
+                      hasTGC || !self.casLoginCoordinator.hasPendingCredentials else { return }
+                self.startFullSSORefreshChain(
+                    cookies: cookies,
+                    sessionToken: sessionToken,
+                    confirmedTGC: tgc
+                )
             }
         }
     }
 
     /// 核心：全自动无缝 SSO 链式刷新
-    private func startFullSSORefreshChain(cookies: [HTTPCookie], sessionToken: UUID) {
+    private func startFullSSORefreshChain(cookies: [HTTPCookie], sessionToken: UUID, confirmedTGC: String?) {
         guard isAccountAuthFlowEnabled,
               self.syncSessionToken == sessionToken,
               !isSyncingAll else { return }
         isSyncingAll = true
-        casLoginCoordinator.commitPendingCredentials()
+        if confirmedTGC != nil {
+            casLoginCoordinator.commitPendingCredentials()
+        }
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
@@ -463,16 +468,15 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         updateStep(index: 0, text: "1. 统一身份认证", status: .success)
 
         // 尝试从页面或输入框提取学号（注意：不要将 10 位学号写入 courseStudentId，教务系统 stdId 为 6 位内部编号）
-        self.webView.evaluateJavaScript("document.getElementById('username') ? document.getElementById('username').value : ''") { [weak self] val, _ in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                guard self.isAccountAuthFlowEnabled, self.syncSessionToken == sessionToken else { return }
-                if let user = val as? String, !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    SettingsManager.shared.portalUsername = user.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                self.clearPreviousAccountDataIfNeeded()
-                self.startAccountDataRefresh(cookies: cookies, sessionToken: sessionToken)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  self.isAccountAuthFlowEnabled,
+                  self.syncSessionToken == sessionToken else { return }
+            self.clearPreviousAccountDataIfNeeded()
+            if let confirmedTGC {
+                SettingsManager.shared.casTgcCookie = confirmedTGC
             }
+            self.startAccountDataRefresh(cookies: cookies, sessionToken: sessionToken)
         }
     }
 
@@ -485,6 +489,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil
+        SettingsManager.shared.casTgcCookie = nil
         SettingsManager.shared.huixinAuthToken = nil
         ElectricityService.shared.cancelPendingRequests()
         EmptyClassroomService.shared.cancelPendingAuthentication()
