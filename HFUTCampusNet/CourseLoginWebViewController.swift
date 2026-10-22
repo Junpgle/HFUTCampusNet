@@ -275,16 +275,12 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             statusLabel.textColor = .systemOrange
             return
         }
+        guard let currentURL = webView.url else { return }
         isSyncing = true
-        let scheduleGeneration = CourseScheduleService.shared.cacheGenerationToken
+        let scheduleGeneration = CourseScheduleService.shared.beginScheduleUpdate()
         progressIndicator.startAnimation(nil)
         statusLabel.stringValue = "正在从当前页面直接提取排课数据..."
         statusLabel.textColor = NSColor.systemBlue
-
-        guard let currentURL = webView.url else {
-            isSyncing = false
-            return
-        }
 
         // 尝试从 URL 提取 studentId
         var detectedStudentId = SettingsManager.shared.courseStudentId

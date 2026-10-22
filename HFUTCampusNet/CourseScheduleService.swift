@@ -17,6 +17,17 @@ public class CourseScheduleService {
     public var cacheGenerationToken: Int {
         currentScheduleGeneration()
     }
+
+    /// Starts a schedule update and invalidates results from older requests.
+    @discardableResult
+    public func beginScheduleUpdate() -> Int {
+        stateLock.lock()
+        scheduleGeneration &+= 1
+        let generation = scheduleGeneration
+        stateLock.unlock()
+        return generation
+    }
+
     private var cacheFileURL: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appDir = appSupport.appendingPathComponent("cn.edu.hfut.campusnet.monitor", isDirectory: true)
@@ -47,7 +58,7 @@ public class CourseScheduleService {
     }
 
     public func saveSchedule(_ schedule: CourseScheduleData) {
-        _ = saveSchedule(schedule, generation: currentScheduleGeneration())
+        _ = saveSchedule(schedule, generation: beginScheduleUpdate())
     }
 
     @discardableResult
@@ -102,9 +113,9 @@ public class CourseScheduleService {
         return scheduleGeneration == generation
     }
 
-    private static func accountSwitchCancellation() -> NSError {
+    private static func staleScheduleCancellation() -> NSError {
         NSError(domain: "CourseScheduleService", code: NSURLErrorCancelled,
-                userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次课表同步已取消"])
+                userInfo: [NSLocalizedDescriptionKey: "课表状态已更新，本次过期请求已取消"])
     }
 
     // MARK: - 网络同步接口
@@ -175,19 +186,19 @@ public class CourseScheduleService {
         bizTypeId: String? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
-        let generation = currentScheduleGeneration()
+        let generation = beginScheduleUpdate()
         let finish: (Result<CourseScheduleData, Error>) -> Void = { [weak self] result in
             guard let self else {
                 completion(result)
                 return
             }
             guard self.isCurrentScheduleGeneration(generation) else {
-                completion(.failure(Self.accountSwitchCancellation()))
+                completion(.failure(Self.staleScheduleCancellation()))
                 return
             }
             if case .success(let schedule) = result,
                !self.saveSchedule(schedule, generation: generation) {
-                completion(.failure(Self.accountSwitchCancellation()))
+                completion(.failure(Self.staleScheduleCancellation()))
                 return
             }
             completion(result)
@@ -204,7 +215,7 @@ public class CourseScheduleService {
             tryBackgroundLogin { [weak self] loginSuccess in
                 guard let self = self else { return }
                 guard self.isCurrentScheduleGeneration(generation) else {
-                    finish(.failure(Self.accountSwitchCancellation()))
+                    finish(.failure(Self.staleScheduleCancellation()))
                     return
                 }
                 let discoveredStd = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespaces)
@@ -230,7 +241,7 @@ public class CourseScheduleService {
         fetchCourseData(studentId: std, semesterId: semFinal, bizTypeId: bizFinal) { [weak self] result in
             guard let self else { return }
             guard self.isCurrentScheduleGeneration(generation) else {
-                finish(.failure(Self.accountSwitchCancellation()))
+                finish(.failure(Self.staleScheduleCancellation()))
                 return
             }
             switch result {
@@ -242,7 +253,7 @@ public class CourseScheduleService {
                    case .needLogin = syncErr {
                     self.tryBackgroundLogin { loginSuccess in
                         guard self.isCurrentScheduleGeneration(generation) else {
-                            finish(.failure(Self.accountSwitchCancellation()))
+                            finish(.failure(Self.staleScheduleCancellation()))
                             return
                         }
                         if loginSuccess {
@@ -265,7 +276,7 @@ public class CourseScheduleService {
                           case .emptySchedule = syncErr {
                     self.tryBackgroundLogin { loginSuccess in
                         guard self.isCurrentScheduleGeneration(generation) else {
-                            finish(.failure(Self.accountSwitchCancellation()))
+                            finish(.failure(Self.staleScheduleCancellation()))
                             return
                         }
                         if loginSuccess {
@@ -299,9 +310,9 @@ public class CourseScheduleService {
         bizTypeId: String,
         expectedGeneration: Int? = nil
     ) throws -> CourseScheduleData {
-        let generation = expectedGeneration ?? currentScheduleGeneration()
+        let generation = expectedGeneration ?? beginScheduleUpdate()
         guard isCurrentScheduleGeneration(generation) else {
-            throw Self.accountSwitchCancellation()
+            throw Self.staleScheduleCancellation()
         }
         guard let data = jsonString.data(using: .utf8) else {
             throw CourseSyncError.invalidResponse
@@ -325,7 +336,7 @@ public class CourseScheduleService {
             lessons: parsedLessons
         )
         guard saveSchedule(schedule, generation: generation) else {
-            throw Self.accountSwitchCancellation()
+            throw Self.staleScheduleCancellation()
         }
         return schedule
     }
@@ -338,9 +349,9 @@ public class CourseScheduleService {
         expectedGeneration: Int? = nil,
         completion: @escaping (Result<CourseScheduleData, Error>) -> Void
     ) {
-        let generation = expectedGeneration ?? currentScheduleGeneration()
+        let generation = expectedGeneration ?? beginScheduleUpdate()
         guard isCurrentScheduleGeneration(generation) else {
-            completion(.failure(Self.accountSwitchCancellation()))
+            completion(.failure(Self.staleScheduleCancellation()))
             return
         }
         // 仅保存 jxglstu.hfut.edu.cn 专属的 SESSION 与 SRVID Cookie
@@ -372,13 +383,13 @@ public class CourseScheduleService {
         fetchCourseData(studentId: detectedStd, semesterId: detectedSem, bizTypeId: detectedBiz) { [weak self] result in
             guard let self else { return }
             guard self.isCurrentScheduleGeneration(generation) else {
-                completion(.failure(Self.accountSwitchCancellation()))
+                completion(.failure(Self.staleScheduleCancellation()))
                 return
             }
             switch result {
             case .success(let schedule):
                 guard self.saveSchedule(schedule, generation: generation) else {
-                    completion(.failure(Self.accountSwitchCancellation()))
+                    completion(.failure(Self.staleScheduleCancellation()))
                     return
                 }
                 completion(.success(schedule))
