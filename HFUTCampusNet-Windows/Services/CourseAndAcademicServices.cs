@@ -23,6 +23,8 @@ public sealed class CourseScheduleService
 
     private readonly string _cacheFile;
     private readonly HttpClient _client;
+    private readonly object _scheduleStateLock = new();
+    private int _scheduleGeneration;
 
     private CourseScheduleService()
     {
@@ -41,6 +43,44 @@ public sealed class CourseScheduleService
         LoadCache();
     }
 
+    private int BeginScheduleOperation()
+    {
+        lock (_scheduleStateLock)
+        {
+            return ++_scheduleGeneration;
+        }
+    }
+
+    private bool IsScheduleGenerationCurrent(int generation)
+    {
+        lock (_scheduleStateLock)
+        {
+            return generation == _scheduleGeneration;
+        }
+    }
+
+    private bool TryUpdateCourseSettings(int generation, Action update)
+    {
+        lock (_scheduleStateLock)
+        {
+            if (generation != _scheduleGeneration) return false;
+            update();
+            SettingsManager.Shared.Save();
+            return true;
+        }
+    }
+
+    private bool TryApplySyncedSchedule(CourseScheduleData schedule, int generation)
+    {
+        lock (_scheduleStateLock)
+        {
+            if (generation != _scheduleGeneration) return false;
+            CurrentSchedule = schedule;
+            SaveCache();
+            return true;
+        }
+    }
+
     public void TryBackgroundLogin(Action<bool>? callback = null)
     {
         SyncSchedule(callback);
@@ -48,6 +88,7 @@ public sealed class CourseScheduleService
 
     public void SwitchSemester(string semesterId)
     {
+        BeginScheduleOperation();
         SettingsManager.Shared.CourseSemesterId = semesterId;
         SettingsManager.Shared.Save();
         SyncSchedule(_ => { });
@@ -55,6 +96,7 @@ public sealed class CourseScheduleService
 
     public void SwitchSemester(string semesterId, Action<CourseScheduleData?, string?>? callback)
     {
+        BeginScheduleOperation();
         SettingsManager.Shared.CourseSemesterId = semesterId;
         SettingsManager.Shared.Save();
         SyncSchedule(callback);
@@ -62,37 +104,44 @@ public sealed class CourseScheduleService
 
     public void SyncSchedule(Action<bool>? callback = null)
     {
+        var generation = BeginScheduleOperation();
         Task.Run(async () =>
         {
             try
             {
+                if (!IsScheduleGenerationCurrent(generation))
+                {
+                    callback?.Invoke(false);
+                    return;
+                }
+
                 var cookie = SettingsManager.Shared.CourseSessionCookie;
                 if (!string.IsNullOrEmpty(cookie))
                 {
-                    var data = await FetchFromEamsAsync(cookie);
-                    if (data != null && data.Lessons.Count > 0)
+                    var data = await FetchFromEamsAsync(cookie, generation);
+                    if (data != null && data.Lessons.Count > 0 && TryApplySyncedSchedule(data, generation))
                     {
-                        CurrentSchedule = data;
-                        SaveCache();
                         AppEvents.RaiseCourseScheduleUpdated();
                         callback?.Invoke(true);
                         return;
                     }
                 }
 
+                if (!IsScheduleGenerationCurrent(generation))
+                {
+                    callback?.Invoke(false);
+                    return;
+                }
+
                 // 尝试 CAS 静默换取 SESSION
                 if (!string.IsNullOrEmpty(SettingsManager.Shared.CasTgcCookie))
                 {
-                    var sessionCookie = await ExchangeCasTicketForEamsSessionAsync(SettingsManager.Shared.CasTgcCookie);
+                    var sessionCookie = await ExchangeCasTicketForEamsSessionAsync(SettingsManager.Shared.CasTgcCookie, generation);
                     if (!string.IsNullOrEmpty(sessionCookie))
                     {
-                        SettingsManager.Shared.CourseSessionCookie = sessionCookie;
-                        SettingsManager.Shared.Save();
-                        var data = await FetchFromEamsAsync(sessionCookie);
-                        if (data != null)
+                        var data = await FetchFromEamsAsync(sessionCookie, generation);
+                        if (data != null && TryApplySyncedSchedule(data, generation))
                         {
-                            CurrentSchedule = data;
-                            SaveCache();
                             AppEvents.RaiseCourseScheduleUpdated();
                             callback?.Invoke(true);
                             return;
@@ -118,14 +167,24 @@ public sealed class CourseScheduleService
         });
     }
 
-    public void ClearSchedule()
+    public void ClearSchedule(bool clearCourseCredentials = false)
     {
-        CurrentSchedule = null;
-        try
+        lock (_scheduleStateLock)
         {
-            if (File.Exists(_cacheFile)) File.Delete(_cacheFile);
+            _scheduleGeneration++;
+            CurrentSchedule = null;
+            if (clearCourseCredentials)
+            {
+                SettingsManager.Shared.CourseSessionCookie = "";
+                SettingsManager.Shared.CasTgcCookie = "";
+                SettingsManager.Shared.Save();
+            }
+            try
+            {
+                if (File.Exists(_cacheFile)) File.Delete(_cacheFile);
+            }
+            catch { }
         }
-        catch { }
         AppEvents.RaiseCourseScheduleUpdated();
     }
 
@@ -137,8 +196,12 @@ public sealed class CourseScheduleService
     public void ApplyCustomSchedule(CourseScheduleData schedule)
     {
         CourseLesson.EnrichLessons(schedule.Lessons);
-        CurrentSchedule = schedule;
-        SaveCache();
+        lock (_scheduleStateLock)
+        {
+            _scheduleGeneration++;
+            CurrentSchedule = schedule;
+            SaveCache();
+        }
         AppEvents.RaiseCourseScheduleUpdated();
     }
 
@@ -151,24 +214,29 @@ public sealed class CourseScheduleService
 
             CourseLesson.EnrichLessons(parsedLessons);
 
-            if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
-            if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
-            if (!string.IsNullOrEmpty(bizTypeId)) SettingsManager.Shared.CourseBizTypeId = bizTypeId;
-            SettingsManager.Shared.Save();
-
-            int.TryParse(semesterId, out int sIdNum);
-            var schedule = new CourseScheduleData
+            CourseScheduleData schedule;
+            lock (_scheduleStateLock)
             {
-                StudentId = !string.IsNullOrEmpty(studentId) ? studentId : SettingsManager.Shared.CourseStudentId,
-                SemesterId = !string.IsNullOrEmpty(semesterId) ? semesterId : SettingsManager.Shared.CourseSemesterId,
-                SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
-                BizTypeId = !string.IsNullOrEmpty(bizTypeId) ? bizTypeId : SettingsManager.Shared.CourseBizTypeId,
-                LastSyncTime = DateTime.Now,
-                Lessons = parsedLessons
-            };
+                _scheduleGeneration++;
+                if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
+                if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
+                if (!string.IsNullOrEmpty(bizTypeId)) SettingsManager.Shared.CourseBizTypeId = bizTypeId;
+                SettingsManager.Shared.Save();
 
-            CurrentSchedule = schedule;
-            SaveCache();
+                int.TryParse(semesterId, out int sIdNum);
+                schedule = new CourseScheduleData
+                {
+                    StudentId = !string.IsNullOrEmpty(studentId) ? studentId : SettingsManager.Shared.CourseStudentId,
+                    SemesterId = !string.IsNullOrEmpty(semesterId) ? semesterId : SettingsManager.Shared.CourseSemesterId,
+                    SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
+                    BizTypeId = !string.IsNullOrEmpty(bizTypeId) ? bizTypeId : SettingsManager.Shared.CourseBizTypeId,
+                    LastSyncTime = DateTime.Now,
+                    Lessons = parsedLessons
+                };
+
+                CurrentSchedule = schedule;
+                SaveCache();
+            }
             AppEvents.RaiseCourseScheduleUpdated();
             return schedule;
         }
@@ -200,7 +268,12 @@ public sealed class CourseScheduleService
         return null;
     }
 
-    public async Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc)
+    public Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc)
+    {
+        return ExchangeCasTicketForEamsSessionAsync(tgc, BeginScheduleOperation());
+    }
+
+    private async Task<string?> ExchangeCasTicketForEamsSessionAsync(string tgc, int scheduleGeneration)
     {
         try
         {
@@ -223,6 +296,7 @@ public sealed class CourseScheduleService
             var ssoUrl = "https://cas.hfut.edu.cn/cas/login?service=http%3A%2F%2Fjxglstu.hfut.edu.cn%2Feams5-student%2Fneusoft-sso%2Flogin";
             using var req1 = new HttpRequestMessage(HttpMethod.Get, ssoUrl);
             using var res1 = await client.SendAsync(req1);
+            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
             Uri? redirectUrl = null;
             if (res1.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.Moved or HttpStatusCode.Found or HttpStatusCode.SeeOther)
@@ -238,6 +312,7 @@ public sealed class CourseScheduleService
             // 2. 跟随重定向到教务系统 (http://jxglstu.hfut.edu.cn/eams5-student/neusoft-sso/login?ticket=ST-...)
             using var req2 = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
             using var res2 = await client.SendAsync(req2);
+            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
             // 检查教务系统的 Set-Cookie（涵盖带 path 的完整 URL）
             string? sess = null;
@@ -276,8 +351,8 @@ public sealed class CourseScheduleService
             if (!string.IsNullOrEmpty(sess))
             {
                 var cookieHeader = !string.IsNullOrEmpty(srv) ? $"SESSION={sess}; SRVID={srv}" : $"SESSION={sess}";
-                SettingsManager.Shared.CourseSessionCookie = cookieHeader;
-                SettingsManager.Shared.Save();
+                if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                    SettingsManager.Shared.CourseSessionCookie = cookieHeader)) return null;
 
                 // 3. 顺便访问 /for-std/course-table 自动发现真实 studentId
                 try
@@ -285,18 +360,22 @@ public sealed class CourseScheduleService
                     using var tableReq = new HttpRequestMessage(HttpMethod.Get, "http://jxglstu.hfut.edu.cn/eams5-student/for-std/course-table");
                     tableReq.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
                     using var tableRes = await client.SendAsync(tableReq);
+                    if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
                     if (tableRes.IsSuccessStatusCode)
                     {
                         var html = await tableRes.Content.ReadAsStringAsync();
+                        if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
                         var match = Regex.Match(html, @"/for-std/course-table/info/(\d+)");
                         if (match.Success)
                         {
-                            SettingsManager.Shared.CourseStudentId = match.Groups[1].Value;
-                            SettingsManager.Shared.Save();
+                            if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                                SettingsManager.Shared.CourseStudentId = match.Groups[1].Value)) return null;
                         }
                     }
                 }
                 catch { }
+
+                if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
                 // 4. 联动推导 UniApp 密码并全量同步
                 _ = Task.Run(async () =>
@@ -317,7 +396,7 @@ public sealed class CourseScheduleService
         return null;
     }
 
-    private async Task<CourseScheduleData?> FetchFromEamsAsync(string sessionCookie)
+    private async Task<CourseScheduleData?> FetchFromEamsAsync(string sessionCookie, int scheduleGeneration)
     {
         try
         {
@@ -334,6 +413,7 @@ public sealed class CourseScheduleService
                 pageReq.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
                 using var pageRes = await _client.SendAsync(pageReq);
                 var pageHtml = await pageRes.Content.ReadAsStringAsync();
+                if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
                 var stdMatch = Regex.Match(pageHtml, @"/for-std/course-table/info/(\d+)");
                 if (!stdMatch.Success) stdMatch = Regex.Match(pageHtml, @"var\s+studentId\s*=\s*(\d+)");
@@ -354,9 +434,13 @@ public sealed class CourseScheduleService
                 if (bizMatch.Success)
                 {
                     bizId = bizMatch.Groups[1].Value;
-                    SettingsManager.Shared.CourseBizTypeId = bizId;
                 }
-                SettingsManager.Shared.Save();
+                if (!TryUpdateCourseSettings(scheduleGeneration, () =>
+                {
+                    if (stdMatch.Success) SettingsManager.Shared.CourseStudentId = stdId;
+                    if (semMatch.Success) SettingsManager.Shared.CourseSemesterId = semId;
+                    if (bizMatch.Success) SettingsManager.Shared.CourseBizTypeId = bizId;
+                })) return null;
             }
 
             if (string.IsNullOrEmpty(stdId)) return null;
@@ -369,6 +453,7 @@ public sealed class CourseScheduleService
             getReq.Headers.TryAddWithoutValidation("Accept", "application/json, text/javascript, */*; q=0.01");
             using var getResp = await _client.SendAsync(getReq);
             var getJson = await getResp.Content.ReadAsStringAsync();
+            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
             var lessonIds = new List<int>();
             using (var doc = SafeParseJson(getJson))
@@ -401,6 +486,7 @@ public sealed class CourseScheduleService
 
             using var datumResp = await _client.SendAsync(datumReq);
             var datumJson = await datumResp.Content.ReadAsStringAsync();
+            if (!IsScheduleGenerationCurrent(scheduleGeneration)) return null;
 
             var lessons = ParseDatumScheduleJson(datumJson);
             if (lessons.Count == 0) return null;

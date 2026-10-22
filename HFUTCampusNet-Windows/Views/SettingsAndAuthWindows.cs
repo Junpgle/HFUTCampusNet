@@ -342,13 +342,11 @@ public class SettingsWindow : Window
         {
             if (MessageBox.Show(this, "确定要清除所有保存的 Cookie、Token 及课表缓存吗？", "清除凭证", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
+                CourseScheduleService.Shared.ClearSchedule(clearCourseCredentials: true);
                 SettingsManager.Shared.SessionCookie = "";
-                SettingsManager.Shared.CourseSessionCookie = "";
-                SettingsManager.Shared.CasTgcCookie = "";
                 SettingsManager.Shared.HuixinAuthToken = "";
                 SettingsManager.Shared.UniAppJwt = "";
                 SettingsManager.Shared.Save();
-                CourseScheduleService.Shared.ClearSchedule();
                 AcademicService.Shared.ClearCache();
                 CampusCardService.Shared.ClearCache();
                 UpdateCookieStatusLabel();
