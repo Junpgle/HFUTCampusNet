@@ -717,7 +717,8 @@ public final class StudentPortraitEatService {
         let group = DispatchGroup()
         let lock = NSLock()
         var results: [String: StudentPortraitEatAverage] = [:]
-        for year in years.prefix(8) {
+        // Bound parallel requests while keeping the latest years in the trend.
+        for year in years.suffix(8) {
             group.enter()
             post(path: "api/admin/dataway/xshx/eat/average", body: ["year": year, "env": "prod"], token: token) { result in
                 if case .success(let value) = result, let dictionary = value as? [String: Any] {
