@@ -280,8 +280,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
               message.webView === webView,
               message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
-              message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
-                || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
+              message.frameInfo.securityOrigin.host.lowercased() == "jxglstu.hfut.edu.cn",
+              HFUTCASLoginSupport.isEamsLoginPage(webView.url),
               let dict = message.body as? [String: String] else { return }
         casLoginCoordinator.stageCredentials(
             username: dict["username"] ?? "",
@@ -296,9 +296,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         guard let url = webView.url else { return }
 
         // 自动填充已保存的信息门户账号与密码，并暂存本次登录输入，等待认证成功后提交
-        if HFUTCASLoginSupport.isOfficialHTTPSPage(url),
-           !HFUTCASLoginSupport.isCASHost(url),
-           url.path.localizedCaseInsensitiveContains("/login") {
+        if HFUTCASLoginSupport.isEamsLoginPage(url) {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")

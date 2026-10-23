@@ -160,8 +160,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
               message.webView === webView,
               message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "https",
-              message.frameInfo.securityOrigin.host.lowercased() == "hfut.edu.cn"
-                || message.frameInfo.securityOrigin.host.lowercased().hasSuffix(".hfut.edu.cn"),
+              message.frameInfo.securityOrigin.host.lowercased() == "jxglstu.hfut.edu.cn",
+              HFUTCASLoginSupport.isEamsLoginPage(webView.url),
               let dict = message.body as? [String: String] else { return }
         let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUsername == sessionUsername else { return }
@@ -177,9 +177,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         guard let currentURL = webView.url else { return }
 
         // 自动填充已保存的信息门户账号与密码，并暂存本次登录输入，等待教务页确认后提交
-        if HFUTCASLoginSupport.isOfficialHTTPSPage(currentURL),
-           !HFUTCASLoginSupport.isCASHost(currentURL),
-           currentURL.path.localizedCaseInsensitiveContains("/login") {
+        if HFUTCASLoginSupport.isEamsLoginPage(currentURL) {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")
@@ -259,7 +257,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         } else if HFUTCASLoginSupport.isCASHost(currentURL) {
             statusLabel.stringValue = "请使用 CAS 原生登录面板输入验证码并继续。"
             statusLabel.textColor = .secondaryLabelColor
-        } else if currentURL.path.localizedCaseInsensitiveContains("/login") {
+        } else if HFUTCASLoginSupport.isEamsLoginPage(currentURL) {
             statusLabel.stringValue = "已自动填充已存账号密码（首次登录成功后保存）..."
             statusLabel.textColor = .secondaryLabelColor
         } else {

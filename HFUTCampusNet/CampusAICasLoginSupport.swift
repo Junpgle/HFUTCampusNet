@@ -7,18 +7,20 @@ enum HFUTCASLoginSupport {
         url?.host?.lowercased() == "cas.hfut.edu.cn"
     }
 
-    static func isOfficialHTTPSPage(_ url: URL?) -> Bool {
-        guard let url, url.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased() else { return false }
-        return host == "hfut.edu.cn" || host.hasSuffix(".hfut.edu.cn")
-    }
-
     static func isLoginPage(_ url: URL?) -> Bool {
         guard let url = url,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
         return components.scheme?.lowercased() == "https"
             && isCASHost(url)
             && components.path == "/cas/login"
+    }
+
+    static func isEamsLoginPage(_ url: URL?) -> Bool {
+        guard let url,
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "jxglstu.hfut.edu.cn" else { return false }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        return path == "eams5-student/neusoft-sso/login"
     }
 
     static func tgcCookieValue(from cookies: [HTTPCookie], now: Date = Date()) -> String? {
