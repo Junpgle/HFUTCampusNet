@@ -32,7 +32,8 @@ public static class AccountSessionManager
 
     public static void InvalidateForAccountSwitch(
         string newUsername,
-        bool preserveCourseWebViewCookies = false)
+        bool preserveCourseWebViewCookies = false,
+        bool preserveSavedPasswords = false)
     {
         lock (SwitchGate)
         {
@@ -45,8 +46,11 @@ public static class AccountSessionManager
             try
             {
                 var settings = SettingsManager.Shared;
-                settings.PortalPassword = string.Empty;
-                settings.CasPassword = string.Empty;
+                if (!preserveSavedPasswords)
+                {
+                    settings.PortalPassword = string.Empty;
+                    settings.CasPassword = string.Empty;
+                }
                 settings.PortalUsername = newUsername;
                 UnifiedLoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 LoginWebWindow.ClearAuthCookiesForAccountSwitch();

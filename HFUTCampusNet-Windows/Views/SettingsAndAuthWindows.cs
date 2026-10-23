@@ -357,21 +357,10 @@ public class SettingsWindow : Window
         {
             if (MessageBox.Show(this, "确定要清除所有保存的 Cookie、Token 及课表缓存吗？", "清除凭证", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
-                ElectricityService.Shared.CancelPendingRequests();
-                EmptyClassroomService.Shared.CancelPendingAuthentication();
-                UnifiedLoginWebWindow.ClearAuthCookiesForAccountSwitch();
-                LoginWebWindow.ClearAuthCookiesForAccountSwitch();
-                CourseLoginWebWindow.ClearAuthCookiesForAccountSwitch();
-                CourseScheduleService.Shared.ClearSchedule(clearCourseCredentials: true);
-                SettingsManager.Shared.SessionCookie = "";
-                SettingsManager.Shared.HuixinAuthToken = "";
-                SettingsManager.Shared.UniAppJwt = "";
-                SettingsManager.Shared.JxglstuDefaultPasswordCache = "";
-                SettingsManager.Shared.Save();
-                AcademicService.Shared.ClearCache();
-                CampusCardService.Shared.ClearCache();
+                AccountSessionManager.InvalidateForAccountSwitch(
+                    SettingsManager.Shared.PortalUsername ?? string.Empty,
+                    preserveSavedPasswords: true);
                 UpdateCookieStatusLabel();
-                AppEvents.RaiseAuthStatusUpdated();
             }
         });
         clearCredsBtn.Margin = new Thickness(10, 0, 0, 0);
