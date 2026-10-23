@@ -1017,21 +1017,37 @@ public class CourseScheduleWindow : Window
             var currentId = CourseScheduleService.Shared.CurrentSchedule?.CurrentSemesterId;
             if (semId == currentId) return;
 
+            var previousSemesterId = currentId ?? SettingsManager.Shared.CourseSemesterId;
+            var accountGeneration = AccountSessionManager.Generation;
             _statusLabel.Text = "正在切换学期并拉取课表...";
             _syncBtn.IsEnabled = false;
+            _semesterCombo.IsEnabled = false;
             CourseScheduleService.Shared.SwitchSemester(semId, (data, err) =>
             {
                 AppEvents.InvokeOnUI(() =>
                 {
                     _syncBtn.IsEnabled = true;
-                    if (data != null)
+                    if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                    {
+                        ReloadInterface(autoPositionWeek: false);
+                        return;
+                    }
+
+                    var currentSchedule = CourseScheduleService.Shared.CurrentSchedule;
+                    if (data != null || currentSchedule?.CurrentSemesterId == semId)
                     {
                         _hasAutoPositionedWeek = false;
                         ReloadInterface(autoPositionWeek: true);
                     }
                     else
                     {
-                        _statusLabel.Text = $"切换学期失败：{err ?? "未知错误"}";
+                        if (SettingsManager.Shared.CourseSemesterId == semId)
+                        {
+                            SettingsManager.Shared.CourseSemesterId = previousSemesterId;
+                            SettingsManager.Shared.Save();
+                        }
+                        ReloadInterface(autoPositionWeek: false);
+                        _statusLabel.Text = $"切换学期失败：{err ?? "未知错误"}，已恢复原学期课表";
                     }
                 });
             });
