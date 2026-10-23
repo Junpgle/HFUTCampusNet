@@ -485,24 +485,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         guard !currentUsername.isEmpty,
               currentUsername != loginSessionUsernameAtStart else { return }
 
-        CourseScheduleService.shared.clearSchedule()
-        SettingsManager.shared.sessionCookie = nil
-        SettingsManager.shared.courseSessionCookie = nil
-        SettingsManager.shared.casTgcCookie = nil
-        SettingsManager.shared.huixinAuthToken = nil
-        ElectricityService.shared.cancelPendingRequests()
-        EmptyClassroomService.shared.cancelPendingAuthentication()
-        StudentPortraitEatService.shared.clearCache()
-        SettingsManager.shared.uniAppJwt = nil
-        SettingsManager.shared.jxglstuDefaultPasswordCache = nil
-        if SettingsManager.shared.courseStudentId == loginSessionStudentIdAtStart {
-            SettingsManager.shared.courseStudentId = ""
-            loginSessionStudentIdAtStart = ""
-        }
-        CampusCardService.shared.clearCache()
-        AcademicService.shared.clearCache()
-        LibraryBorrowManager.shared.clearCache()
-        NotificationCenter.default.post(name: .courseScheduleDidUpdate, object: nil)
+        SettingsWindowController.shared.handleExternalAccountSwitch(
+            previousUsername: loginSessionUsernameAtStart,
+            previousStudentID: loginSessionStudentIdAtStart,
+            preserveUnifiedLoginSession: true
+        )
 
         loginSessionUsernameAtStart = currentUsername
         loginSessionStudentIdAtStart = SettingsManager.shared.courseStudentId

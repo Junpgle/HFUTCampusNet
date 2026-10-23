@@ -943,7 +943,11 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         AcademicService.shared.syncAll(silent: true)
     }
 
-    private static func invalidateAccountScopedData(previousUsername: String, previousStudentID: String) {
+    private static func invalidateAccountScopedData(
+        previousUsername: String,
+        previousStudentID: String,
+        preserveUnifiedLoginSession: Bool = false
+    ) {
         let previousUser = previousUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let currentUser = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUser != previousUser else { return }
@@ -952,7 +956,9 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil
         SettingsManager.shared.casTgcCookie = nil
-        UnifiedLoginWebViewController.invalidateAccountSession()
+        if !preserveUnifiedLoginSession {
+            UnifiedLoginWebViewController.invalidateAccountSession()
+        }
         ElectricityService.shared.cancelPendingRequests()
         SettingsManager.shared.huixinAuthToken = nil
         EmptyClassroomService.shared.cancelPendingAuthentication()
@@ -967,10 +973,15 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         LibraryBorrowManager.shared.clearCache()
     }
 
-    public func handleExternalAccountSwitch(previousUsername: String, previousStudentID: String) {
+    public func handleExternalAccountSwitch(
+        previousUsername: String,
+        previousStudentID: String,
+        preserveUnifiedLoginSession: Bool = false
+    ) {
         Self.invalidateAccountScopedData(
             previousUsername: previousUsername,
-            previousStudentID: previousStudentID
+            previousStudentID: previousStudentID,
+            preserveUnifiedLoginSession: preserveUnifiedLoginSession
         )
         SettingsManager.shared.portalPassword = ""
         initialUsername = SettingsManager.shared.portalUsername
