@@ -2120,6 +2120,18 @@ public class CourseLoginWebWindow : Window
         try
         {
             if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+            if (!Uri.TryCreate(e.Source, UriKind.Absolute, out var sourceUri)) return;
+
+            bool sourceIsCasLoginPage = sourceUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+                sourceUri.Host.Equals("cas.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+                sourceUri.AbsolutePath.Equals("/cas/login", StringComparison.OrdinalIgnoreCase);
+            bool sourceIsEamsCourseTable =
+                (sourceUri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                 sourceUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)) &&
+                sourceUri.Host.Equals("jxglstu.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+                (sourceUri.AbsolutePath.Equals("/eams5-student/for-std/course-table", StringComparison.OrdinalIgnoreCase) ||
+                 sourceUri.AbsolutePath.StartsWith("/eams5-student/for-std/course-table/", StringComparison.OrdinalIgnoreCase));
+            if (!sourceIsCasLoginPage && !sourceIsEamsCourseTable) return;
 
             string raw = e.TryGetWebMessageAsString();
             if (string.IsNullOrWhiteSpace(raw))
@@ -2155,6 +2167,7 @@ public class CourseLoginWebWindow : Window
                 var typeStr = typeElem.GetString();
                 if (typeStr == "casCredentials")
                 {
+                    if (!sourceIsCasLoginPage) return;
                     string u = root.TryGetProperty("username", out var uE) ? uE.GetString() ?? "" : "";
                     string p = root.TryGetProperty("password", out var pE) ? pE.GetString() ?? "" : "";
                     bool submitted = root.TryGetProperty("submitted", out var submittedElem) &&
@@ -2167,6 +2180,7 @@ public class CourseLoginWebWindow : Window
 
                 if (typeStr == "casLoginFailed")
                 {
+                    if (!sourceIsCasLoginPage) return;
                     _pendingCasUsername = null;
                     _pendingCasPassword = null;
                     return;
@@ -2176,6 +2190,7 @@ public class CourseLoginWebWindow : Window
                 {
                     return;
                 }
+                if (!sourceIsEamsCourseTable) return;
             }
             else
             {
@@ -2355,10 +2370,17 @@ public class CourseLoginWebWindow : Window
         if (!e.IsSuccess) return;
 
         string currentUrl = _webView.Source?.ToString() ?? "";
+        if (!Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri)) return;
+        bool isCasLoginPage = currentUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.Host.Equals("cas.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.AbsolutePath.Equals("/cas/login", StringComparison.OrdinalIgnoreCase);
+        bool isEamsPage = currentUri.Host.Equals("jxglstu.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+            (currentUri.AbsolutePath.Equals("/eams5-student", StringComparison.OrdinalIgnoreCase) ||
+             currentUri.AbsolutePath.StartsWith("/eams5-student/", StringComparison.OrdinalIgnoreCase));
         _statusText.Text = $"当前页面: {currentUrl}";
 
         // 1. 处于信息门户统一身份认证登录页，自动填充账号与密码并自动登录
-        if (currentUrl.Contains("/login") || currentUrl.Contains("cas.hfut.edu.cn"))
+        if (isCasLoginPage)
         {
             _statusText.Text = "请登录信息门户（已自动填充账号密码，登录后将自动进入教务并同步课表）...";
             string username = string.Empty;
@@ -2452,7 +2474,7 @@ public class CourseLoginWebWindow : Window
         }
 
         // 2. 处于教务 SSO 换票据页面，等待其自动建立 Session 并跳转
-        if (currentUrl.Contains("neusoft-sso"))
+        if (isEamsPage && currentUri.AbsolutePath.Contains("neusoft-sso", StringComparison.OrdinalIgnoreCase))
         {
             _statusText.Text = "🎉 信息门户认证通过！正在建立教务系统会话...";
             CommitPendingCasCredentialsAfterAuthentication();
@@ -2462,7 +2484,7 @@ public class CourseLoginWebWindow : Window
         }
 
         // 3. 若处于教务系统其它页面（例如首页），平滑导航前往课表页，同时记录 Cookie
-        if (currentUrl.Contains("eams5-student"))
+        if (isEamsPage)
         {
             CommitPendingCasCredentialsAfterAuthentication();
             await SyncAllCookiesAsync();
