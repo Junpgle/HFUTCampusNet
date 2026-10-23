@@ -760,6 +760,7 @@ public sealed class EmptyClassroomService
                 var campusesToSync = targetCampusId.HasValue ? new[] { targetCampusId.Value } : new[] { activeCampusId };
 
                 var allResults = new List<ClassroomOccupationItem>();
+                var hasFreshSnapshot = false;
 
                 foreach (var campusId in campusesToSync)
                 {
@@ -769,14 +770,13 @@ public sealed class EmptyClassroomService
 
                     await Task.WhenAll(todayTask, tomorrowTask);
 
-                    AddSnapshotOrKeepCache(campusId, today, await todayTask, allResults);
-                    AddSnapshotOrKeepCache(campusId, tomorrow, await tomorrowTask, allResults);
+                    var todayRooms = await todayTask;
+                    var tomorrowRooms = await tomorrowTask;
+                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, today, todayRooms, allResults);
+                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, tomorrow, tomorrowRooms, allResults);
                 }
 
-                var hasCompleteSnapshot = campusesToSync.Any(campusId =>
-                    IsCampusSnapshotComplete(campusId, today)
-                    || IsCampusSnapshotComplete(campusId, tomorrow));
-                if (allResults.Count > 0 || hasCompleteSnapshot)
+                if (hasFreshSnapshot)
                 {
                     // 将新拉取校区的数据合并进 CachedRooms，替换旧的该校区数据
                     var merged = CachedRooms.Where(r => !campusesToSync.Contains(r.CampusId)).ToList();
@@ -799,25 +799,11 @@ public sealed class EmptyClassroomService
                     (room.DateString == today || room.DateString == tomorrow));
                 if (hasRelevantCachedRooms)
                 {
-                    LastSyncTime = DateTime.Now;
                     callback?.Invoke(false, "目标校区同步失败，已保留本地缓存数据");
                     return;
                 }
 
-                // 兜底生成默认空教室
-                var fallback = new List<ClassroomOccupationItem>();
-                foreach (var c in campusesToSync)
-                {
-                    fallback.AddRange(GenerateDefaultClassroomCatalog(c, today));
-                    fallback.AddRange(GenerateDefaultClassroomCatalog(c, tomorrow));
-                }
-                var mergedFallback = CachedRooms.Where(room => !campusesToSync.Contains(room.CampusId)).ToList();
-                mergedFallback.AddRange(fallback);
-                CachedRooms = mergedFallback;
-                LastSyncTime = DateTime.Now;
-                SaveCache();
-                AppEvents.RaiseEmptyClassroomUpdated();
-                callback?.Invoke(false, "未从教务获取到排课，已加载基础教室列表");
+                callback?.Invoke(false, "未能获取当前空教室数据，请检查登录或网络后重试");
             }
             catch (Exception ex)
             {
@@ -851,15 +837,18 @@ public sealed class EmptyClassroomService
         }
     }
 
-    private void AddSnapshotOrKeepCache(int campusId, string dateString, List<ClassroomOccupationItem> fetched, List<ClassroomOccupationItem> destination)
+    private bool AddSnapshotOrKeepCache(int campusId, string dateString, List<ClassroomOccupationItem> fetched, List<ClassroomOccupationItem> destination)
     {
-        if (IsCampusSnapshotComplete(campusId, dateString) || !CachedRooms.Any(room => room.CampusId == campusId && room.DateString == dateString))
+        var cached = CachedRooms.Where(room => room.CampusId == campusId && room.DateString == dateString).ToList();
+        bool isComplete = IsCampusSnapshotComplete(campusId, dateString);
+        if (isComplete || cached.Count == 0)
         {
             destination.AddRange(fetched);
-            return;
+            return isComplete || fetched.Count > 0;
         }
 
-        destination.AddRange(CachedRooms.Where(room => room.CampusId == campusId && room.DateString == dateString));
+        destination.AddRange(cached);
+        return false;
     }
 
     public async Task<List<ClassroomOccupationItem>> FetchCampusRoomsAsync(int campusId, string dateStr, bool forceRefresh = false)
@@ -1313,38 +1302,6 @@ public sealed class EmptyClassroomService
             return 11;
         }
         return isStart ? 1 : 2;
-    }
-
-    private static List<ClassroomOccupationItem> GenerateDefaultClassroomCatalog(int campusId, string dateStr)
-    {
-        var list = new List<ClassroomOccupationItem>();
-        var buildings = AllBuildings.Where(b => b.CampusId == campusId).ToList();
-        if (buildings.Count == 0) buildings = DefaultBuildings.Take(2).ToList();
-
-        int id = campusId * 1000;
-        foreach (var b in buildings)
-        {
-            for (int floor = 1; floor <= 4; floor++)
-            {
-                for (int roomNum = 1; roomNum <= 6; roomNum++)
-                {
-                    var rname = $"{b.BuildingName} {floor:D1}{roomNum:D2}";
-                    list.Add(new ClassroomOccupationItem
-                    {
-                        RoomId = id++,
-                        RoomName = rname,
-                        CampusId = campusId,
-                        BuildingName = b.BuildingName,
-                        BuildingCode = b.BuildingId.ToString(),
-                        Floor = floor,
-                        Seats = 80,
-                        DateString = dateStr,
-                        Occupations = new List<RoomOccupationSlot>()
-                    });
-                }
-            }
-        }
-        return list;
     }
 
     private void SaveCache()
