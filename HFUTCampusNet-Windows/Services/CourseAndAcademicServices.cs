@@ -914,7 +914,7 @@ public sealed class AcademicService
                             };
 
                             // 出分静默通知检测
-                            CheckNewGradesNotification(newSnapshot.AllGrades);
+                            CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
 
                             LatestData = newSnapshot;
                             SaveCache();
@@ -1218,11 +1218,27 @@ public sealed class AcademicService
         return result.OrderBy(e => e.DateString).ThenBy(e => e.StartTimeString).ToList();
     }
 
-    private void CheckNewGradesNotification(List<GradeItem> grades)
+    private void CheckNewGradesNotification(List<GradeItem> grades, bool isInitialSnapshot = false)
     {
         var notified = SettingsManager.Shared.NotifiedGradeIds;
         var unread = SettingsManager.Shared.UnreadGradeIds;
         var newOnes = new List<GradeItem>();
+
+        if (isInitialSnapshot && notified.Count == 0)
+        {
+            foreach (var grade in grades)
+            {
+                if (!string.IsNullOrWhiteSpace(grade.Id))
+                    notified.Add(grade.Id);
+            }
+
+            if (notified.Count > 0)
+            {
+                SettingsManager.Shared.NotifiedGradeIds = notified;
+                SettingsManager.Shared.Save();
+            }
+            return;
+        }
 
         foreach (var g in grades)
         {
@@ -1299,7 +1315,7 @@ public sealed class AcademicService
                 if (generation != _cacheGeneration) return;
                 if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                 {
-                    CheckNewGradesNotification(newSnapshot.AllGrades);
+                    CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
                     LatestData = newSnapshot;
                     SaveCache();
                 })) return;
