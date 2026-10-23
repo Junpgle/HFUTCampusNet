@@ -953,6 +953,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         guard currentUser != previousUser else { return }
 
         CampusHistoryManager.shared.activateFlowHistory(for: currentUser)
+        CampusNetworkClient.shared.clearAccountScopedData()
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil

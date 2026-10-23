@@ -32,9 +32,48 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private var hasFetchedHuiXinFallback: Bool = false
     private var lastDashboardAttemptTime: Date? = nil
     private var latestRedirectSessionId: String? = nil
+    private var accountGeneration = 0
 
     private func isCurrentPortalAccount(_ username: String) -> Bool {
         SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == username
+    }
+
+    private func isCurrentPortalAccount(_ username: String, generation: Int) -> Bool {
+        accountGeneration == generation && isCurrentPortalAccount(username)
+    }
+
+    private func tagAccountScopedTask(_ task: URLSessionTask, generation: Int) {
+        task.taskDescription = "portal-account-generation:\(generation)"
+    }
+
+    private func isTaskForCurrentAccount(_ task: URLSessionTask) -> Bool {
+        guard let description = task.taskDescription,
+              description.hasPrefix("portal-account-generation:"),
+              let generation = Int(description.dropFirst("portal-account-generation:".count)) else {
+            return true
+        }
+        return generation == accountGeneration
+    }
+
+    public func clearAccountScopedData() {
+        accountGeneration &+= 1
+        isHeartbeating = false
+        pendingForceDashboard = false
+        isFetchingDashboard = false
+        wasOffline = false
+        isManuallyLoggedOut = false
+        manualLogoutTimestamp = nil
+        hasFetchedHuiXinFallback = false
+        lastDashboardAttemptTime = nil
+        latestRedirectSessionId = nil
+        latestData = CampusNetworkData()
+        if let usedMB = CampusHistoryManager.shared.currentMonthUsedFlowMB, usedMB > 0 {
+            latestData.usedFlow = String(format: "%.0f M", usedMB)
+        }
+        if let balance = CampusHistoryManager.shared.latestFlowBalanceRMB {
+            latestData.balance = String(format: "%.2f 元", balance)
+        }
+        delegate?.clientDidUpdate(data: latestData)
     }
 
     // 系统网络路径监视器 (Wi-Fi 断开/重连毫秒级感知)
@@ -249,6 +288,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     // MARK: - 快速轻量心跳（每 8 秒探测一次 172.18.3.3）
 
     private func performHeartbeatCheck(forceDashboard: Bool = false) {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = accountGeneration
         if forceDashboard {
             pendingForceDashboard = true
         }
@@ -257,6 +298,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         PortalAuthService.shared.checkStatus { [weak self] portalStatus in
             guard let self = self else { return }
+            guard self.isCurrentPortalAccount(username, generation: generation) else { return }
             self.isHeartbeating = false
             let shouldForceDashboard = forceDashboard || self.pendingForceDashboard
             self.pendingForceDashboard = false
@@ -274,9 +316,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 // 若开启了自动登录、设置了密码且非用户手动注销，立即触发无感重连！
                 if !self.isManuallyLoggedOut && SettingsManager.shared.autoLoginPortal && !SettingsManager.shared.portalPassword.isEmpty {
                     PortalAuthService.shared.login { success, msg in
+                        guard self.isCurrentPortalAccount(username, generation: generation) else { return }
                         if success {
                             // 重新检测状态并通知
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                guard self.isCurrentPortalAccount(username, generation: generation) else { return }
                                 self.performHeartbeatCheck(forceDashboard: true)
                             }
                         }
@@ -340,7 +384,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 if shouldForceDashboard || !self.hasFetchedHuiXinFallback {
                     ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
                         DispatchQueue.main.async {
-                            self?.applyHuiXinFallback(usedFlow: flow, balance: balance)
+                            guard let self = self,
+                                  self.isCurrentPortalAccount(username, generation: generation) else { return }
+                            self.applyHuiXinFallback(usedFlow: flow, balance: balance, expectedAccountGeneration: generation)
                         }
                     }
                 }
@@ -349,7 +395,13 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     /// 当处于校外/热点或网关暂不可达时，利用慧新易校接口返回的校园网已用流量与余额更新 UI 及历史统计
-    public func applyHuiXinFallback(usedFlow: String?, balance: String?) {
+    public func applyHuiXinFallback(
+        usedFlow: String?,
+        balance: String?,
+        expectedAccountGeneration: Int? = nil
+    ) {
+        let generation = expectedAccountGeneration ?? accountGeneration
+        guard generation == accountGeneration else { return }
         guard usedFlow != nil || balance != nil else { return }
         var updated = self.latestData
         var gotValid = false
@@ -383,6 +435,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         guard !isFetchingDashboard else { return }
         lastDashboardAttemptTime = Date()
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = accountGeneration
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             silentLoginSelfServiceAndFetch()
             return
@@ -399,10 +452,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
-            guard self.isCurrentPortalAccount(username) else {
-                self.isFetchingDashboard = false
-                return
-            }
+            guard self.isCurrentPortalAccount(username, generation: generation) else { return }
             self.isFetchingDashboard = false
 
             if let error = error {
@@ -427,7 +477,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 return
             }
 
-            if !self.applyParsedDashboardHTML(html) {
+            if !self.applyParsedDashboardHTML(html, expectedAccountGeneration: generation) {
                 SettingsManager.shared.sessionCookie = nil
                 self.silentLoginSelfServiceAndFetch()
             }
@@ -436,7 +486,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     @discardableResult
-    public func applyParsedDashboardHTML(_ html: String) -> Bool {
+    public func applyParsedDashboardHTML(_ html: String, expectedAccountGeneration: Int? = nil) -> Bool {
+        let generation = expectedAccountGeneration ?? accountGeneration
+        guard generation == accountGeneration else { return false }
         guard let parsed = self.parseDashboardHTML(html) else { return false }
         var result = self.latestData
         result.availableFlow = parsed.availableFlow
@@ -470,6 +522,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     /// 获取当前自服务平台在线设备列表 (dashboard/getOnlineList)
     public func fetchOnlineDevices(completion: (() -> Void)? = nil) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = accountGeneration
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             completion?()
             return
@@ -487,7 +540,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 completion?()
                 return
             }
-            guard self.isCurrentPortalAccount(username) else {
+            guard self.isCurrentPortalAccount(username, generation: generation) else {
                 DispatchQueue.main.async { completion?() }
                 return
             }
@@ -529,7 +582,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             DispatchQueue.main.async {
-                guard self.isCurrentPortalAccount(username) else {
+                guard self.isCurrentPortalAccount(username, generation: generation) else {
                     completion?()
                     return
                 }
@@ -554,6 +607,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     /// 强制注销指定在线设备 (dashboard/tooffline?sessionid=xxx)
     public func kickOnlineDevice(sessionId: String, completion: @escaping (Bool, String) -> Void) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = accountGeneration
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
             completion(false, "自服务会话未就绪，请稍后重试")
             return
@@ -569,7 +623,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         session.dataTask(with: req) { [weak self] data, _, error in
             guard let self = self else { return }
-            guard self.isCurrentPortalAccount(username) else {
+            guard self.isCurrentPortalAccount(username, generation: generation) else {
                 DispatchQueue.main.async { completion(false, "账号已切换，本次操作已取消") }
                 return
             }
@@ -587,7 +641,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             }
 
             DispatchQueue.main.async {
-                guard self.isCurrentPortalAccount(username) else {
+                guard self.isCurrentPortalAccount(username, generation: generation) else {
                     completion(false, "账号已切换，本次操作已取消")
                     return
                 }
@@ -610,6 +664,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     public func silentLoginSelfServiceAndFetch() {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let password = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = accountGeneration
         guard !username.isEmpty, !password.isEmpty, !isFetchingDashboard else { return }
 
         isFetchingDashboard = true
@@ -620,12 +675,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         step1Req.cachePolicy = .reloadIgnoringLocalCacheData
         step1Req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 
-        session.dataTask(with: step1Req) { [weak self] data, response, error in
+        let step1Task = session.dataTask(with: step1Req) { [weak self] data, response, error in
             guard let self = self else { return }
-            guard self.isCurrentPortalAccount(username) else {
-                self.isFetchingDashboard = false
-                return
-            }
+            guard self.isCurrentPortalAccount(username, generation: generation) else { return }
             guard error == nil, let data = data,
                   let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
                 self.isFetchingDashboard = false
@@ -665,12 +717,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             step2Req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             step2Req.setValue(loginPageURL.absoluteString, forHTTPHeaderField: "Referer")
 
-            self.session.dataTask(with: step2Req) { [weak self] _, _, _ in
+            let step2Task = self.session.dataTask(with: step2Req) { [weak self] _, _, _ in
                 guard let self = self else { return }
-                guard self.isCurrentPortalAccount(username) else {
-                    self.isFetchingDashboard = false
-                    return
-                }
+                guard self.isCurrentPortalAccount(username, generation: generation) else { return }
 
                 // 4. 计算 MD5 密码并提交 POST /Self/login/verify
                 let md5Password = Insecure.MD5.hash(data: Data(password.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -688,12 +737,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 step3Req.httpBody = bodyStr.data(using: .utf8)
 
                 self.latestRedirectSessionId = nil
-                self.session.dataTask(with: step3Req) { [weak self] verifyData, verifyResp, _ in
+                let step3Task = self.session.dataTask(with: step3Req) { [weak self] verifyData, verifyResp, _ in
                     guard let self = self else { return }
-                    guard self.isCurrentPortalAccount(username) else {
-                        self.isFetchingDashboard = false
-                        return
-                    }
+                    guard self.isCurrentPortalAccount(username, generation: generation) else { return }
                     self.isFetchingDashboard = false
 
                     var finalSid = self.latestRedirectSessionId ?? sid
@@ -707,11 +753,17 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                        let dashHTML = String(data: verifyData, encoding: .utf8) ?? String(data: verifyData, encoding: .ascii),
                        dashHTML.contains("可用流量") || dashHTML.contains("已用流量") {
                         SettingsManager.shared.sessionCookie = finalSid
-                        self.applyParsedDashboardHTML(dashHTML)
+                        self.applyParsedDashboardHTML(dashHTML, expectedAccountGeneration: generation)
                     }
-                }.resume()
-            }.resume()
-        }.resume()
+                }
+                self.tagAccountScopedTask(step3Task, generation: generation)
+                step3Task.resume()
+            }
+            self.tagAccountScopedTask(step2Task, generation: generation)
+            step2Task.resume()
+        }
+        tagAccountScopedTask(step1Task, generation: generation)
+        step1Task.resume()
     }
 
     public func parseDashboardHTML(_ html: String) -> CampusNetworkData? {
@@ -829,6 +881,10 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard isTaskForCurrentAccount(task) else {
+            completionHandler(nil)
+            return
+        }
         if let location = response.value(forHTTPHeaderField: "Location"), location.contains("login") {
             completionHandler(nil)
         } else {
