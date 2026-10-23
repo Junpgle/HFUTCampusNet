@@ -35,8 +35,7 @@ public sealed class CourseScheduleService
         var handler = new HttpClientHandler
         {
             UseCookies = false,
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
 
@@ -347,8 +346,7 @@ public sealed class CourseScheduleService
                 CookieContainer = cookieContainer,
                 UseCookies = true,
                 AllowAutoRedirect = false, // 手动处理跨协议 (https -> http) 302 重定向
-                AutomaticDecompression = DecompressionMethods.All,
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                AutomaticDecompression = DecompressionMethods.All
             };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
             client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
@@ -786,8 +784,7 @@ public sealed class AcademicService
         var handler = new HttpClientHandler
         {
             UseCookies = false,
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) };
 

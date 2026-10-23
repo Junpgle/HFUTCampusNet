@@ -90,8 +90,7 @@ public sealed class EmptyClassroomService
         var handler = new HttpClientHandler
         {
             UseCookies = false,
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(35) };
 
