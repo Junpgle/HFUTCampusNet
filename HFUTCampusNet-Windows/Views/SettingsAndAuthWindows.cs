@@ -1624,7 +1624,9 @@ public class LoginWebWindow : Window
     private readonly TextBlock _statusText;
     private readonly Border _topBar;
     private readonly List<Button> _themeButtons = new();
+    private readonly Dictionary<ulong, (Guid SessionId, long AccountGeneration)> _navigationSessions = new();
     private long _accountSessionGenerationAtStart;
+    private Guid _loginWindowSessionId;
 
     public LoginWebWindow()
     {
@@ -1749,6 +1751,7 @@ public class LoginWebWindow : Window
                     : CoreWebView2ServerCertificateErrorAction.Default;
             };
 
+            _webView.CoreWebView2.NavigationStarting += OnNavigationStarting;
             _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
         }
         catch (Exception ex)
@@ -1759,14 +1762,19 @@ public class LoginWebWindow : Window
 
     public async void ShowWindow()
     {
-        _accountSessionGenerationAtStart = AccountSessionManager.Generation;
+        var loginWindowSessionId = Guid.NewGuid();
+        var accountGeneration = AccountSessionManager.Generation;
+        _loginWindowSessionId = loginWindowSessionId;
+        _accountSessionGenerationAtStart = accountGeneration;
+        _navigationSessions.Clear();
+        try { _webView.CoreWebView2?.Stop(); } catch { }
         if (WindowState == WindowState.Minimized)
             WindowState = WindowState.Normal;
         Show();
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
-        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         _statusText.Text = "正在连接校园网自服务系统，若已保存账号密码将自动填充...";
         _webView.CoreWebView2.Navigate("https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
     }
@@ -1774,9 +1782,22 @@ public class LoginWebWindow : Window
     public void ShowLoginWindow() => ShowWindow();
     public static void ShowLogin() => Shared.ShowWindow();
 
+    private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        var sessionId = _loginWindowSessionId;
+        var accountGeneration = _accountSessionGenerationAtStart;
+        if (!IsLoginWindowSessionCurrent(sessionId, accountGeneration))
+        {
+            e.Cancel = true;
+            return;
+        }
+        _navigationSessions[e.NavigationId] = (sessionId, accountGeneration);
+    }
+
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+        if (!_navigationSessions.Remove(e.NavigationId, out var navigationSession) ||
+            !IsLoginWindowSessionCurrent(navigationSession.SessionId, navigationSession.AccountGeneration)) return;
         if (!e.IsSuccess) return;
 
         string currentUrl = _webView.Source?.ToString() ?? "";
@@ -1792,7 +1813,7 @@ public class LoginWebWindow : Window
         {
             string username = string.Empty;
             string password = string.Empty;
-            if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+            if (!AccountSessionManager.TryRunForGeneration(navigationSession.AccountGeneration, () =>
             {
                 username = SettingsManager.Shared.PortalUsername;
                 password = !string.IsNullOrWhiteSpace(SettingsManager.Shared.PortalPassword)
@@ -1841,24 +1862,27 @@ public class LoginWebWindow : Window
                         }}, 200);
                     }})();";
                 await _webView.ExecuteScriptAsync(script);
+                if (!IsLoginWindowSessionCurrent(navigationSession.SessionId, navigationSession.AccountGeneration)) return;
             }
             return; // 还在登录页，不要误触发提取！
         }
 
         // 离开登录页后，延迟短暂时间等待仪表盘 DOM 渲染完成后自动提取
         await Task.Delay(500);
-        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
-        await ExtractDashboardData(manual: false);
+        if (!IsLoginWindowSessionCurrent(navigationSession.SessionId, navigationSession.AccountGeneration)) return;
+        await ExtractDashboardData(false, navigationSession.SessionId, navigationSession.AccountGeneration);
     }
 
-    private async Task ExtractDashboardData(bool manual = false)
+    private Task ExtractDashboardData(bool manual = false) =>
+        ExtractDashboardData(manual, _loginWindowSessionId, _accountSessionGenerationAtStart);
+
+    private async Task ExtractDashboardData(bool manual, Guid loginWindowSessionId, long accountGeneration)
     {
-        long accountGeneration = _accountSessionGenerationAtStart;
-        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
 
         var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://xywzz.hfut.edu.cn:8443");
-        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         var jsession = cookies.FirstOrDefault(c => c.Name.Equals("JSESSIONID", StringComparison.OrdinalIgnoreCase));
         if (jsession != null && !string.IsNullOrWhiteSpace(jsession.Value))
         {
@@ -1925,7 +1949,7 @@ public class LoginWebWindow : Window
                     return JSON.stringify(res);
                 })();";
             var rawDom = await _webView.ExecuteScriptAsync(domScript);
-            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
             if (!string.IsNullOrWhiteSpace(rawDom) && rawDom != "null")
             {
                 string jsonDom = rawDom;
@@ -1943,16 +1967,20 @@ public class LoginWebWindow : Window
                 {
                     _statusText.Text = "✅ 成功提取自服务流量与余额！正在自动返回...";
                     await Task.Delay(1200);
-                    AppEvents.InvokeOnUI(Hide);
+                    AppEvents.InvokeOnUI(() =>
+                    {
+                        if (IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) Hide();
+                    });
                     return;
                 }
             }
         }
         catch { }
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
 
         // 2. 备用 HTML 正则提取
         string rawHtml = await _webView.ExecuteScriptAsync("document.documentElement.outerHTML");
-        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         if (!string.IsNullOrWhiteSpace(rawHtml) && rawHtml != "null")
         {
             string fullHtml = "";
@@ -1969,16 +1997,23 @@ public class LoginWebWindow : Window
             {
                 _statusText.Text = "✅ 成功提取自服务流量与在线设备！正在自动返回...";
                 await Task.Delay(1200);
-                AppEvents.InvokeOnUI(Hide);
+                AppEvents.InvokeOnUI(() =>
+                {
+                    if (IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) Hide();
+                });
                 return;
             }
         }
 
-        if (manual)
+        if (manual && IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration))
         {
             _statusText.Text = "⚠️ 未在当前页面识别到有效流量数据，请在登录后进入仪表盘重试";
         }
     }
+
+    private bool IsLoginWindowSessionCurrent(Guid loginWindowSessionId, long accountGeneration) =>
+        _loginWindowSessionId == loginWindowSessionId &&
+        AccountSessionManager.IsGenerationCurrent(accountGeneration);
 
     private static string EscapeJs(string s) => s.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "");
 }
