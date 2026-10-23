@@ -118,6 +118,7 @@ public class CampusHistoryManager {
 
     private var store: CampusHistoryStore = CampusHistoryStore()
     private let queue = DispatchQueue(label: "cn.edu.hfut.history.queue", qos: .utility)
+    private var historyBackupRequired = false
 
     private let storeURL: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -131,10 +132,16 @@ public class CampusHistoryManager {
     }
 
     private func loadStore() {
-        let loaded: CampusHistoryStore? = {
-            guard let data = try? Data(contentsOf: storeURL) else { return nil }
-            return try? JSONDecoder().decode(CampusHistoryStore.self, from: data)
-        }()
+        var loaded: CampusHistoryStore?
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            do {
+                let data = try Data(contentsOf: storeURL)
+                loaded = try JSONDecoder().decode(CampusHistoryStore.self, from: data)
+            } catch {
+                print("历史记录加载失败: \(error.localizedDescription)")
+                historyBackupRequired = !backupUnreadableHistory()
+            }
+        }
         if let loaded {
             self.store = loaded
         }
@@ -338,8 +345,24 @@ public class CampusHistoryManager {
     }
 
     private func saveStore() {
+        if historyBackupRequired {
+            guard backupUnreadableHistory() else { return }
+            historyBackupRequired = false
+        }
         if let data = try? JSONEncoder().encode(store) {
             try? data.write(to: storeURL, options: .atomic)
+        }
+    }
+
+    private func backupUnreadableHistory() -> Bool {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return true }
+        let backupURL = storeURL.appendingPathExtension("load-failure-\(UUID().uuidString).bak")
+        do {
+            try FileManager.default.copyItem(at: storeURL, to: backupURL)
+            return true
+        } catch {
+            print("损坏的历史记录备份失败: \(error.localizedDescription)")
+            return false
         }
     }
 
