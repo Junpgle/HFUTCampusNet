@@ -833,7 +833,7 @@ public sealed class HistoryStatsWindow : Window
 
     private static void OnOpenUnifiedLogin()
     {
-        UnifiedLoginWebWindow.Shared.ShowLoginWindow();
+        UnifiedLoginWebWindow.Shared.ShowWindow();
     }
 
     private void OnOpenSettings()
