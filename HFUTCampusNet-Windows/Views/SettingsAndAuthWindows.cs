@@ -1698,7 +1698,13 @@ public class LoginWebWindow : Window
             // 忽略校园网自签名证书
             _webView.CoreWebView2.ServerCertificateErrorDetected += (_, args) =>
             {
-                args.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
+                bool isSelfServiceRequest = Uri.TryCreate(args.RequestUri, UriKind.Absolute, out var requestUri) &&
+                    requestUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+                    requestUri.Host.Equals("xywzz.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+                    requestUri.Port == 8443;
+                args.Action = isSelfServiceRequest
+                    ? CoreWebView2ServerCertificateErrorAction.AlwaysAllow
+                    : CoreWebView2ServerCertificateErrorAction.Default;
             };
 
             _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
