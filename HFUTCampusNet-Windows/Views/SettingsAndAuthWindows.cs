@@ -1035,7 +1035,9 @@ public class UnifiedLoginWebWindow : Window
     private readonly TextBlock[] _stepStatusLabels = new TextBlock[4];
     private readonly StepStatus[] _stepStatuses = new StepStatus[4];
     private readonly Button[] _themeButtons = new Button[4];
+    private readonly Dictionary<ulong, (Guid SessionId, long AccountGeneration)> _navigationSessions = new();
     private long _accountSessionGenerationAtStart;
+    private Guid _loginWindowSessionId;
     private Border _topBar = null!;
     private Border _bottomBar = null!;
     private readonly string[] _stepNames =
@@ -1309,6 +1311,10 @@ public class UnifiedLoginWebWindow : Window
 
     public async void ShowWindow()
     {
+        var loginWindowSessionId = Guid.NewGuid();
+        _loginWindowSessionId = loginWindowSessionId;
+        _navigationSessions.Clear();
+        try { _webView.CoreWebView2?.Stop(); } catch { }
         _hasInterceptedAuth = false;
         _accountSessionGenerationAtStart = AccountSessionManager.Generation;
         _progressBar.Visibility = Visibility.Visible;
@@ -1323,12 +1329,21 @@ public class UnifiedLoginWebWindow : Window
         Activate();
 
         await _webView.EnsureCoreWebView2Async();
-        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+        if (_loginWindowSessionId != loginWindowSessionId ||
+            !AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _webView.CoreWebView2.Navigate("https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Fcas.hfut.edu.cn%2Fcas%2Flogin");
     }
 
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
+        var sessionId = _loginWindowSessionId;
+        var accountGeneration = _accountSessionGenerationAtStart;
+        if (!IsLoginWindowSessionCurrent(sessionId, accountGeneration))
+        {
+            e.Cancel = true;
+            return;
+        }
+        _navigationSessions[e.NavigationId] = (sessionId, accountGeneration);
         _statusText.Text = $"正在跳转: {e.Uri}";
         _statusDetailText.Text = "正在连接统一身份认证服务...";
         _progressBar.Visibility = Visibility.Visible;
@@ -1337,7 +1352,8 @@ public class UnifiedLoginWebWindow : Window
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
-        if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+        if (!_navigationSessions.Remove(e.NavigationId, out var navigationSession) ||
+            !IsLoginWindowSessionCurrent(navigationSession.SessionId, navigationSession.AccountGeneration)) return;
         _progressBar.Visibility = Visibility.Collapsed;
         if (!e.IsSuccess)
         {
@@ -1409,37 +1425,43 @@ public class UnifiedLoginWebWindow : Window
                         }}, 200);
                     }})();";
                 await _webView.ExecuteScriptAsync(script);
+                if (!IsLoginWindowSessionCurrent(navigationSession.SessionId, navigationSession.AccountGeneration)) return;
             }
         }
 
         // 检查 cookies (CAS TGC 与 SESSION)
-        await CheckCookiesAndCompleteAsync(force: false);
+        await CheckCookiesAndCompleteAsync(
+            false,
+            navigationSession.SessionId,
+            navigationSession.AccountGeneration);
     }
 
-    public async Task CheckCookiesAndCompleteAsync(bool force = false)
+    public Task CheckCookiesAndCompleteAsync(bool force = false) =>
+        CheckCookiesAndCompleteAsync(force, _loginWindowSessionId, _accountSessionGenerationAtStart);
+
+    private async Task CheckCookiesAndCompleteAsync(bool force, Guid loginWindowSessionId, long accountGeneration)
     {
         if (_hasInterceptedAuth && !force) return;
-        var accountGeneration = _accountSessionGenerationAtStart;
-        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
 
         try
         {
             var cookieList = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn");
-            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
             var tgcCookie = cookieList.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             
             // 兜底查根域名
             if (tgcCookie == null)
             {
                 var allCasCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://cas.hfut.edu.cn/cas/login");
-                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                 tgcCookie = allCasCookies.FirstOrDefault(c => c.Name.Equals("CASTGC", StringComparison.OrdinalIgnoreCase));
             }
 
             // 同时检查教务 Cookie
             var jxCookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("http://jxglstu.hfut.edu.cn");
-            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
             var sessionCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SESSION", StringComparison.OrdinalIgnoreCase));
             var srvidCookie = jxCookies.FirstOrDefault(c => c.Name.Equals("SRVID", StringComparison.OrdinalIgnoreCase));
             var sessionHeader = sessionCookie != null && !string.IsNullOrWhiteSpace(sessionCookie.Value)
@@ -1478,20 +1500,21 @@ public class UnifiedLoginWebWindow : Window
                         await ElectricityService.Shared.ObtainHuiXinTokenAsync(
                             tryPersistToken: null,
                             expectedAccountGeneration: accountGeneration);
-                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                         ElectricityService.Shared.FetchData();
                         CampusCardService.Shared.FetchData();
                         await CourseScheduleService.Shared.ExchangeCasTicketForEamsSessionAsync(tgcValue, accountGeneration);
-                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                         AppEvents.InvokeOnUI(() =>
                         {
+                            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                             UpdateStep(1, StepStatus.InProgress);
                             UpdateStep(2, StepStatus.InProgress);
                         });
                         await EmptyClassroomService.Shared.EnsureValidTokenAsync(
                             forceRelogin: true,
                             expectedAccountGeneration: accountGeneration);
-                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                         CourseScheduleService.Shared.SyncSchedule(expectedAccountGeneration: accountGeneration);
                         AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
                         EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
@@ -1504,7 +1527,7 @@ public class UnifiedLoginWebWindow : Window
 
                     AppEvents.InvokeOnUI(() =>
                     {
-                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
                         _statusText.Text = syncStartError == null
                             ? "🎉 统一身份认证成功，校园服务刷新已启动。"
                             : "统一身份认证成功，但部分服务刷新未能启动。";
@@ -1518,7 +1541,10 @@ public class UnifiedLoginWebWindow : Window
                         TrayMenuController.Shared.ShowNotification(
                             syncStartError == null ? "统一身份认证成功" : "统一身份认证成功，服务刷新受阻",
                             syncStartError == null ? "课表与校园服务数据刷新已启动。" : syncStartError);
-                        Task.Delay(1200).ContinueWith(_ => AppEvents.InvokeOnUI(Hide));
+                        Task.Delay(1200).ContinueWith(_ => AppEvents.InvokeOnUI(() =>
+                        {
+                            if (IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) Hide();
+                        }));
                     });
                 });
             }
@@ -1532,6 +1558,7 @@ public class UnifiedLoginWebWindow : Window
         }
         catch (Exception ex)
         {
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
             if (force)
             {
                 _statusText.Text = $"检测凭证异常: {ex.Message}";
@@ -1541,6 +1568,10 @@ public class UnifiedLoginWebWindow : Window
             }
         }
     }
+
+    private bool IsLoginWindowSessionCurrent(Guid loginWindowSessionId, long accountGeneration) =>
+        _loginWindowSessionId == loginWindowSessionId &&
+        AccountSessionManager.IsGenerationCurrent(accountGeneration);
 
     private enum StepStatus
     {
