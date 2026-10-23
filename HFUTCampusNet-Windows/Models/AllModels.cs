@@ -765,6 +765,7 @@ public sealed class GradeItem
     public double Credits { get; set; }
     public double? Gpa { get; set; }
     public string ScoreText { get; set; } = string.Empty;
+    public bool? PassedOverride { get; set; }
     public string Score => ScoreText;
     public string Gp => Gpa.HasValue ? $"{Gpa.Value:F1}" : "--";
 
@@ -787,7 +788,8 @@ public sealed class GradeItem
         }
     }
 
-    public bool Passed => ScoreText != "不及格" && ScoreText != "F" && ScoreText != "NP" && (NumericScore == null || NumericScore.Value >= 60);
+    public bool Passed => PassedOverride ??
+        (ScoreText != "不及格" && ScoreText != "F" && ScoreText != "NP" && (NumericScore == null || NumericScore.Value >= 60));
 
     public double EffectiveNumericScore
     {

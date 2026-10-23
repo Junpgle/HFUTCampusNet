@@ -1022,7 +1022,10 @@ public sealed class AcademicService
                         double credits = item.TryGetProperty("credits", out var cd) && cd.ValueKind == JsonValueKind.Number ? cd.GetDouble() : 0.0;
                         double? gp = item.TryGetProperty("gp", out var gpProp) && gpProp.ValueKind == JsonValueKind.Number ? gpProp.GetDouble() : null;
                         var finalGrade = item.TryGetProperty("finalGrade", out var fg) ? fg.GetString() ?? "--" : "--";
-                        bool passed = !item.TryGetProperty("passed", out var ps) || ps.ValueKind != JsonValueKind.False;
+                        bool? passed = item.TryGetProperty("passed", out var ps) &&
+                            ps.ValueKind is JsonValueKind.True or JsonValueKind.False
+                                ? ps.GetBoolean()
+                                : null;
 
                         var termName = "未知学期";
                         int? semId = null;
@@ -1043,6 +1046,7 @@ public sealed class AcademicService
                             LessonCode = lCode,
                             Credits = credits,
                             Gpa = gp,
+                            PassedOverride = passed,
                             ScoreText = finalGrade
                         });
                     }
