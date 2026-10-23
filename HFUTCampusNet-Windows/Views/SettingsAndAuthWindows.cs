@@ -2176,8 +2176,6 @@ public class CourseLoginWebWindow : Window
                 {
                     return;
                 }
-
-                CommitPendingCasCredentialsAfterAuthentication();
             }
             else
             {
@@ -2187,6 +2185,7 @@ public class CourseLoginWebWindow : Window
             bool success = root.TryGetProperty("success", out var succElem) && succElem.GetBoolean();
             if (success)
             {
+                CommitPendingCasCredentialsAfterAuthentication();
                 string stdId = root.TryGetProperty("stdId", out var sElem) ? sElem.GetString() ?? "" : "";
                 string semId = root.TryGetProperty("semId", out var smElem) ? smElem.GetString() ?? "" : "";
                 string bizId = root.TryGetProperty("bizId", out var bElem) ? bElem.GetString() ?? "" : "";
