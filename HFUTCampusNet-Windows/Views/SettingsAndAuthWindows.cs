@@ -1735,7 +1735,12 @@ public class LoginWebWindow : Window
         _statusText.Text = $"当前页面: {currentUrl}";
 
         // 强力轮询自动填充账号与密码（持续尝试 20 次，间隔 200ms）并自动提交登录
-        if (currentUrl.Contains("/Self/login") || currentUrl.Contains("login"))
+        if (Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri) &&
+            currentUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.Host.Equals("xywzz.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.Port == 8443 &&
+            (currentUri.AbsolutePath.Equals("/Self/login", StringComparison.OrdinalIgnoreCase) ||
+             currentUri.AbsolutePath.Equals("/Self/login/", StringComparison.OrdinalIgnoreCase)))
         {
             string username = string.Empty;
             string password = string.Empty;
