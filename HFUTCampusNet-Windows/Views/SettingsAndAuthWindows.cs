@@ -359,6 +359,9 @@ public class SettingsWindow : Window
             {
                 ElectricityService.Shared.CancelPendingRequests();
                 EmptyClassroomService.Shared.CancelPendingAuthentication();
+                UnifiedLoginWebWindow.ClearAuthCookiesForAccountSwitch();
+                LoginWebWindow.ClearAuthCookiesForAccountSwitch();
+                CourseLoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 CourseScheduleService.Shared.ClearSchedule(clearCourseCredentials: true);
                 SettingsManager.Shared.SessionCookie = "";
                 SettingsManager.Shared.HuixinAuthToken = "";
