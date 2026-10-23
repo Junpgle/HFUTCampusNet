@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 /// 每日校园网流量历史记录
 public struct DailyFlowRecord: Codable, Identifiable {
@@ -85,6 +86,8 @@ public struct DailyElectricityRecord: Codable, Identifiable {
 
 /// 历史统计总存储模型
 public struct CampusHistoryStore: Codable {
+    public var flowHistoryPartitionVersion: Int? = nil
+    public var flowRecordsByAccount: [String: [DailyFlowRecord]]? = nil
     public var flowRecords: [DailyFlowRecord] = []
     public var electricityRecords: [DailyElectricityRecord] = []
     public var electricityDormKey: String? = nil
@@ -115,10 +118,13 @@ public struct CampusHistoryStore: Codable {
 /// 校园网与电费历史统计管理器
 public class CampusHistoryManager {
     public static let shared = CampusHistoryManager()
+    private static let currentFlowHistoryPartitionVersion = 1
 
     private var store: CampusHistoryStore = CampusHistoryStore()
     private let queue = DispatchQueue(label: "cn.edu.hfut.history.queue", qos: .utility)
     private var historyBackupRequired = false
+    private var flowAccountPartitionBackupRequired = false
+    private var activeFlowAccountKey = ""
 
     private let storeURL: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -128,6 +134,7 @@ public class CampusHistoryManager {
     }()
 
     private init() {
+        activeFlowAccountKey = Self.flowAccountKey(for: SettingsManager.shared.portalUsername)
         loadStore()
     }
 
@@ -146,6 +153,21 @@ public class CampusHistoryManager {
             self.store = loaded
         }
 
+        let hasFlowHistoryPartitions = (store.flowHistoryPartitionVersion ?? 0) >= Self.currentFlowHistoryPartitionVersion
+            && store.flowRecordsByAccount != nil
+        let needsFlowPartitionMigration = loaded != nil && !hasFlowHistoryPartitions
+        if hasFlowHistoryPartitions {
+            var partitions = store.flowRecordsByAccount ?? [:]
+            store.flowRecords = partitions.removeValue(forKey: activeFlowAccountKey) ?? []
+            store.flowRecordsByAccount = partitions
+        } else if needsFlowPartitionMigration {
+            if !backupHistoryBeforeFlowPartitionMigration() {
+                flowAccountPartitionBackupRequired = true
+            }
+            store.flowHistoryPartitionVersion = Self.currentFlowHistoryPartitionVersion
+            store.flowRecordsByAccount = [:]
+        }
+
         let continuityBeforeSelection = reconcileContinuity()
         let currentDormKey = Self.electricityDormKey(
             campus: SettingsManager.shared.dormCampus,
@@ -156,8 +178,50 @@ public class CampusHistoryManager {
         let selectedCurrentHistory = store.activateElectricityHistory(for: currentDormKey)
         let continuityAfterSelection = selectedCurrentHistory ? reconcileContinuity() : false
 
-        if loaded != nil && (continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
+        if loaded != nil && (needsFlowPartitionMigration || continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
             saveStore()
+        }
+    }
+
+    private static func flowAccountKey(for username: String) -> String {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let identity = normalizedUsername.isEmpty ? "UNCONFIGURED" : normalizedUsername
+        let digest = SHA256.hash(data: Data("portal-username:\(identity)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func backupHistoryBeforeFlowPartitionMigration() -> Bool {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return true }
+        let backupURL = storeURL.appendingPathExtension("pre-flow-account-partition-v1.bak")
+        guard !FileManager.default.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try FileManager.default.copyItem(at: storeURL, to: backupURL)
+            return true
+        } catch {
+            print("流量账号历史分区迁移前备份失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 切换校园网流量历史分区；旧版无账号标记的记录在首次加载时归入当前保存账号。
+    public func activateFlowHistory(for username: String) {
+        let targetAccountKey = Self.flowAccountKey(for: username)
+        let didChange = queue.sync {
+            guard activeFlowAccountKey != targetAccountKey else { return false }
+
+            var partitions = store.flowRecordsByAccount ?? [:]
+            partitions[activeFlowAccountKey] = store.flowRecords
+            store.flowRecords = partitions.removeValue(forKey: targetAccountKey) ?? []
+            store.flowRecordsByAccount = partitions
+            activeFlowAccountKey = targetAccountKey
+            saveStore()
+            return true
+        }
+
+        if didChange {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
+            }
         }
     }
 
@@ -349,6 +413,14 @@ public class CampusHistoryManager {
             guard backupUnreadableHistory() else { return }
             historyBackupRequired = false
         }
+        if flowAccountPartitionBackupRequired {
+            guard backupHistoryBeforeFlowPartitionMigration() else { return }
+            flowAccountPartitionBackupRequired = false
+        }
+        var partitions = store.flowRecordsByAccount ?? [:]
+        partitions[activeFlowAccountKey] = store.flowRecords
+        store.flowRecordsByAccount = partitions
+        store.flowHistoryPartitionVersion = Self.currentFlowHistoryPartitionVersion
         if let data = try? JSONEncoder().encode(store) {
             try? data.write(to: storeURL, options: .atomic)
         }

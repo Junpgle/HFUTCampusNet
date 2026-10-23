@@ -952,6 +952,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         let currentUser = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUser != previousUser else { return }
 
+        CampusHistoryManager.shared.activateFlowHistory(for: currentUser)
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil
         SettingsManager.shared.courseSessionCookie = nil
