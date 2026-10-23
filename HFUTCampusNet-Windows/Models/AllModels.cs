@@ -985,8 +985,15 @@ public sealed class SemesterMilestoneInfo
 
     public static SemesterMilestoneInfo Calculate(int? semId = null, CourseScheduleData? schedule = null, DateTime? date = null)
     {
-        var sid = semId ?? int.Parse(schedule?.SemesterId ?? "354");
         var now = (date ?? DateTime.Now).Date;
+        var hasScheduleSemesterId = int.TryParse(
+            schedule?.SemesterId,
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out var scheduleSemesterId) && scheduleSemesterId > 0;
+        var sid = semId ?? (hasScheduleSemesterId
+            ? scheduleSemesterId
+            : CourseCalendarHelper.InferSemesterId(now));
 
         // 合工大校历官方起止日期表 (学期ID -> (开始日期, 结束日期, 总周数))
         var dates = new Dictionary<int, (string Start, string End, int Weeks, string Vacation)>
