@@ -1247,6 +1247,7 @@ public class ClassroomScheduleWindow : Window
     private int _selectedWeek = 1;
     private int _buildingLoadGeneration;
     private int _roomLoadGeneration;
+    private int _classroomScheduleQueryGeneration;
     private List<EmptyClassroomRoomItem> _availableRooms = new();
     private ClassroomSemesterScheduleData? _currentScheduleData;
 
@@ -1448,6 +1449,7 @@ public class ClassroomScheduleWindow : Window
 
     private void PopulateBuildingsForSelectedCampus()
     {
+        InvalidateClassroomScheduleQuery();
         var campus = GetSelectedCampus();
         var generation = ++_buildingLoadGeneration;
 
@@ -1512,6 +1514,7 @@ public class ClassroomScheduleWindow : Window
 
     private void LoadRoomsForSelectedBuilding()
     {
+        InvalidateClassroomScheduleQuery();
         if (_buildingCombo.SelectedItem is not ComboBoxItem bItem || bItem.Tag is not StudyBuildingOption building)
             return;
 
@@ -1592,8 +1595,12 @@ public class ClassroomScheduleWindow : Window
 
     private void QuerySelectedClassroomSchedule()
     {
+        var requestGeneration = InvalidateClassroomScheduleQuery();
         if (_roomCombo.SelectedItem is not ComboBoxItem rItem || rItem.Tag is not EmptyClassroomRoomItem room)
+        {
+            _statusLabel.Text = "请选择教室查询整周排课";
             return;
+        }
 
         int semesterCode = 244;
         if (_semesterCombo.SelectedItem is ComboBoxItem sItem && sItem.Tag is int code)
@@ -1608,6 +1615,7 @@ public class ClassroomScheduleWindow : Window
         {
             AppEvents.InvokeOnUI(() =>
             {
+                if (requestGeneration != _classroomScheduleQueryGeneration) return;
                 _queryBtn.IsEnabled = true;
                 if (data != null)
                 {
@@ -1620,6 +1628,15 @@ public class ClassroomScheduleWindow : Window
                 }
             });
         });
+    }
+
+    private int InvalidateClassroomScheduleQuery()
+    {
+        _classroomScheduleQueryGeneration++;
+        _currentScheduleData = null;
+        _queryBtn.IsEnabled = true;
+        _timetableContainer.Children.Clear();
+        return _classroomScheduleQueryGeneration;
     }
 
     private void SyncWeekComboAndRender()
