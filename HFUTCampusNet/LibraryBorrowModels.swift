@@ -153,6 +153,7 @@ public final class LibraryBorrowManager {
     private let lastSyncKey = "cn.edu.hfut.campusnet.borrow_sync_time_v3"
     private let stateLock = NSLock()
     private var syncGeneration = 0
+    private var accountGeneration = 0
     private static let readerRecordPageSize = 100
     private static let maximumReaderRecordPages = 100
 
@@ -246,6 +247,7 @@ public final class LibraryBorrowManager {
     public func clearCache() {
         stateLock.lock()
         syncGeneration &+= 1
+        accountGeneration &+= 1
         SettingsManager.shared.libraryToken = nil
         SettingsManager.shared.libraryBorrowCount = 0
         books.removeAll()
@@ -305,6 +307,7 @@ public final class LibraryBorrowManager {
         // all callers waiting on the previous request as well as this one.
         syncGeneration &+= 1
         let generation = syncGeneration
+        let requestAccountGeneration = accountGeneration
         stateLock.unlock()
 
         let finishSync: (Result<[CampusBorrowedBook], Error>) -> Void = { [weak self] result in
@@ -318,7 +321,18 @@ public final class LibraryBorrowManager {
             let completions = self.pendingSyncCompletions
             self.pendingSyncCompletions.removeAll(keepingCapacity: false)
             self.stateLock.unlock()
-            completions.forEach { $0(result) }
+
+            DispatchQueue.main.async {
+                self.stateLock.lock()
+                let isCurrentAccount = self.accountGeneration == requestAccountGeneration
+                self.stateLock.unlock()
+                guard isCurrentAccount else {
+                    let cancellation = Self.cancelledError()
+                    completions.forEach { $0(.failure(cancellation)) }
+                    return
+                }
+                completions.forEach { $0(result) }
+            }
         }
 
         let existingToken = SettingsManager.shared.libraryToken?.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -279,7 +279,17 @@ public final class StudentPortraitEatService {
             self.stateLock.unlock()
 
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .studentPortraitDidUpdate, object: self.latestData)
+                self.stateLock.lock()
+                let isCurrentAccount = self.syncGeneration == generation
+                let latestData = self.latestData
+                self.stateLock.unlock()
+                guard isCurrentAccount else {
+                    let cancellation = Self.error("账号已切换，本次学生画像同步已取消", code: NSURLErrorCancelled)
+                    completions.forEach { $0(.failure(cancellation)) }
+                    return
+                }
+
+                NotificationCenter.default.post(name: .studentPortraitDidUpdate, object: latestData)
                 completions.forEach { $0(result) }
             }
         }
