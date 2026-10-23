@@ -904,6 +904,8 @@ public sealed class CampusNetworkClient
     private readonly HttpClient _client;
     private readonly HttpClient _selfServiceClient;
     private readonly object _accountStateLock = new();
+    private readonly AsyncLocal<long?> _fetchGenerationContext = new();
+    private long _fetchGeneration;
     private int _isFetchingSelfService = 0;
     private int _lastPortalFlowMonthKey;
 
@@ -941,6 +943,7 @@ public sealed class CampusNetworkClient
     {
         lock (_accountStateLock)
         {
+            _fetchGeneration++;
             LatestData = new CampusNetworkData();
             _lastPortalFlowMonthKey = 0;
         }
@@ -957,23 +960,45 @@ public sealed class CampusNetworkClient
         });
     }
 
-    private bool IsCurrentAccount(long accountGeneration) =>
-        AccountSessionManager.IsGenerationCurrent(accountGeneration);
+    private bool IsCurrentAccount(long accountGeneration)
+    {
+        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return false;
+        var expectedFetchGeneration = _fetchGenerationContext.Value;
+        if (!expectedFetchGeneration.HasValue) return true;
+
+        lock (_accountStateLock)
+        {
+            return expectedFetchGeneration.Value == _fetchGeneration;
+        }
+    }
 
     private bool TryUpdateForAccount(long accountGeneration, Action update)
     {
         lock (_accountStateLock)
         {
+            var expectedFetchGeneration = _fetchGenerationContext.Value;
+            if (expectedFetchGeneration.HasValue && expectedFetchGeneration.Value != _fetchGeneration)
+                return false;
             return AccountSessionManager.TryRunForGeneration(accountGeneration, update);
+        }
+    }
+
+    private long BeginFetchRequest()
+    {
+        lock (_accountStateLock)
+        {
+            return ++_fetchGeneration;
         }
     }
 
     public void FetchData()
     {
         var accountGeneration = AccountSessionManager.Generation;
+        var fetchGeneration = BeginFetchRequest();
         var requestMonthKey = DateTime.Now.Year * 100 + DateTime.Now.Month;
         Task.Run(async () =>
         {
+            _fetchGenerationContext.Value = fetchGeneration;
             try
             {
                 var (online, uid, ip, flowMB, fee, timeMin) = await PortalAuthService.Shared.CheckStatusAsync();
