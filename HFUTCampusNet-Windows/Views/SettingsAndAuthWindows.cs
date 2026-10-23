@@ -1029,6 +1029,7 @@ public class UnifiedLoginWebWindow : Window
     }
 
     private readonly WebView2 _webView;
+    private readonly Task<bool> _webViewInitializationTask;
     private readonly TextBlock _statusText;
     private readonly TextBlock _statusDetailText;
     private readonly ProgressBar _progressBar;
@@ -1226,7 +1227,7 @@ public class UnifiedLoginWebWindow : Window
             Hide();
         };
 
-        InitWebView();
+        _webViewInitializationTask = InitWebViewAsync();
         ThemeManager.Shared.ApplyWindowTheme(this);
         ApplyTheme();
         ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(ApplyTheme);
@@ -1277,20 +1278,22 @@ public class UnifiedLoginWebWindow : Window
         }
     }
 
-    public void ShowLoginWindow(string serviceName = "统一身份认证", string? targetUrl = null, Action<bool, string>? callback = null)
+    public async void ShowLoginWindow(string serviceName = "统一身份认证", string? targetUrl = null, Action<bool, string>? callback = null)
     {
         Title = $"{serviceName} - 合工大校园助手";
         _statusText.Text = $"正在加载 {serviceName}...";
         _statusDetailText.Text = "登录信息门户后，应用会自动刷新已授权的校园服务";
         Show();
         Activate();
-        if (!string.IsNullOrEmpty(targetUrl) && _webView.CoreWebView2 != null)
+        if (!await _webViewInitializationTask)
+            return;
+        if (!string.IsNullOrEmpty(targetUrl))
         {
             _webView.CoreWebView2.Navigate(targetUrl);
         }
     }
 
-    private async void InitWebView()
+    private async Task<bool> InitWebViewAsync()
     {
         try
         {
@@ -1300,12 +1303,14 @@ public class UnifiedLoginWebWindow : Window
 
             _webView.CoreWebView2.NavigationStarting += OnNavigationStarting;
             _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+            return true;
         }
         catch (Exception ex)
         {
             _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
             _statusDetailText.Text = "请检查 WebView2 Runtime 是否可用，然后重新加载页面";
             _progressBar.Visibility = Visibility.Collapsed;
+            return false;
         }
     }
 
@@ -1328,15 +1333,9 @@ public class UnifiedLoginWebWindow : Window
         Show();
         Activate();
 
-        try
-        {
-            await _webView.EnsureCoreWebView2Async();
-        }
-        catch (Exception ex)
+        if (!await _webViewInitializationTask)
         {
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, _accountSessionGenerationAtStart)) return;
-            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
-            _statusDetailText.Text = "请检查 WebView2 Runtime 是否可用，然后重新加载页面";
             _progressBar.Visibility = Visibility.Collapsed;
             UpdateStep(0, StepStatus.Failure);
             return;
@@ -1633,6 +1632,7 @@ public class LoginWebWindow : Window
     }
 
     private readonly WebView2 _webView;
+    private readonly Task<bool> _webViewInitializationTask;
     private readonly TextBlock _statusText;
     private readonly Border _topBar;
     private readonly List<Button> _themeButtons = new();
@@ -1721,7 +1721,7 @@ public class LoginWebWindow : Window
             Hide();
         };
 
-        InitWebView();
+        _webViewInitializationTask = InitWebViewAsync();
         ThemeManager.Shared.ApplyWindowTheme(this);
         ApplyTheme();
         ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(ApplyTheme);
@@ -1743,7 +1743,7 @@ public class LoginWebWindow : Window
         }
     }
 
-    private async void InitWebView()
+    private async Task<bool> InitWebViewAsync()
     {
         try
         {
@@ -1765,10 +1765,12 @@ public class LoginWebWindow : Window
 
             _webView.CoreWebView2.NavigationStarting += OnNavigationStarting;
             _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+            return true;
         }
         catch (Exception ex)
         {
             _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
+            return false;
         }
     }
 
@@ -1785,14 +1787,9 @@ public class LoginWebWindow : Window
         Show();
         Activate();
 
-        try
-        {
-            await _webView.EnsureCoreWebView2Async();
-        }
-        catch (Exception ex)
+        if (!await _webViewInitializationTask)
         {
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
-            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
             return;
         }
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
@@ -2059,6 +2056,7 @@ public class CourseLoginWebWindow : Window
     }
 
     private readonly WebView2 _webView;
+    private readonly Task<bool> _webViewInitializationTask;
     private readonly TextBlock _statusText;
     private readonly Border _topBar;
     private readonly List<Button> _themeButtons = new();
@@ -2169,7 +2167,7 @@ public class CourseLoginWebWindow : Window
             Hide();
         };
 
-        InitWebView();
+        _webViewInitializationTask = InitWebViewAsync();
         ThemeManager.Shared.ApplyWindowTheme(this);
         ApplyTheme();
         ThemeManager.Shared.ThemeChanged += () => AppEvents.InvokeOnUI(ApplyTheme);
@@ -2193,7 +2191,7 @@ public class CourseLoginWebWindow : Window
 
     private Guid? _extractingSessionId;
 
-    private async void InitWebView()
+    private async Task<bool> InitWebViewAsync()
     {
         try
         {
@@ -2203,10 +2201,12 @@ public class CourseLoginWebWindow : Window
             _webView.CoreWebView2.NavigationStarting += OnNavigationStarting;
             _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            return true;
         }
         catch (Exception ex)
         {
             _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
+            return false;
         }
     }
 
@@ -2226,14 +2226,9 @@ public class CourseLoginWebWindow : Window
         Show();
         Activate();
 
-        try
-        {
-            await _webView.EnsureCoreWebView2Async();
-        }
-        catch (Exception ex)
+        if (!await _webViewInitializationTask)
         {
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
-            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
             return;
         }
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
