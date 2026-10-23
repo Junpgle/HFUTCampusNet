@@ -105,8 +105,31 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         showLoginWindow()
     }
 
+    private func isSelfServiceURL(_ url: URL?) -> Bool {
+        guard let url,
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "xywzz.hfut.edu.cn",
+              url.port == 8443 else { return false }
+        let path = url.path.lowercased()
+        return path == "/self" || path.hasPrefix("/self/")
+    }
+
+    private func isSelfServiceLoginURL(_ url: URL?) -> Bool {
+        guard isSelfServiceURL(url), let path = url?.path.lowercased() else { return false }
+        return path == "/self/login" || path == "/self/login/"
+    }
+
+    private func isSelfServiceDashboardURL(_ url: URL?) -> Bool {
+        guard isSelfServiceURL(url), let path = url?.path.lowercased() else { return false }
+        return path == "/self/dashboard" || path.hasPrefix("/self/dashboard/")
+    }
+
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "selfServiceCredentialsHandler",
+              message.webView === webView,
+              message.frameInfo.isMainFrame,
+              message.frameInfo.securityOrigin.protocol == "https",
+              message.frameInfo.securityOrigin.host.lowercased() == "xywzz.hfut.edu.cn",
               isCurrentStoredAccount(),
               let dict = message.body as? [String: String] else { return }
 
@@ -200,7 +223,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
         guard isCurrentStoredAccount() else { return }
-        if let urlStr = webView.url?.absoluteString, urlStr.contains("/Self/login") {
+        if isSelfServiceLoginURL(webView.url) {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "'", with: "\\'")
@@ -264,11 +287,9 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url?.absoluteString {
-            if url.contains("dashboard") || url.contains("navlist") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                    self?.checkAndCaptureSession()
-                }
+        if isSelfServiceDashboardURL(navigationAction.request.url) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.checkAndCaptureSession()
             }
         }
         decisionHandler(.allow)
@@ -276,7 +297,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     // 捕获 Cookie 并就地直接提取页面数据！
     private func checkAndCaptureSession() {
-        guard !isCapturingSession else { return }
+        guard isSelfServiceDashboardURL(webView.url), !isCapturingSession else { return }
         let expectedSessionToken = sessionToken
         let expectedUsername = sessionUsername
         guard !expectedUsername.isEmpty,
