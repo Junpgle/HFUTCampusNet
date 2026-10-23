@@ -12,6 +12,9 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
     private let portalURL = URL(string: "http://172.18.3.3/")!
     private let logoutURL = URL(string: "http://172.18.3.3/F.htm")!
+    private let loginStateLock = NSLock()
+    private var loginGeneration: UInt64 = 0
+    private var activeLoginTask: URLSessionDataTask?
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -22,6 +25,48 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
     private override init() {
         super.init()
+    }
+
+    private func beginLoginAttempt() -> UInt64 {
+        loginStateLock.lock()
+        loginGeneration &+= 1
+        let generation = loginGeneration
+        let previousTask = activeLoginTask
+        activeLoginTask = nil
+        loginStateLock.unlock()
+        previousTask?.cancel()
+        return generation
+    }
+
+    public func cancelPendingLogin() {
+        loginStateLock.lock()
+        loginGeneration &+= 1
+        let task = activeLoginTask
+        activeLoginTask = nil
+        loginStateLock.unlock()
+        task?.cancel()
+    }
+
+    private func isCurrentLoginAttempt(_ generation: UInt64) -> Bool {
+        loginStateLock.lock()
+        defer { loginStateLock.unlock() }
+        return loginGeneration == generation
+    }
+
+    private func attachLoginTask(_ task: URLSessionDataTask, generation: UInt64) -> Bool {
+        loginStateLock.lock()
+        defer { loginStateLock.unlock() }
+        guard loginGeneration == generation else { return false }
+        activeLoginTask = task
+        return true
+    }
+
+    private func detachLoginTask(generation: UInt64) {
+        loginStateLock.lock()
+        if loginGeneration == generation {
+            activeLoginTask = nil
+        }
+        loginStateLock.unlock()
     }
 
     /// 高容错多编码解码
@@ -130,6 +175,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
     /// 执行校园网自动登录
     public func login(username: String? = nil, password: String? = nil, completion: @escaping (Bool, String) -> Void) {
+        let generation = beginLoginAttempt()
         CampusNetworkClient.shared.clearManualLogout()
         let user = (username ?? SettingsManager.shared.portalUsername).trimmingCharacters(in: .whitespacesAndNewlines)
         let pass = (password ?? SettingsManager.shared.portalPassword).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -154,6 +200,10 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
 
         // 先自检：如果当前已经在在线状态且学号匹配，直接返回成功！
         self.checkStatus { status in
+            guard self.isCurrentLoginAttempt(generation) else {
+                completion(false, "账号已切换，本次登录已取消")
+                return
+            }
             guard credentialsAreStillCurrent() else {
                 completion(false, "账号或密码已更改，本次登录已取消")
                 return
@@ -169,6 +219,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
                 user: user,
                 pass: pass,
                 validateSavedCredentials: tracksSavedCredentials,
+                generation: generation,
                 completion: completion)
         }
     }
@@ -177,6 +228,7 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         user: String,
         pass: String,
         validateSavedCredentials: Bool,
+        generation: UInt64,
         completion: @escaping (Bool, String) -> Void
     ) {
         let pid = "2"
@@ -210,6 +262,11 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
         request.httpBody = postData
 
         let task = session.dataTask(with: request) { data, response, error in
+            self.detachLoginTask(generation: generation)
+            guard self.isCurrentLoginAttempt(generation) else {
+                completion(false, "账号已切换，本次登录已取消")
+                return
+            }
             if validateSavedCredentials,
                (SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) != user ||
                 SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) != pass) {
@@ -245,7 +302,15 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
             } else {
                 // 延时再次确认当前状态
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    guard self.isCurrentLoginAttempt(generation) else {
+                        completion(false, "账号已切换，本次登录已取消")
+                        return
+                    }
                     self.checkStatus { status in
+                        guard self.isCurrentLoginAttempt(generation) else {
+                            completion(false, "账号已切换，本次登录已取消")
+                            return
+                        }
                         if validateSavedCredentials,
                            (SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) != user ||
                             SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines) != pass) {
@@ -264,11 +329,16 @@ public class PortalAuthService: NSObject, URLSessionDelegate {
                 }
             }
         }
+        guard attachLoginTask(task, generation: generation) else {
+            completion(false, "账号已切换，本次登录已取消")
+            return
+        }
         task.resume()
     }
 
     /// 注销当前校园网连接
     public func logout(completion: @escaping (Bool, String) -> Void) {
+        cancelPendingLogin()
         CampusNetworkClient.shared.markManualLogout()
         var request = URLRequest(url: logoutURL)
         request.httpMethod = "GET"

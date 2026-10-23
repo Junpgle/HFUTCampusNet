@@ -952,6 +952,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         let currentUser = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUser != previousUser else { return }
 
+        PortalAuthService.shared.cancelPendingLogin()
         CampusHistoryManager.shared.activateFlowHistory(for: currentUser)
         CampusNetworkClient.shared.clearAccountScopedData()
         CourseScheduleService.shared.clearSchedule()
