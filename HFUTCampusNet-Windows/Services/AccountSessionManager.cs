@@ -52,6 +52,7 @@ public static class AccountSessionManager
                     settings.CasPassword = string.Empty;
                 }
                 settings.PortalUsername = newUsername;
+                CampusHistoryManager.Shared.ActivateCurrentFlowAccount(newUsername);
                 UnifiedLoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 LoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 if (!preserveCourseWebViewCookies)

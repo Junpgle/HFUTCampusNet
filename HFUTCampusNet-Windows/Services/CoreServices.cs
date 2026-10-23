@@ -208,13 +208,17 @@ public sealed class SettingsManager
 public sealed class CampusHistoryManager
 {
     public static CampusHistoryManager Shared { get; } = new();
+    private const int FlowHistoryPartitionVersion = 1;
 
     private readonly string _historyFile;
     private readonly object _lock = new();
     private Dictionary<string, List<ElectricityDailyRecord>> _archivedElectricityRecords = new(StringComparer.Ordinal);
+    private Dictionary<string, List<FlowDailyRecord>> _archivedFlowRecords = new(StringComparer.Ordinal);
     private string _activeElectricityDormKey = string.Empty;
+    private string _activeFlowAccountKey = string.Empty;
     private bool _historyBackupRequired;
     private bool _electricityPartitionBackupRequired;
+    private bool _flowAccountPartitionBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -452,6 +456,29 @@ public sealed class CampusHistoryManager
         return changed;
     }
 
+    public bool ActivateCurrentFlowAccount(string username)
+    {
+        var targetAccountKey = CreateFlowAccountKey(username);
+        bool changed;
+        lock (_lock)
+        {
+            if (string.Equals(_activeFlowAccountKey, targetAccountKey, StringComparison.Ordinal))
+                return false;
+
+            _archivedFlowRecords[_activeFlowAccountKey] = FlowRecords.ToList();
+            if (_archivedFlowRecords.Remove(targetAccountKey, out var targetRecords))
+                FlowRecords = targetRecords ?? new();
+            else
+                FlowRecords = new();
+
+            _activeFlowAccountKey = targetAccountKey;
+            Save();
+            changed = true;
+        }
+        if (changed) AppEvents.RaiseHistoryStatsUpdated();
+        return changed;
+    }
+
     public void ClearElectricityHistory()
     {
         lock (_lock)
@@ -466,14 +493,22 @@ public sealed class CampusHistoryManager
     {
         if (_historyBackupRequired && !TryBackupUnreadableHistory()) return;
         _historyBackupRequired = false;
+        if (_flowAccountPartitionBackupRequired && !BackupHistoryBeforeFlowAccountPartitionMigration()) return;
+        _flowAccountPartitionBackupRequired = false;
         if (_electricityPartitionBackupRequired && !BackupHistoryBeforeElectricityPartitionMigration()) return;
         _electricityPartitionBackupRequired = false;
 
         var temporaryFile = _historyFile + ".tmp";
         try
         {
+            var flowRecordsByAccount = new Dictionary<string, List<FlowDailyRecord>>(_archivedFlowRecords, StringComparer.Ordinal)
+            {
+                [_activeFlowAccountKey] = FlowRecords
+            };
             var data = new
             {
+                FlowHistoryPartitionVersion,
+                FlowRecordsByAccount = flowRecordsByAccount,
                 ElectricityDormKey = _activeElectricityDormKey,
                 ArchivedElectricityRecords = _archivedElectricityRecords,
                 Flow = FlowRecords,
@@ -497,15 +532,41 @@ public sealed class CampusHistoryManager
     private void Load()
     {
         _activeElectricityDormKey = CreateElectricityDormKey(SettingsManager.Shared);
+        _activeFlowAccountKey = CreateFlowAccountKey(SettingsManager.Shared.PortalUsername);
         try
         {
             if (!File.Exists(_historyFile)) return;
             var json = File.ReadAllText(_historyFile, Encoding.UTF8);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            if (doc.RootElement.TryGetProperty("Flow", out var flowProp))
+            bool needsSave = false;
+            int flowPartitionVersion = root.TryGetProperty("FlowHistoryPartitionVersion", out var flowPartitionVersionProp) &&
+                flowPartitionVersionProp.TryGetInt32(out var parsedPartitionVersion) ? parsedPartitionVersion : 0;
+            if (flowPartitionVersion >= FlowHistoryPartitionVersion && root.TryGetProperty("FlowRecordsByAccount", out var flowPartitionsProp))
             {
-                FlowRecords = JsonSerializer.Deserialize<List<FlowDailyRecord>>(flowProp.GetRawText()) ?? new();
+                var flowPartitions = JsonSerializer.Deserialize<Dictionary<string, List<FlowDailyRecord>>>(flowPartitionsProp.GetRawText());
+                if (flowPartitions != null)
+                {
+                    _archivedFlowRecords = new Dictionary<string, List<FlowDailyRecord>>(flowPartitions, StringComparer.Ordinal);
+                    if (_archivedFlowRecords.Remove(_activeFlowAccountKey, out var accountRecords))
+                        FlowRecords = accountRecords ?? new();
+                    else
+                        FlowRecords = new();
+                }
+                else
+                {
+                    LoadLegacyFlowRecords(root);
+                    if (!BackupHistoryBeforeFlowAccountPartitionMigration())
+                        _flowAccountPartitionBackupRequired = true;
+                    needsSave = true;
+                }
+            }
+            else
+            {
+                LoadLegacyFlowRecords(root);
+                if (!BackupHistoryBeforeFlowAccountPartitionMigration())
+                    _flowAccountPartitionBackupRequired = true;
+                needsSave = true;
             }
             if (doc.RootElement.TryGetProperty("Electricity", out var elecProp))
             {
@@ -526,7 +587,6 @@ public sealed class CampusHistoryManager
             }
 
             var currentDormKey = CreateElectricityDormKey(SettingsManager.Shared);
-            bool needsSave = false;
             bool hasPersistedDormKey = root.TryGetProperty("ElectricityDormKey", out var dormKeyProp) &&
                 dormKeyProp.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(dormKeyProp.GetString());
             if (hasPersistedDormKey)
@@ -585,6 +645,40 @@ public sealed class CampusHistoryManager
         settings.DormRoom ?? string.Empty,
         settings.DormEndNumber ?? "11"
     });
+
+    private static string CreateFlowAccountKey(string? username)
+    {
+        var normalizedUsername = username?.Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(normalizedUsername)) normalizedUsername = "UNCONFIGURED";
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes($"portal-username:{normalizedUsername}"));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private void LoadLegacyFlowRecords(JsonElement root)
+    {
+        if (root.TryGetProperty("Flow", out var flowProp))
+            FlowRecords = JsonSerializer.Deserialize<List<FlowDailyRecord>>(flowProp.GetRawText()) ?? new();
+        else
+            FlowRecords = new();
+    }
+
+    private bool BackupHistoryBeforeFlowAccountPartitionMigration()
+    {
+        if (!File.Exists(_historyFile)) return true;
+        var backupFile = _historyFile + ".pre-flow-account-partition-v1.bak";
+        if (File.Exists(backupFile)) return true;
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Flow account history migration backup failed: {ex.Message}");
+            return false;
+        }
+    }
 
     private bool BackupHistoryBeforeElectricityPartitionMigration()
     {
