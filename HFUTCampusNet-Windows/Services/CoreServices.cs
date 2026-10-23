@@ -208,6 +208,7 @@ public sealed class SettingsManager
 public sealed class CampusHistoryManager
 {
     public static CampusHistoryManager Shared { get; } = new();
+    private const int FlowAccountingVersion = 2;
     private const int FlowHistoryPartitionVersion = 1;
 
     private readonly string _historyFile;
@@ -219,6 +220,7 @@ public sealed class CampusHistoryManager
     private bool _historyBackupRequired;
     private bool _electricityPartitionBackupRequired;
     private bool _flowAccountPartitionBackupRequired;
+    private bool _flowAccountingMigrationBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -389,6 +391,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
+            if (!CompleteFlowAccountingMigrationIfNeeded()) return;
             var today = DateTime.Now.ToString("yyyy-MM-dd");
             var record = FlowRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
@@ -497,6 +500,7 @@ public sealed class CampusHistoryManager
         _flowAccountPartitionBackupRequired = false;
         if (_electricityPartitionBackupRequired && !BackupHistoryBeforeElectricityPartitionMigration()) return;
         _electricityPartitionBackupRequired = false;
+        if (!CompleteFlowAccountingMigrationIfNeeded()) return;
 
         var temporaryFile = _historyFile + ".tmp";
         try
@@ -507,6 +511,7 @@ public sealed class CampusHistoryManager
             };
             var data = new
             {
+                FlowAccountingVersion,
                 FlowHistoryPartitionVersion,
                 FlowRecordsByAccount = flowRecordsByAccount,
                 ElectricityDormKey = _activeElectricityDormKey,
@@ -612,6 +617,14 @@ public sealed class CampusHistoryManager
                 }
             }
 
+            int version = doc.RootElement.TryGetProperty("FlowAccountingVersion", out var versionProp) &&
+                versionProp.TryGetInt32(out var parsedVersion) ? parsedVersion : 0;
+            if (version < FlowAccountingVersion)
+            {
+                _flowAccountingMigrationBackupRequired = true;
+                CompleteFlowAccountingMigrationIfNeeded();
+                needsSave = true;
+            }
             if (needsSave) Save();
         }
         catch (Exception ex)
@@ -697,6 +710,46 @@ public sealed class CampusHistoryManager
         }
     }
 
+    private bool BackupHistoryBeforeFlowMigration()
+    {
+        if (!File.Exists(_historyFile)) return true;
+        var backupFile = _historyFile + ".pre-traffic-scale-v2.bak";
+        if (File.Exists(backupFile)) return true;
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Flow history migration backup failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private bool CompleteFlowAccountingMigrationIfNeeded()
+    {
+        if (!_flowAccountingMigrationBackupRequired) return true;
+        if (!BackupHistoryBeforeFlowMigration()) return false;
+
+        foreach (var record in FlowRecords)
+        {
+            record.StartUsedMB *= 2.0;
+            record.LatestUsedMB *= 2.0;
+        }
+        foreach (var records in _archivedFlowRecords.Values)
+        {
+            foreach (var record in records)
+            {
+                record.StartUsedMB *= 2.0;
+                record.LatestUsedMB *= 2.0;
+            }
+        }
+
+        _flowAccountingMigrationBackupRequired = false;
+        return true;
+    }
+
     private bool TryBackupUnreadableHistory()
     {
         if (!File.Exists(_historyFile)) return true;
@@ -713,7 +766,6 @@ public sealed class CampusHistoryManager
             return false;
         }
     }
-
 }
 
 #endregion
@@ -1099,6 +1151,7 @@ public sealed class CampusNetworkClient
                 if (!IsCurrentAccount(accountGeneration)) return;
                 if (online)
                 {
+                    double actualFlowMB = flowMB * 2.0;
                     if (!TryUpdateForAccount(accountGeneration, () =>
                     {
                         LatestData.IsLoggedIn = true;
@@ -1106,9 +1159,9 @@ public sealed class CampusNetworkClient
                         if (flowMB > 0 && requestMonthKey == currentMonthKey)
                         {
                             var curMB = LatestData.UsedMB ?? 0.0;
-                            if (_lastPortalFlowMonthKey != requestMonthKey || curMB == 0 || flowMB >= curMB)
+                            if (_lastPortalFlowMonthKey != requestMonthKey || curMB == 0 || actualFlowMB >= curMB)
                             {
-                                LatestData.UsedFlow = flowMB >= 1024 ? $"{flowMB / 1024.0:F2} G" : $"{flowMB:F0} M";
+                                LatestData.UsedFlow = actualFlowMB >= 1024 ? $"{actualFlowMB / 1024.0:F2} G" : $"{actualFlowMB:F0} M";
                             }
                             _lastPortalFlowMonthKey = requestMonthKey;
                         }
@@ -1121,14 +1174,14 @@ public sealed class CampusNetworkClient
                         }
                         if (flowMB > 0)
                         {
-                            LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - flowMB):F0} M";
+                            LatestData.AvailableFlow = $"{Math.Max(0, 200.0 * 1024.0 - actualFlowMB):F0} M";
                         }
                         LatestData.LastUpdated = DateTime.Now;
                         LatestData.ErrorMessage = null;
 
                         if (flowMB > 0)
                         {
-                            CampusHistoryManager.Shared.RecordFlow(flowMB);
+                            CampusHistoryManager.Shared.RecordFlow(actualFlowMB);
                         }
                     })) return;
 
@@ -1213,13 +1266,14 @@ public sealed class CampusNetworkClient
                             if (!IsCurrentAccount(accountGeneration)) return;
                             if (!string.IsNullOrEmpty(hxFlow) || !string.IsNullOrEmpty(hxBalance))
                             {
+                                var actualHxFlow = CampusNetworkData.ActualTrafficFlow(hxFlow) ?? hxFlow;
                                 if (!TryUpdateForAccount(accountGeneration, () =>
                                 {
                                     LatestData.IsLoggedIn = false;
                                     if (!string.IsNullOrEmpty(hxFlow) &&
                                         (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
                                     {
-                                        LatestData.UsedFlow = hxFlow;
+                                        LatestData.UsedFlow = actualHxFlow;
                                     }
                                     if (!string.IsNullOrEmpty(hxBalance) &&
                                         (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
@@ -1229,11 +1283,12 @@ public sealed class CampusNetworkClient
                                     LatestData.ErrorMessage = "未处于校园网Wi-Fi (已同步慧新易校数据)";
                                     LatestData.LastUpdated = DateTime.Now;
 
-                                    if (!string.IsNullOrEmpty(hxFlow))
+                                    if (!string.IsNullOrEmpty(actualHxFlow))
                                     {
-                                        var cleanMB = Regex.Match(hxFlow, @"[0-9]+(?:\.[0-9]+)?");
+                                        var cleanMB = Regex.Match(actualHxFlow, @"[0-9]+(?:\.[0-9]+)?");
                                         if (cleanMB.Success && double.TryParse(cleanMB.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedMB))
                                         {
+                                            if (actualHxFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) parsedMB *= 1024.0;
                                             CampusHistoryManager.Shared.RecordFlow(parsedMB);
                                         }
                                     }
@@ -1754,17 +1809,19 @@ public sealed class CampusNetworkClient
         long? expectedAccountGeneration = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var actualUsedFlow = CampusNetworkData.ActualTrafficFlow(usedFlow) ?? usedFlow;
+        var actualAvailableFlow = CampusNetworkData.ActualTrafficFlow(availFlow) ?? availFlow;
         bool hasRealData = false;
         if (!TryUpdateForAccount(accountGeneration, () =>
         {
-            if (!string.IsNullOrWhiteSpace(usedFlow) && usedFlow != "-- M")
+            if (!string.IsNullOrWhiteSpace(actualUsedFlow) && actualUsedFlow != "-- M")
             {
-                LatestData.UsedFlow = usedFlow;
+                LatestData.UsedFlow = actualUsedFlow;
                 hasRealData = true;
             }
-            if (!string.IsNullOrWhiteSpace(availFlow) && availFlow != "-- M")
+            if (!string.IsNullOrWhiteSpace(actualAvailableFlow) && actualAvailableFlow != "-- M")
             {
-                LatestData.AvailableFlow = availFlow;
+                LatestData.AvailableFlow = actualAvailableFlow;
                 hasRealData = true;
             }
             if (!string.IsNullOrWhiteSpace(balance) && balance != "-- 元")
@@ -1783,12 +1840,12 @@ public sealed class CampusNetworkClient
             LatestData.LastUpdated = DateTime.Now;
             LatestData.ErrorMessage = null;
 
-            if (!string.IsNullOrEmpty(usedFlow))
+            if (!string.IsNullOrEmpty(actualUsedFlow))
             {
-                var m = Regex.Match(usedFlow, @"[0-9]+(?:\.[0-9]+)?");
+                var m = Regex.Match(actualUsedFlow, @"[0-9]+(?:\.[0-9]+)?");
                 if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
                 {
-                    if (usedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
+                    if (actualUsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
                     CampusHistoryManager.Shared.RecordFlow(flowVal);
                 }
             }
@@ -1874,8 +1931,8 @@ public sealed class CampusNetworkClient
         {
             return new CampusNetworkData
             {
-                UsedFlow = usedFlow ?? "-- M",
-                AvailableFlow = availFlow ?? "-- M",
+                UsedFlow = CampusNetworkData.ActualTrafficFlow(usedFlow) ?? usedFlow ?? "-- M",
+                AvailableFlow = CampusNetworkData.ActualTrafficFlow(availFlow) ?? availFlow ?? "-- M",
                 FlowProtection = protection ?? "--",
                 Balance = balance ?? "-- 元",
                 LastUpdated = DateTime.Now

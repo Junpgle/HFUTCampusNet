@@ -105,6 +105,14 @@ public sealed class CampusNetworkData
 
     public double? UsedMB => ParseMB(UsedFlow);
 
+    /// <summary>Convert a self-service billable counter ((up + down) / 2) to actual total traffic.</summary>
+    public static string? ActualTrafficFlow(string? billableFlow)
+    {
+        if (string.IsNullOrWhiteSpace(billableFlow)) return null;
+        var mb = ParseMB(billableFlow);
+        return mb.HasValue && mb.Value >= 0 ? $"{mb.Value * 2.0:F0} M" : null;
+    }
+
     public string FormattedAvailable
     {
         get

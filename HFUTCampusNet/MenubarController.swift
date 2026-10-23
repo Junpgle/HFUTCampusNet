@@ -132,6 +132,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
                 ? String(format: "%.2f GB", todayMB / 1024.0)
                 : String(format: "%.0f MB", todayMB)
             self.availFlowMenuItem?.title = "今日已用：\(todayStr) / 30 GB (单日限额)"
+            self.renderTitle()
             self.quotaMenuCardView?.refresh(mode: 0)
         }
     }
@@ -633,7 +634,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         if isOffline {
             flowTitle = hasFlowData ? " 离线 | 已用 \(currentData.formattedUsed)" : " 离线/未认证"
         } else {
-            flowTitle = " 已用 \(currentData.formattedUsed) | \(currentData.balance)"
+            flowTitle = adaptiveTrafficSummary()
         }
 
         let wifiIcon = symbolImage(isOffline ? "wifi.slash" : "wifi", pointSize: 12.5, weight: .medium)
@@ -664,11 +665,50 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
             button.image = wifiIcon
             button.title = isOffline
                 ? " 离线 · \(currentSpeedCompact)"
-                : " 已用 \(currentData.formattedUsed) · \(currentSpeedCompact)"
+                : "\(flowTitle) · \(currentSpeedCompact)"
         default:
             button.image = wifiIcon
             button.title = flowTitle
         }
+    }
+
+    private func adaptiveTrafficSummary() -> String {
+        let history = CampusHistoryManager.shared
+        let monthlyHistoryUsedMB = history.currentMonthUsedFlowMB
+        let monthlyCandidates = [currentData.usedMB, monthlyHistoryUsedMB].compactMap { $0 }
+        guard let monthlyUsedMB = monthlyCandidates.max(), monthlyUsedMB >= 0 else {
+            return " 已用 \(currentData.formattedUsed)"
+        }
+
+        let dailyLimitMB = 30.0 * 1024.0
+        let monthlyFreeLimitMB = 200.0 * 1024.0
+        let dailyUsedMB = max(0.0, history.todayFlowDeltaMB)
+        let dailyProgress = min(1.0, dailyUsedMB / dailyLimitMB)
+        let monthlyProgress = min(1.0, monthlyUsedMB / monthlyFreeLimitMB)
+
+        if monthlyUsedMB > monthlyFreeLimitMB {
+            let overFreeGB = (monthlyUsedMB - monthlyFreeLimitMB) / 1024.0
+            var summary = " 本月超免费 \(String(format: "%.2f", overFreeGB))G"
+            let balance = currentData.balance.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !balance.isEmpty && balance != "-- 元" {
+                summary += " | \(balance)"
+            }
+            return summary
+        }
+
+        let dailyIsNearLimit = dailyProgress >= 0.8
+        let monthlyIsNearLimit = monthlyProgress >= 0.8
+        if dailyIsNearLimit && (!monthlyIsNearLimit || dailyProgress >= monthlyProgress) {
+            let dailyRemainingGB = max(0.0, dailyLimitMB - dailyUsedMB) / 1024.0
+            return " 今日余 \(String(format: "%.1f", dailyRemainingGB))G"
+        }
+
+        if monthlyIsNearLimit {
+            let monthlyRemainingGB = max(0.0, monthlyFreeLimitMB - monthlyUsedMB) / 1024.0
+            return " 本月余 \(String(format: "%.1f", monthlyRemainingGB))G"
+        }
+
+        return " 本月已用 \(String(format: "%.1f", monthlyProgress * 100.0))%"
     }
 
     public func menuWillOpen(_ menu: NSMenu) {

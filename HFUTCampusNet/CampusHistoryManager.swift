@@ -86,6 +86,8 @@ public struct DailyElectricityRecord: Codable, Identifiable {
 
 /// 历史统计总存储模型
 public struct CampusHistoryStore: Codable {
+    /// 2 means stored traffic values use actual (up + down) volume rather than the billable half-sum.
+    public var flowAccountingVersion: Int? = nil
     public var flowHistoryPartitionVersion: Int? = nil
     public var flowRecordsByAccount: [String: [DailyFlowRecord]]? = nil
     public var flowRecords: [DailyFlowRecord] = []
@@ -118,12 +120,14 @@ public struct CampusHistoryStore: Codable {
 /// 校园网与电费历史统计管理器
 public class CampusHistoryManager {
     public static let shared = CampusHistoryManager()
+    private static let currentFlowAccountingVersion = 2
     private static let currentFlowHistoryPartitionVersion = 1
 
     private var store: CampusHistoryStore = CampusHistoryStore()
     private let queue = DispatchQueue(label: "cn.edu.hfut.history.queue", qos: .utility)
     private var historyBackupRequired = false
     private var flowAccountPartitionBackupRequired = false
+    private var flowAccountingMigrationBackupRequired = false
     private var activeFlowAccountKey = ""
 
     private let storeURL: URL = {
@@ -168,6 +172,12 @@ public class CampusHistoryManager {
             store.flowRecordsByAccount = [:]
         }
 
+        let needsFlowMigration = (store.flowAccountingVersion ?? 0) < Self.currentFlowAccountingVersion
+        if needsFlowMigration {
+            flowAccountingMigrationBackupRequired = true
+            _ = completeFlowAccountingMigrationIfNeeded()
+        }
+
         let continuityBeforeSelection = reconcileContinuity()
         let currentDormKey = Self.electricityDormKey(
             campus: SettingsManager.shared.dormCampus,
@@ -178,7 +188,7 @@ public class CampusHistoryManager {
         let selectedCurrentHistory = store.activateElectricityHistory(for: currentDormKey)
         let continuityAfterSelection = selectedCurrentHistory ? reconcileContinuity() : false
 
-        if loaded != nil && (needsFlowPartitionMigration || continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
+        if loaded != nil && (needsFlowPartitionMigration || needsFlowMigration || continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
             saveStore()
         }
     }
@@ -223,6 +233,49 @@ public class CampusHistoryManager {
                 NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
             }
         }
+    }
+
+    private func backupHistoryBeforeFlowMigration() -> Bool {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return true }
+        let backupURL = storeURL.appendingPathExtension("pre-traffic-scale-v2.bak")
+        guard !FileManager.default.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try FileManager.default.copyItem(at: storeURL, to: backupURL)
+            return true
+        } catch {
+            print("流量历史迁移前备份失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func completeFlowAccountingMigrationIfNeeded() -> Bool {
+        guard flowAccountingMigrationBackupRequired else { return true }
+        guard backupHistoryBeforeFlowMigration() else { return false }
+
+        func scale(_ record: inout DailyFlowRecord) {
+            record.totalUsedMB *= 2.0
+            record.startOfDayUsedMB *= 2.0
+            record.dailyDeltaMB *= 2.0
+            record.availableMB = record.availableMB.map { $0 * 2.0 }
+        }
+
+        for index in store.flowRecords.indices {
+            scale(&store.flowRecords[index])
+        }
+        if var partitions = store.flowRecordsByAccount {
+            for accountKey in Array(partitions.keys) {
+                guard var records = partitions[accountKey] else { continue }
+                for index in records.indices {
+                    scale(&records[index])
+                }
+                partitions[accountKey] = records
+            }
+            store.flowRecordsByAccount = partitions
+        }
+        store.flowAccountingVersion = Self.currentFlowAccountingVersion
+        flowAccountingMigrationBackupRequired = false
+        return true
     }
 
     private static func electricityDormKey(campus: String, building: String, room: String, endNumber: String) -> String {
@@ -417,6 +470,7 @@ public class CampusHistoryManager {
             guard backupHistoryBeforeFlowPartitionMigration() else { return }
             flowAccountPartitionBackupRequired = false
         }
+        guard completeFlowAccountingMigrationIfNeeded() else { return }
         var partitions = store.flowRecordsByAccount ?? [:]
         partitions[activeFlowAccountKey] = store.flowRecords
         store.flowRecordsByAccount = partitions
@@ -475,6 +529,7 @@ public class CampusHistoryManager {
         queue.async {
             let today = self.todayString()
             guard let totalMB = self.parseFlowToMB(usedFlowStr) else { return }
+            guard self.completeFlowAccountingMigrationIfNeeded() else { return }
 
             let availMB = availableFlowStr != nil ? self.parseFlowToMB(availableFlowStr!) : nil
             let balRMB = balanceStr != nil ? self.parseRMB(balanceStr!) : nil

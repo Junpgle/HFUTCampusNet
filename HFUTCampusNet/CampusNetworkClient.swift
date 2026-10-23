@@ -339,7 +339,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 // 如果先前处于掉线状态，现在恢复了，触发系统横幅通知！
                 if self.wasOffline {
                     self.wasOffline = false
-                    let usedStr = flowMB >= 0 ? String(format: "%.0f M", flowMB) : self.latestData.usedFlow
+                    let usedStr = flowMB >= 0
+                        ? String(format: "%.0f M", flowMB * 2.0)
+                        : self.latestData.usedFlow
                     let balStr = fee >= 0 ? String(format: "%.2f 元", fee) : self.latestData.balance
                     NotificationHelper.showNotification(
                         title: "合工大校园网已自动重连",
@@ -355,7 +357,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
                 // 更新网关数据（仅当返回有效非负数值时覆盖）
                 if flowMB >= 0 {
-                    data.usedFlow = String(format: "%.0f M", flowMB)
+                    data.usedFlow = String(format: "%.0f M", flowMB * 2.0)
                 }
                 if fee >= 0 {
                     data.balance = String(format: "%.2f 元", fee)
@@ -406,10 +408,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         var updated = self.latestData
         var gotValid = false
         if let f = usedFlow, !f.isEmpty, f != "-- M" {
-            let newMB = CampusNetworkData(usedFlow: f).usedMB ?? 0
+            let actualFlow = CampusNetworkData.actualTrafficFlow(fromBillableFlow: f) ?? f
+            let newMB = CampusNetworkData(usedFlow: actualFlow).usedMB ?? 0
             let curMB = updated.usedMB ?? -1
             if updated.usedFlow == "-- M" || (!updated.isLoggedIn && newMB >= curMB) {
-                updated.usedFlow = f
+                updated.usedFlow = actualFlow
                 gotValid = true
             }
         }
@@ -846,8 +849,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
         if availFlow != nil || usedFlow != nil || balance != nil || protection != nil {
             return CampusNetworkData(
-                usedFlow: usedFlow ?? latestData.usedFlow,
-                availableFlow: availFlow ?? latestData.availableFlow,
+                usedFlow: usedFlow.flatMap { CampusNetworkData.actualTrafficFlow(fromBillableFlow: $0) } ?? latestData.usedFlow,
+                availableFlow: availFlow.flatMap { CampusNetworkData.actualTrafficFlow(fromBillableFlow: $0) } ?? latestData.availableFlow,
                 flowProtection: protection ?? latestData.flowProtection,
                 balance: balance ?? latestData.balance,
                 lastUpdated: Date(),

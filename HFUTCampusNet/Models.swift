@@ -119,6 +119,14 @@ public struct CampusNetworkData: Codable {
         return min(1.0, used / (200.0 * 1024.0))
     }
 
+    /// Convert a self-service billable counter ((up + down) / 2) to actual total traffic.
+    public static func actualTrafficFlow(fromBillableFlow flow: String) -> String? {
+        guard let billableMB = CampusNetworkData(usedFlow: flow).usedMB, billableMB >= 0 else {
+            return nil
+        }
+        return String(format: "%.0f M", billableMB * 2.0)
+    }
+
     private func parseMB(from text: String) -> Double? {
         let pattern = "([0-9]+(?:\\.[0-9]+)?)"
         guard let regex = try? NSRegularExpression(pattern: pattern),
