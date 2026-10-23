@@ -887,7 +887,6 @@ public sealed class CampusNetworkClient
         var handler = new HttpClientHandler
         {
             UseCookies = true,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
@@ -895,7 +894,11 @@ public sealed class CampusNetworkClient
         var selfHandler = new HttpClientHandler
         {
             UseCookies = false,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+            ServerCertificateCustomValidationCallback = (request, _, _, _) =>
+                request?.RequestUri is Uri uri &&
+                uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+                uri.Host.Equals("xywzz.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+                uri.Port == 8443,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _selfServiceClient = new HttpClient(selfHandler) { Timeout = TimeSpan.FromSeconds(10) };
