@@ -123,8 +123,12 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
             }
         }
 
-        if let password = dict["password"], !password.isEmpty, !sessionUsername.isEmpty {
-            pendingPortalCredentials = (sessionUsername, password)
+        if let password = dict["password"] {
+            if password.isEmpty {
+                pendingPortalCredentials = nil
+            } else if !sessionUsername.isEmpty {
+                pendingPortalCredentials = (sessionUsername, password)
+            }
         }
     }
 
