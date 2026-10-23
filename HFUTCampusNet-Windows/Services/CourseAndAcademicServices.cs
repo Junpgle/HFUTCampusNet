@@ -116,7 +116,11 @@ public sealed class CourseScheduleService
         {
             SettingsManager.Shared.CourseSemesterId = semesterId;
             SettingsManager.Shared.Save();
-        })) return;
+        }))
+        {
+            callback?.Invoke(null, "账号已切换");
+            return;
+        }
         SyncSchedule(callback);
     }
 
