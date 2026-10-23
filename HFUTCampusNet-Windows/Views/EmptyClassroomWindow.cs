@@ -219,6 +219,7 @@ public sealed class EmptyClassroomWindow : Window
     // 状态与筛选参数
     private int _selectedCampusId = 6; // 默认宣城校区 (6)，翡翠湖 (3)，屯溪路 (2)
     private bool _isViewingTomorrow = false;
+    private bool _pendingSnapshotAfterCurrentSync;
     private string _selectedBuilding = "全部";
     private int? _selectedFloor = null; // null 表示全部楼层
     private int _statusFilterMode = 0;   // 0 全部, 1 全天无课, 2 余下无课/上午空闲, 3 当前空闲/下午空闲, 4 当前占用
@@ -722,6 +723,12 @@ public sealed class EmptyClassroomWindow : Window
             _lastSyncTextBlock.Text = EmptyClassroomService.Shared.FormattedLastSync();
             UpdateSummaryCard();
             FilterAndRefreshList();
+
+            if (_pendingSnapshotAfterCurrentSync && !EmptyClassroomService.Shared.IsSyncing)
+            {
+                _pendingSnapshotAfterCurrentSync = false;
+                EnsureSelectedSnapshot();
+            }
         });
 
         ReloadBuildingOptions();
@@ -751,7 +758,11 @@ public sealed class EmptyClassroomWindow : Window
 
     private void TriggerManualRefresh()
     {
-        if (EmptyClassroomService.Shared.IsSyncing) return;
+        if (EmptyClassroomService.Shared.IsSyncing)
+        {
+            _pendingSnapshotAfterCurrentSync = true;
+            return;
+        }
 
         // 打开全屏 Loading 遮罩并启动计时
         _loadingElapsedSeconds = 0;
