@@ -125,13 +125,16 @@ public sealed class AcademicWindow : Window
 
         _syncButton = CreateActionButton("立即同步", () =>
         {
+            if (_isSyncing) return;
             _isSyncing = true;
+            _syncButton.IsEnabled = false;
             ReloadUI();
             AcademicService.Shared.SyncAll(silent: false, ok =>
             {
                 AppEvents.InvokeOnUI(() =>
                 {
                     _isSyncing = false;
+                    _syncButton.IsEnabled = true;
                     ReloadUI();
                     if (!ok && (AcademicService.Shared.LatestData == null || AcademicService.Shared.LatestData.AllGrades.Count == 0))
                     {

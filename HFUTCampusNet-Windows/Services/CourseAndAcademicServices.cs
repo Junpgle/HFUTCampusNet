@@ -790,6 +790,9 @@ public sealed class AcademicService
     private Timer? _timer;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly object _stateLock = new();
+    private readonly object _syncCallbacksLock = new();
+    private readonly HashSet<(long AccountGeneration, long CacheGeneration)> _activeSyncs = new();
+    private readonly Dictionary<(long AccountGeneration, long CacheGeneration), List<Action<bool>>> _pendingSyncCallbacks = new();
     private long _cacheGeneration;
 
     private AcademicService()
@@ -853,22 +856,40 @@ public sealed class AcademicService
             callback?.Invoke(false);
             return;
         }
-        Task.Run(async () =>
+        long expectedCacheGeneration;
+        lock (_stateLock)
         {
-            if (!await _syncLock.WaitAsync(0))
+            expectedCacheGeneration = _cacheGeneration;
+        }
+        var syncKey = (AccountGeneration: accountGeneration, CacheGeneration: expectedCacheGeneration);
+
+        lock (_syncCallbacksLock)
+        {
+            if (_activeSyncs.Contains(syncKey))
             {
-                callback?.Invoke(false);
+                if (callback != null)
+                    _pendingSyncCallbacks[syncKey].Add(callback);
                 return;
             }
 
-            long generation;
-            lock (_stateLock)
-            {
-                generation = _cacheGeneration;
-            }
+            _activeSyncs.Add(syncKey);
+            _pendingSyncCallbacks[syncKey] = callback == null
+                ? new List<Action<bool>>()
+                : new List<Action<bool>> { callback };
+        }
 
+        Task.Run(async () =>
+        {
+            var succeeded = false;
+            var acquiredSyncLock = false;
+            var generation = expectedCacheGeneration;
             try
             {
+                await _syncLock.WaitAsync();
+                acquiredSyncLock = true;
+
+                if (!IsCurrentCacheGeneration(generation, accountGeneration)) return;
+
                 // 通道 1：合工大教务移动端 (UniApp JWT 主源)
                 var uniAppTask = FetchFromUniAppAsync(accountGeneration);
 
@@ -878,7 +899,6 @@ public sealed class AcademicService
                 await Task.WhenAll(uniAppTask, eamsWebTask);
                 if (!IsCurrentCacheGeneration(generation, accountGeneration))
                 {
-                    callback?.Invoke(false);
                     return;
                 }
 
@@ -909,7 +929,6 @@ public sealed class AcademicService
 
                     if (!staleEmptyResult)
                         AppEvents.RaiseAcademicDataUpdated();
-                    callback?.Invoke(false);
                     return;
                 }
 
@@ -947,11 +966,10 @@ public sealed class AcademicService
                 }
                 if (staleGeneration)
                 {
-                    callback?.Invoke(false);
                     return;
                 }
                 AppEvents.RaiseAcademicDataUpdated();
-                callback?.Invoke(true);
+                succeeded = true;
             }
             catch (Exception ex)
             {
@@ -963,13 +981,31 @@ public sealed class AcademicService
                             LatestData.LastErrorMessage = ex.Message);
                     }
                 }
-                callback?.Invoke(false);
             }
             finally
             {
-                _syncLock.Release();
+                if (acquiredSyncLock) _syncLock.Release();
+                CompleteSyncCallbacks(syncKey, succeeded);
             }
         });
+    }
+
+    private void CompleteSyncCallbacks((long AccountGeneration, long CacheGeneration) syncKey, bool succeeded)
+    {
+        List<Action<bool>> callbacks;
+        lock (_syncCallbacksLock)
+        {
+            _activeSyncs.Remove(syncKey);
+            callbacks = _pendingSyncCallbacks.TryGetValue(syncKey, out var pending)
+                ? pending
+                : new List<Action<bool>>();
+            _pendingSyncCallbacks.Remove(syncKey);
+        }
+
+        foreach (var pendingCallback in callbacks)
+        {
+            try { pendingCallback(succeeded); } catch { }
+        }
     }
 
     // MARK: - 通道 1：UniApp 移动端数据拉取
