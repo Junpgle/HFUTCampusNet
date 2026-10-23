@@ -922,8 +922,8 @@ public sealed class AcademicService
                             ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
                             Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
                             Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
-                            LastGradesSyncTime = DateTime.Now,
-                            LastExamsSyncTime = DateTime.Now
+                            LastGradesSyncTime = mergedGrades.Count > 0 ? DateTime.Now : prevSnapshot?.LastGradesSyncTime,
+                            LastExamsSyncTime = mergedExams.Count > 0 ? DateTime.Now : prevSnapshot?.LastExamsSyncTime
                         };
 
                         // 出分静默通知检测
