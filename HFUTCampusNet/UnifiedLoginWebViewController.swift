@@ -429,10 +429,11 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                     .contains(where: { $0.name.caseInsensitiveCompare("ticket") == .orderedSame && !($0.value ?? "").isEmpty }) ?? false
                 let redirectedToService = isKnownServiceHost && hasServiceTicket
 
-                let authenticationConfirmed = hasTGC || redirectedToService
-                    || (host == "cas.hfut.edu.cn" && hasSuccessText)
-                guard authenticationConfirmed,
-                      hasTGC || !self.casLoginCoordinator.hasPendingCredentials else { return }
+                let hasPendingCredentials = self.casLoginCoordinator.hasPendingCredentials
+                let casPageReportedSuccess = host == "cas.hfut.edu.cn" && hasSuccessText
+                let authenticationConfirmed = redirectedToService || casPageReportedSuccess
+                    || (hasTGC && !hasPendingCredentials)
+                guard authenticationConfirmed else { return }
                 self.startFullSSORefreshChain(
                     cookies: cookies,
                     sessionToken: sessionToken,
@@ -448,9 +449,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
               self.syncSessionToken == sessionToken,
               !isSyncingAll else { return }
         isSyncingAll = true
-        if confirmedTGC != nil {
-            casLoginCoordinator.commitPendingCredentials()
-        }
+        casLoginCoordinator.commitPendingCredentials()
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
