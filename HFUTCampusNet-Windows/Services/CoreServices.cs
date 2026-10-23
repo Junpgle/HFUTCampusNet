@@ -199,6 +199,7 @@ public sealed class CampusHistoryManager
     private readonly object _lock = new();
     private Dictionary<string, List<ElectricityDailyRecord>> _archivedElectricityRecords = new(StringComparer.Ordinal);
     private string _activeElectricityDormKey = string.Empty;
+    private bool _historyBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -448,6 +449,9 @@ public sealed class CampusHistoryManager
 
     private void Save()
     {
+        if (_historyBackupRequired && !TryBackupUnreadableHistory()) return;
+        _historyBackupRequired = false;
+
         var temporaryFile = _historyFile + ".tmp";
         try
         {
@@ -527,7 +531,11 @@ public sealed class CampusHistoryManager
 
             if (needsSave) Save();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CampusHistoryManager] Load failed: {ex.Message}");
+            _historyBackupRequired = !TryBackupUnreadableHistory();
+        }
     }
 
     private bool SwitchElectricityDormLocked(string targetDormKey)
@@ -567,6 +575,23 @@ public sealed class CampusHistoryManager
         catch (Exception ex)
         {
             Debug.WriteLine($"Electricity history migration backup failed: {ex.Message}");
+        }
+    }
+
+    private bool TryBackupUnreadableHistory()
+    {
+        if (!File.Exists(_historyFile)) return true;
+
+        var backupFile = _historyFile + $".load-failure-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}.bak";
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CampusHistoryManager] Could not preserve unreadable history: {ex.Message}");
+            return false;
         }
     }
 
