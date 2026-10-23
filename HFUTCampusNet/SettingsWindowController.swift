@@ -972,10 +972,12 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             previousUsername: previousUsername,
             previousStudentID: previousStudentID
         )
+        SettingsManager.shared.portalPassword = ""
         initialUsername = SettingsManager.shared.portalUsername
         let currentStdId = SettingsManager.shared.courseStudentId
         initialStdId = currentStdId
         usernameField?.stringValue = initialUsername
+        passwordField?.stringValue = SettingsManager.shared.portalPassword
         casPasswordField?.stringValue = SettingsManager.shared.casPassword
         courseStudentIdField?.stringValue = currentStdId
         updateCourseStatusDisplay()
@@ -987,8 +989,18 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         handleExternalAccountSwitch(previousUsername: initialUsername, previousStudentID: initialStdId)
     }
 
-    private func saveCredentials(checkDormInvalidation: Bool = true) {
-        SettingsManager.shared.portalUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func saveCredentials(checkDormInvalidation: Bool = true, saveUsername: Bool = true) {
+        let nextUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accountChanged = checkDormInvalidation &&
+            nextUsername != initialUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if accountChanged {
+            // Do not carry either saved password from the previous account into the new one.
+            passwordField.stringValue = ""
+            casPasswordField.stringValue = ""
+        }
+        if saveUsername {
+            SettingsManager.shared.portalUsername = nextUsername
+        }
         SettingsManager.shared.portalPassword = passwordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         SettingsManager.shared.casPassword = casPasswordField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let prevAutoLogin = SettingsManager.shared.autoLoginPortal
@@ -1051,7 +1063,8 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     }
 
     public func controlTextDidChange(_ obj: Notification) {
-        saveCredentials(checkDormInvalidation: false)
+        let isUsernameBeingEdited = (obj.object as? NSTextField) === usernameField
+        saveCredentials(checkDormInvalidation: false, saveUsername: !isUsernameBeingEdited)
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) {
