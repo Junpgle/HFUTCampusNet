@@ -40,6 +40,9 @@ public class SettingsWindow : Window
     private TextBox _portalUsernameBox = null!;
     private PasswordBox _portalPasswordBox = null!;
     private PasswordBox _casPasswordBox = null!;
+    private string _loadedPortalUsername = string.Empty;
+    private bool _portalPasswordEditedSinceUsernameChange;
+    private bool _casPasswordEditedSinceUsernameChange;
     private CheckBox _autoLoginCheck = null!;
     private TextBlock _cookieStatusBlock = null!;
 
@@ -223,10 +226,16 @@ public class SettingsWindow : Window
 
         _portalUsernameBox = CreateStyledTextBox();
         _portalUsernameBox.LostFocus += (_, _) => SaveSettings();
+        _portalUsernameBox.TextChanged += (_, _) =>
+        {
+            _portalPasswordEditedSinceUsernameChange = false;
+            _casPasswordEditedSinceUsernameChange = false;
+        };
         stack.Children.Add(CreateFormField("学号 / 工号：", _portalUsernameBox, "用于校园网出校网页认证"));
 
         _portalPasswordBox = CreateStyledPasswordBox();
         _portalPasswordBox.LostFocus += (_, _) => SaveSettings();
+        _portalPasswordBox.PasswordChanged += (_, _) => _portalPasswordEditedSinceUsernameChange = true;
         stack.Children.Add(CreateFormField("Portal 认证密码：", _portalPasswordBox, "校园网开户密码"));
 
         _autoLoginCheck = CreateStyledCheckBox("网络离线或断开时自动登录校园网 (Auto-Login)");
@@ -238,6 +247,7 @@ public class SettingsWindow : Window
 
         _casPasswordBox = CreateStyledPasswordBox();
         _casPasswordBox.LostFocus += (_, _) => SaveSettings();
+        _casPasswordBox.PasswordChanged += (_, _) => _casPasswordEditedSinceUsernameChange = true;
         stack.Children.Add(CreateFormField("CAS 统一认证密码：", _casPasswordBox, "用于一卡通、宿舍电费、教务课表及成绩查询"));
 
         var ssoRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 12) };
@@ -693,6 +703,9 @@ public class SettingsWindow : Window
         _versionBlock.Text = $"当前版本：v{UpdateChecker.Shared.CurrentVersion}";
 
         UpdateCookieStatusLabel();
+        _loadedPortalUsername = (s.PortalUsername ?? string.Empty).Trim();
+        _portalPasswordEditedSinceUsernameChange = false;
+        _casPasswordEditedSinceUsernameChange = false;
         _hasLoadedSettings = true;
     }
 
@@ -701,9 +714,32 @@ public class SettingsWindow : Window
         var s = SettingsManager.Shared;
         var previousPortalUsername = (s.PortalUsername ?? string.Empty).Trim();
         var nextPortalUsername = _portalUsernameBox.Text.Trim();
-        if (!string.Equals(previousPortalUsername, nextPortalUsername, StringComparison.Ordinal))
+
+        // A CAS login can switch accounts while this settings window is still open.
+        // If its username field was untouched, refresh the stale credentials instead of
+        // switching the saved account back when a later LostFocus/close saves settings.
+        if (!string.Equals(previousPortalUsername, _loadedPortalUsername, StringComparison.Ordinal) &&
+            string.Equals(nextPortalUsername, _loadedPortalUsername, StringComparison.Ordinal))
+        {
+            nextPortalUsername = previousPortalUsername;
+            _portalUsernameBox.Text = nextPortalUsername;
+            _portalPasswordBox.Password = s.PortalPassword ?? string.Empty;
+            _casPasswordBox.Password = s.CasPassword ?? string.Empty;
+            _portalPasswordEditedSinceUsernameChange = false;
+            _casPasswordEditedSinceUsernameChange = false;
+        }
+
+        bool accountChanged = !string.Equals(previousPortalUsername, nextPortalUsername, StringComparison.Ordinal);
+        if (accountChanged)
         {
             AccountSessionManager.InvalidateForAccountSwitch(nextPortalUsername);
+
+            // Passwords that were present before the username changed belong to the old
+            // account. Keep only values the user entered after changing the username.
+            if (!_portalPasswordEditedSinceUsernameChange) _portalPasswordBox.Clear();
+            if (!_casPasswordEditedSinceUsernameChange) _casPasswordBox.Clear();
+            _portalPasswordEditedSinceUsernameChange = false;
+            _casPasswordEditedSinceUsernameChange = false;
         }
 
         var previousDormCampus = s.DormCampus;
@@ -718,6 +754,7 @@ public class SettingsWindow : Window
             s.PortalPassword = _portalPasswordBox.Password;
             s.CasPassword = _casPasswordBox.Password;
         })) return;
+        _loadedPortalUsername = nextPortalUsername;
         s.AutoLoginPortal = _autoLoginCheck.IsChecked == true;
 
         if (_campusCombo.SelectedItem is ComboBoxItem cItem && cItem.Tag != null)
