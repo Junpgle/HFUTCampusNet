@@ -1225,7 +1225,7 @@ public sealed class CampusCardService
                 double balanceRMB = dbBalanceFen / 100.0;
                 double unsettleRMB = unsettleFen / 100.0;
 
-                var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150);
+                var (fetchedTransactions, transactionsFetchSucceeded) = await FetchTransactionsAsync(authHeader, 150);
                 if (!IsCurrentRequest(generation, accountGeneration))
                     return (null, StaleRequestMessage);
 
@@ -1238,7 +1238,9 @@ public sealed class CampusCardService
                         ? LatestData.Transactions?.ToList() ?? new List<CampusCardTransaction>()
                         : new List<CampusCardTransaction>();
                 }
-                var transactions = MergeTransactions(previousTransactions.Concat(fetchedTransactions));
+                var transactions = transactionsFetchSucceeded
+                    ? MergeTransactions(fetchedTransactions)
+                    : previousTransactions;
 
                 var cardData = new CampusCardData
                 {
@@ -1331,7 +1333,7 @@ public sealed class CampusCardService
         return completion.Task;
     }
 
-    private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(string authHeader, int size)
+    private async Task<(List<CampusCardTransaction> Transactions, bool Succeeded)> FetchTransactionsAsync(string authHeader, int size)
     {
         var list = new List<CampusCardTransaction>();
         try
@@ -1344,9 +1346,10 @@ public sealed class CampusCardService
 
             using var resp = await _httpClient.SendAsync(req);
             var respText = await resp.Content.ReadAsStringAsync();
-            if (string.IsNullOrWhiteSpace(respText) || (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
+            if (!resp.IsSuccessStatusCode || string.IsNullOrWhiteSpace(respText) ||
+                (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
             {
-                return list;
+                return (list, false);
             }
 
             JsonDocument? doc = null;
@@ -1356,7 +1359,7 @@ public sealed class CampusCardService
             }
             catch (JsonException)
             {
-                return list;
+                return (list, false);
             }
 
             using (doc)
@@ -1367,7 +1370,7 @@ public sealed class CampusCardService
                     !dataElem.TryGetProperty("records", out var recordsElem) ||
                     recordsElem.ValueKind != JsonValueKind.Array)
                 {
-                    return list;
+                    return (list, false);
                 }
 
             int idx = 0;
@@ -1405,9 +1408,10 @@ public sealed class CampusCardService
         catch
         {
             // Ignore transaction fetch errors so card balance still succeeds
+            return (list, false);
         }
 
-        return list;
+        return (list, true);
     }
 
     private void CheckLowBalanceAndBudgetWarning(CampusCardData data)
