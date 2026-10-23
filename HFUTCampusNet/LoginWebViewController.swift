@@ -329,11 +329,14 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                     }
                     var matchedSid: String?
                     for cookie in cookies where cookie.name == "JSESSIONID" && !cookie.value.isEmpty {
-                        if cookie.domain.lowercased().contains("xywzz") || cookie.path.contains("/Self") {
+                        let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                        let path = cookie.path.lowercased()
+                        let isSelfServiceDomain = domain == "xywzz.hfut.edu.cn" || domain.hasSuffix(".xywzz.hfut.edu.cn")
+                        let isSelfServiceScopedRootCookie = domain == "hfut.edu.cn" &&
+                            (path == "/self" || path.hasPrefix("/self/"))
+                        if isSelfServiceDomain || isSelfServiceScopedRootCookie {
                             matchedSid = cookie.value
                             break
-                        } else if matchedSid == nil {
-                            matchedSid = cookie.value
                         }
                     }
                     if let sid = matchedSid {
