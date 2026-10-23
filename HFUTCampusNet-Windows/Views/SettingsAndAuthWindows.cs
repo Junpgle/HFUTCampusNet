@@ -1471,6 +1471,7 @@ public class UnifiedLoginWebWindow : Window
                 // Background exchange
                 _ = Task.Run(async () =>
                 {
+                    string? syncStartError = null;
                     try
                     {
                         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
@@ -1484,7 +1485,7 @@ public class UnifiedLoginWebWindow : Window
                         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                         AppEvents.InvokeOnUI(() =>
                         {
-                            UpdateStep(1, StepStatus.Success);
+                            UpdateStep(1, StepStatus.InProgress);
                             UpdateStep(2, StepStatus.InProgress);
                         });
                         await EmptyClassroomService.Shared.EnsureValidTokenAsync(
@@ -1496,17 +1497,27 @@ public class UnifiedLoginWebWindow : Window
                         EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
                         AppEvents.RaiseAuthStatusUpdated();
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        syncStartError = ex.Message;
+                    }
 
                     AppEvents.InvokeOnUI(() =>
                     {
-                        _statusText.Text = "🎉 统一身份认证同步成功！凭证已更新。";
-                        _statusDetailText.Text = "课表、宿舍电费、一卡通与校园网服务已开始更新";
-                        UpdateStep(1, StepStatus.Success);
-                        UpdateStep(2, StepStatus.Success);
-                        UpdateStep(3, StepStatus.Success);
+                        if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
+                        _statusText.Text = syncStartError == null
+                            ? "🎉 统一身份认证成功，校园服务刷新已启动。"
+                            : "统一身份认证成功，但部分服务刷新未能启动。";
+                        _statusDetailText.Text = syncStartError == null
+                            ? "课表、宿舍电费、一卡通与校园网正在后台更新；请稍后查看各模块数据状态。"
+                            : $"后台服务刷新启动失败：{syncStartError}";
+                        UpdateStep(1, syncStartError == null ? StepStatus.InProgress : StepStatus.Failure);
+                        UpdateStep(2, syncStartError == null ? StepStatus.InProgress : StepStatus.Failure);
+                        UpdateStep(3, syncStartError == null ? StepStatus.InProgress : StepStatus.Failure);
                         _progressBar.Visibility = Visibility.Collapsed;
-                        TrayMenuController.Shared.ShowNotification("统一身份认证成功", "一卡通、宿舍电费及教务系统凭证已全量更新。");
+                        TrayMenuController.Shared.ShowNotification(
+                            syncStartError == null ? "统一身份认证成功" : "统一身份认证成功，服务刷新受阻",
+                            syncStartError == null ? "课表与校园服务数据刷新已启动。" : syncStartError);
                         Task.Delay(1200).ContinueWith(_ => AppEvents.InvokeOnUI(Hide));
                     });
                 });
