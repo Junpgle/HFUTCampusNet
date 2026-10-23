@@ -138,7 +138,10 @@ public sealed class SettingsManager
         {
             try
             {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+                const string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+                using var key = value
+                    ? Registry.CurrentUser.CreateSubKey(runKeyPath)
+                    : Registry.CurrentUser.OpenSubKey(runKeyPath, true);
                 if (key == null) return;
                 if (value)
                 {
