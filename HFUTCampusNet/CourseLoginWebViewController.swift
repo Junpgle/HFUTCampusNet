@@ -273,7 +273,8 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
         if change.currentUsername != change.previousUsername {
             SettingsWindowController.shared.handleExternalAccountSwitch(
                 previousUsername: change.previousUsername,
-                previousStudentID: sessionStudentID
+                previousStudentID: sessionStudentID,
+                preserveCasPassword: true
             )
         }
         sessionUsername = change.currentUsername

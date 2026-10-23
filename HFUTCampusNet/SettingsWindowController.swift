@@ -976,14 +976,21 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func handleExternalAccountSwitch(
         previousUsername: String,
         previousStudentID: String,
-        preserveUnifiedLoginSession: Bool = false
+        preserveUnifiedLoginSession: Bool = false,
+        preservePortalPassword: Bool = false,
+        preserveCasPassword: Bool = false
     ) {
         Self.invalidateAccountScopedData(
             previousUsername: previousUsername,
             previousStudentID: previousStudentID,
             preserveUnifiedLoginSession: preserveUnifiedLoginSession
         )
-        SettingsManager.shared.portalPassword = ""
+        if !preservePortalPassword {
+            SettingsManager.shared.portalPassword = ""
+        }
+        if !preserveCasPassword {
+            SettingsManager.shared.casPassword = ""
+        }
         initialUsername = SettingsManager.shared.portalUsername
         let currentStdId = SettingsManager.shared.courseStudentId
         initialStdId = currentStdId

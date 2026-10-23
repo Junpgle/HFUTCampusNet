@@ -1988,7 +1988,8 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                     SettingsManager.shared.casPassword = pending.password
                     SettingsWindowController.shared.handleExternalAccountSwitch(
                         previousUsername: pending.previousUsername,
-                        previousStudentID: pending.previousStudentID
+                        previousStudentID: pending.previousStudentID,
+                        preserveCasPassword: true
                     )
                     self.portalSessionUsername = pending.username
                     self.pendingCASCredentials = nil

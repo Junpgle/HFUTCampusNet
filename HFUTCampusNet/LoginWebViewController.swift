@@ -11,6 +11,9 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
     private var isCapturingSession: Bool = false
     private var sessionToken: UUID = UUID()
     private var sessionUsername = ""
+    private var sessionUsernameAtStart = ""
+    private var pendingPortalCredentials: (username: String, password: String)?
+    private var rejectedUsernameChange = false
 
     private init() {
         let window = NSWindow(
@@ -86,7 +89,10 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
         isCapturingSession = false
         sessionToken = UUID()
-        sessionUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionUsernameAtStart = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionUsername = sessionUsernameAtStart
+        pendingPortalCredentials = nil
+        rejectedUsernameChange = false
         let url = URL(string: "https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15.0)
         progressIndicator.startAnimation(nil)
@@ -101,18 +107,59 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "selfServiceCredentialsHandler",
-              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == sessionUsername,
+              isCurrentStoredAccount(),
               let dict = message.body as? [String: String] else { return }
-        if let u = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !u.isEmpty {
-            guard sessionUsername.isEmpty || u == sessionUsername else { return }
-            SettingsManager.shared.portalUsername = u
-            if sessionUsername.isEmpty {
-                sessionUsername = u
+
+        if let username = dict["username"]?.trimmingCharacters(in: .whitespacesAndNewlines), !username.isEmpty {
+            guard sessionUsernameAtStart.isEmpty || username == sessionUsernameAtStart else {
+                rejectedUsernameChange = true
+                pendingPortalCredentials = nil
+                return
+            }
+            rejectedUsernameChange = false
+            if sessionUsername != username {
+                sessionUsername = username
+                pendingPortalCredentials = nil
             }
         }
-        if let p = dict["password"], !p.isEmpty {
-            SettingsManager.shared.portalPassword = p
+
+        if let password = dict["password"], !password.isEmpty, !sessionUsername.isEmpty {
+            pendingPortalCredentials = (sessionUsername, password)
         }
+    }
+
+    private func isCurrentStoredAccount() -> Bool {
+        SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == sessionUsernameAtStart
+    }
+
+    private func isCurrentLoginSession(_ expectedUsername: String? = nil) -> Bool {
+        guard isCurrentStoredAccount(), !rejectedUsernameChange else { return false }
+        return expectedUsername.map { sessionUsername == $0 } ?? true
+    }
+
+    @discardableResult
+    private func commitPendingPortalCredentialsIfNeeded(for expectedUsername: String) -> Bool {
+        guard isCurrentLoginSession(expectedUsername),
+              let pending = pendingPortalCredentials,
+              pending.username == expectedUsername,
+              !pending.password.isEmpty else { return false }
+
+        let previousUsername = sessionUsernameAtStart
+        let previousStudentID = SettingsManager.shared.courseStudentId
+        SettingsManager.shared.portalUsername = pending.username
+        SettingsManager.shared.portalPassword = pending.password
+        pendingPortalCredentials = nil
+
+        if pending.username != previousUsername {
+            SettingsWindowController.shared.handleExternalAccountSwitch(
+                previousUsername: previousUsername,
+                previousStudentID: previousStudentID,
+                preservePortalPassword: true
+            )
+        }
+
+        sessionUsernameAtStart = pending.username
+        return true
     }
 
     // 仅为自服务旧版 HTTPS 端口兼容证书；重定向到其他主机时走系统校验。
@@ -148,7 +195,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         progressIndicator.stopAnimation(nil)
-        guard SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == sessionUsername else { return }
+        guard isCurrentStoredAccount() else { return }
         if let urlStr = webView.url?.absoluteString, urlStr.contains("/Self/login") {
             let savedU = SettingsManager.shared.portalUsername
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -229,25 +276,29 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         let expectedSessionToken = sessionToken
         let expectedUsername = sessionUsername
         guard !expectedUsername.isEmpty,
-              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else { return }
+              isCurrentLoginSession(expectedUsername) else { return }
         // 先检查 HTML 内容
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak self] result, _ in
             guard let self = self,
                   self.sessionToken == expectedSessionToken,
                   self.sessionUsername == expectedUsername,
-                  SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername,
+                  self.isCurrentLoginSession(expectedUsername),
                   !self.isCapturingSession else { return }
             let text = (result as? String) ?? ""
 
             // 如果页面中包含了自服务的特征词
             if text.contains("可用流量") || text.contains("已用流量") || text.contains("消费保护") || text.contains("账户余额") {
+                let committedCredentials = self.commitPendingPortalCredentialsIfNeeded(for: expectedUsername)
+                if self.sessionUsernameAtStart.isEmpty && !committedCredentials {
+                    return
+                }
                 self.isCapturingSession = true
                 // 先提取最新的 xywzz 自服务专属 JSESSIONID Cookie，避免混入其它站点同名 JSESSIONID
                 self.webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
                     guard let self = self else { return }
                     guard self.sessionToken == expectedSessionToken,
                           self.sessionUsername == expectedUsername,
-                          SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else {
+                          self.isCurrentLoginSession(expectedUsername) else {
                         self.isCapturingSession = false
                         return
                     }
@@ -267,7 +318,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                         guard let self = self else { return }
                         guard self.sessionToken == expectedSessionToken,
                               self.sessionUsername == expectedUsername,
-                              SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else {
+                              self.isCurrentLoginSession(expectedUsername) else {
                             self.isCapturingSession = false
                             return
                         }
@@ -286,7 +337,7 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
                     guard let self = self,
                           self.sessionToken == token,
                           self.sessionUsername == expectedUsername,
-                          SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == expectedUsername else { return }
+                          self.isCurrentLoginSession(expectedUsername) else { return }
                     self.window?.close()
                 }
             }

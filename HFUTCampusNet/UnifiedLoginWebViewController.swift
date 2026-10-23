@@ -488,7 +488,8 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
         SettingsWindowController.shared.handleExternalAccountSwitch(
             previousUsername: loginSessionUsernameAtStart,
             previousStudentID: loginSessionStudentIdAtStart,
-            preserveUnifiedLoginSession: true
+            preserveUnifiedLoginSession: true,
+            preserveCasPassword: true
         )
 
         loginSessionUsernameAtStart = currentUsername
