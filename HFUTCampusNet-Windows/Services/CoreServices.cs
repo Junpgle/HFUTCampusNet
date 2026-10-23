@@ -70,6 +70,7 @@ public sealed class SettingsManager
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "HFUTCampusNet");
     private static readonly string SettingsFile = Path.Combine(AppDataFolder, "settings.json");
+    private static readonly object SaveLock = new();
 
     // 配置字段
     public string? SessionCookie { get; set; }
@@ -162,15 +163,25 @@ public sealed class SettingsManager
 
     public void Save()
     {
-        try
+        lock (SaveLock)
         {
-            Directory.CreateDirectory(AppDataFolder);
-            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(SettingsFile, json, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[SettingsManager] Save failed: {ex.Message}");
+            var temporaryFile = SettingsFile + ".tmp";
+            try
+            {
+                Directory.CreateDirectory(AppDataFolder);
+                var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+                File.Move(temporaryFile, SettingsFile, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SettingsManager] Save failed: {ex.Message}");
+                try
+                {
+                    if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+                }
+                catch { }
+            }
         }
     }
 
