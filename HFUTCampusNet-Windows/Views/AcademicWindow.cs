@@ -690,13 +690,15 @@ public sealed class AcademicWindow : Window
             .Select(time => time!.Value)
             .DefaultIfEmpty()
             .Max();
-        if (lastSync != default)
+        if (!string.IsNullOrWhiteSpace(snapshot?.LastErrorMessage))
+        {
+            _statusLabel.Text = lastSync != default
+                ? $"同步失败：{snapshot.LastErrorMessage}；上次成功同步：{lastSync:MM-dd HH:mm:ss}"
+                : $"同步失败：{snapshot.LastErrorMessage}";
+        }
+        else if (lastSync != default)
         {
             _statusLabel.Text = $"上次同步：{lastSync:MM-dd HH:mm:ss}（每 15 分钟后台静默检测新出分）";
-        }
-        else if (!string.IsNullOrWhiteSpace(snapshot?.LastErrorMessage))
-        {
-            _statusLabel.Text = $"同步提示：{snapshot.LastErrorMessage}";
         }
         else
         {

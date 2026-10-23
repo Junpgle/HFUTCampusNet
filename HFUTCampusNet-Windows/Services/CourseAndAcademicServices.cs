@@ -877,8 +877,31 @@ public sealed class AcademicService
                 var mergedGrades = MergeGrades(uniGrades, webGrades);
                 var mergedExams = MergeExams(uniExams, webExams);
 
+                if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null &&
+                    webBooks.Count == 0 && webSurveys.Count == 0)
+                {
+                    bool staleEmptyResult = false;
+                    lock (_stateLock)
+                    {
+                        if (generation != _cacheGeneration)
+                        {
+                            staleEmptyResult = true;
+                        }
+                        else if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            if (LatestData == null) return;
+                            LatestData.LastErrorMessage = "教务系统未返回有效数据，请检查认证状态或网络连接。";
+                            SaveCache();
+                        })) staleEmptyResult = true;
+                    }
+
+                    if (!staleEmptyResult)
+                        AppEvents.RaiseAcademicDataUpdated();
+                    callback?.Invoke(false);
+                    return;
+                }
+
                 bool staleGeneration = false;
-                bool retainedCachedGrades = false;
                 lock (_stateLock)
                 {
                     if (generation != _cacheGeneration)
@@ -888,47 +911,31 @@ public sealed class AcademicService
                     else if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                     {
                         var prevSnapshot = LatestData;
+                        var studentId = SettingsManager.Shared.CourseStudentId;
+                        if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
 
-                        // 若网络完全无响应且已有旧缓存，保留旧缓存
-                        if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null &&
-                            webBooks.Count == 0 && webSurveys.Count == 0 &&
-                            prevSnapshot != null && prevSnapshot.AllGrades.Count > 0)
+                        var newSnapshot = new AcademicDataSnapshot
                         {
-                            retainedCachedGrades = true;
-                        }
-                        if (!retainedCachedGrades)
-                        {
-                            var studentId = SettingsManager.Shared.CourseStudentId;
-                            if (string.IsNullOrEmpty(studentId)) studentId = SettingsManager.Shared.PortalUsername;
+                            StudentId = studentId,
+                            AllGrades = mergedGrades.Count > 0 ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
+                            Exams = mergedExams.Count > 0 ? mergedExams : (prevSnapshot?.Exams ?? new()),
+                            ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
+                            Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
+                            Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
+                            LastGradesSyncTime = DateTime.Now,
+                            LastExamsSyncTime = DateTime.Now
+                        };
 
-                            var newSnapshot = new AcademicDataSnapshot
-                            {
-                                StudentId = studentId,
-                                AllGrades = mergedGrades.Count > 0 ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
-                                Exams = mergedExams.Count > 0 ? mergedExams : (prevSnapshot?.Exams ?? new()),
-                                ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
-                                Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
-                                Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
-                                LastGradesSyncTime = DateTime.Now,
-                                LastExamsSyncTime = DateTime.Now
-                            };
+                        // 出分静默通知检测
+                        CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
 
-                            // 出分静默通知检测
-                            CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
-
-                            LatestData = newSnapshot;
-                            SaveCache();
-                        }
+                        LatestData = newSnapshot;
+                        SaveCache();
                     })) staleGeneration = true;
                 }
                 if (staleGeneration)
                 {
                     callback?.Invoke(false);
-                    return;
-                }
-                if (retainedCachedGrades)
-                {
-                    callback?.Invoke(true);
                     return;
                 }
                 AppEvents.RaiseAcademicDataUpdated();
