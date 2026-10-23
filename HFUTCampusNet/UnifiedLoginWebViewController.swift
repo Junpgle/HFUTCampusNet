@@ -374,20 +374,12 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url?.absoluteString {
-            // 如果检测到 HuiXin OAuth 回调或者 EAMS 5.0 回调
-            if isAccountAuthFlowEnabled && url.contains("synjones-auth=") {
-                let token = url.components(separatedBy: "synjones-auth=").last?
-                    .components(separatedBy: "&").first?
-                    .components(separatedBy: "#").first?
-                    .removingPercentEncoding
-                if let t = token, !t.isEmpty {
-                    SettingsManager.shared.huixinAuthToken = t
-                    updateStep(index: 2, text: "3. 宿舍电费与校园卡", status: .inProgress)
-                    ElectricityService.shared.fetchData { _ in }
-                    CampusCardService.shared.fetchData { _ in }
-                }
-            }
+        if isAccountAuthFlowEnabled,
+           let token = HuiXinOAuthCallback.token(from: navigationAction.request.url) {
+            SettingsManager.shared.huixinAuthToken = token
+            updateStep(index: 2, text: "3. 宿舍电费与校园卡", status: .inProgress)
+            ElectricityService.shared.fetchData { _ in }
+            CampusCardService.shared.fetchData { _ in }
         }
         decisionHandler(.allow)
     }
@@ -693,17 +685,9 @@ private class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        if let location = response.value(forHTTPHeaderField: "Location") {
-            if location.contains("synjones-auth=") {
-                let token = location.components(separatedBy: "synjones-auth=").last?
-                    .components(separatedBy: "&").first?
-                    .components(separatedBy: "#").first?
-                    .removingPercentEncoding
-                if let t = token, !t.isEmpty, !didCapture {
-                    didCapture = true
-                    onCaptured(t)
-                }
-            }
+        if !didCapture, let token = HuiXinOAuthCallback.token(from: request.url) {
+            didCapture = true
+            onCaptured(token)
         }
         completionHandler(request)
     }
@@ -713,5 +697,18 @@ private class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate {
             didCapture = true
             onCaptured(nil)
         }
+    }
+}
+
+private enum HuiXinOAuthCallback {
+    static func token(from url: URL?) -> String? {
+        guard let url,
+              url.scheme?.lowercased() == "http",
+              url.host?.lowercased() == "121.251.19.62",
+              url.path == "/berserker-base/redirect",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let token = components.queryItems?.first(where: { $0.name == "synjones-auth" })?.value,
+              !token.isEmpty else { return nil }
+        return token
     }
 }
