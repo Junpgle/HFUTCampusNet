@@ -363,6 +363,7 @@ public class SettingsWindow : Window
                 SettingsManager.Shared.SessionCookie = "";
                 SettingsManager.Shared.HuixinAuthToken = "";
                 SettingsManager.Shared.UniAppJwt = "";
+                SettingsManager.Shared.JxglstuDefaultPasswordCache = "";
                 SettingsManager.Shared.Save();
                 AcademicService.Shared.ClearCache();
                 CampusCardService.Shared.ClearCache();
