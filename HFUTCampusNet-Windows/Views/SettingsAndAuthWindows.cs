@@ -2292,6 +2292,7 @@ public class CourseLoginWebWindow : Window
             if (success)
             {
                 CommitPendingCasCredentialsAfterAuthentication();
+                var accountGeneration = _accountSessionGenerationAtStart;
                 string stdId = root.TryGetProperty("stdId", out var sElem) ? sElem.GetString() ?? "" : "";
                 string semId = root.TryGetProperty("semId", out var smElem) ? smElem.GetString() ?? "" : "";
                 string bizId = root.TryGetProperty("bizId", out var bElem) ? bElem.GetString() ?? "" : "";
@@ -2302,7 +2303,7 @@ public class CourseLoginWebWindow : Window
 
                 if (!string.IsNullOrWhiteSpace(derivedPwd))
                 {
-                    if (!AccountSessionManager.TryRunForGeneration(_accountSessionGenerationAtStart, () =>
+                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                     {
                         SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
                         SettingsManager.Shared.Save();
@@ -2316,7 +2317,7 @@ public class CourseLoginWebWindow : Window
                 {
                     string datum = dElem.GetString()!;
                     schedule = CourseScheduleService.Shared.ApplyDatumJSONString(
-                        datum, stdId, semId, bizId, _accountSessionGenerationAtStart);
+                        datum, stdId, semId, bizId, accountGeneration);
                 }
 
                 // 2. 兜底：通过页内 DOM 表格解析出的 lessons 数组还原
@@ -2373,7 +2374,7 @@ public class CourseLoginWebWindow : Window
                             LastSyncTime = DateTime.Now,
                             Lessons = parsedDomLessons
                         };
-                        CourseScheduleService.Shared.ApplyCustomSchedule(schedule, _accountSessionGenerationAtStart);
+                        CourseScheduleService.Shared.ApplyCustomSchedule(schedule, accountGeneration);
                     }
                 }
 
@@ -2384,7 +2385,7 @@ public class CourseLoginWebWindow : Window
                 if (!string.IsNullOrWhiteSpace(gradeHtml) || !string.IsNullOrWhiteSpace(examHtml))
                 {
                     AcademicService.Shared.ApplyWebGradeAndExamHtml(
-                        gradeHtml, examHtml, _accountSessionGenerationAtStart);
+                        gradeHtml, examHtml, accountGeneration);
                 }
 
                 if (schedule != null && schedule.Lessons.Count > 0)
@@ -2397,10 +2398,10 @@ public class CourseLoginWebWindow : Window
                         {
                             await EmptyClassroomService.Shared.EnsureValidTokenAsync(
                                 forceRelogin: true,
-                                expectedAccountGeneration: _accountSessionGenerationAtStart);
-                            if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
+                                expectedAccountGeneration: accountGeneration);
+                            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
                             EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
-                            AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: _accountSessionGenerationAtStart);
+                            AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
                         }
                         catch { }
                     });
