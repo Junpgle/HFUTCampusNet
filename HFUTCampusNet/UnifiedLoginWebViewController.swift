@@ -398,8 +398,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
             let hasTGC = tgc != nil
 
-            let currentURL = self.webView.url?.absoluteString ?? ""
-            guard !currentURL.isEmpty else { return }
+            guard let currentURL = self.webView.url else { return }
 
             let domCheckJS = """
             (function() {
@@ -414,22 +413,24 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
                 guard let self = self,
                       self.isAccountAuthFlowEnabled,
                       self.syncSessionToken == sessionToken,
+                      self.webView.url?.absoluteString == currentURL.absoluteString,
                       !self.isSyncingAll else { return }
                 let dict = res as? [String: Any]
-                let hasPwdInput = (dict?["hasPwd"] as? Bool) ?? (currentURL.contains("/cas/login") || currentURL.contains("/login?"))
+                let hasPwdInput = (dict?["hasPwd"] as? Bool) ?? HFUTCASLoginSupport.isLoginPage(currentURL)
                 let hasSuccessText = (dict?["hasSuccessText"] as? Bool) ?? false
 
                 // 若页面上仍显示密码输入框，说明仍在等待用户登录，绝不因残留 Cookie 误触发
                 guard !hasPwdInput else { return }
 
-                let redirectedToService = currentURL.contains("ticket=") ||
-                    currentURL.contains("one.hfut.edu.cn") ||
-                    currentURL.contains("i.hfut.edu.cn") ||
-                    currentURL.contains("jxglstu.hfut.edu.cn") ||
-                    currentURL.contains("loginsuccess")
+                let host = currentURL.host?.lowercased() ?? ""
+                let isKnownServiceHost = ["one.hfut.edu.cn", "i.hfut.edu.cn", "jxglstu.hfut.edu.cn"].contains(host)
+                let hasServiceTicket = URLComponents(url: currentURL, resolvingAgainstBaseURL: false)?
+                    .queryItems?
+                    .contains(where: { $0.name.caseInsensitiveCompare("ticket") == .orderedSame && !($0.value ?? "").isEmpty }) ?? false
+                let redirectedToService = isKnownServiceHost && hasServiceTicket
 
                 let authenticationConfirmed = hasTGC || redirectedToService
-                    || (currentURL.contains("cas.hfut.edu.cn") && hasSuccessText)
+                    || (host == "cas.hfut.edu.cn" && hasSuccessText)
                 guard authenticationConfirmed,
                       hasTGC || !self.casLoginCoordinator.hasPendingCredentials else { return }
                 self.startFullSSORefreshChain(
