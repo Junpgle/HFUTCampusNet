@@ -2612,6 +2612,16 @@ public class CourseLoginWebWindow : Window
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
 
         // 2. 双引擎页内提取：引擎 1 (官方 API) + 引擎 2 (DOM 视觉扫描)
+        string fallbackSemesterId = CourseCalendarHelper.InferSemesterId().ToString(CultureInfo.InvariantCulture);
+        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+        {
+            if (int.TryParse(SettingsManager.Shared.CourseSemesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var configuredSemesterId) &&
+                configuredSemesterId > 0)
+            {
+                fallbackSemesterId = configuredSemesterId.ToString(CultureInfo.InvariantCulture);
+            }
+        })) return;
+
         try
         {
             string runnerScript = @"
@@ -2632,7 +2642,7 @@ public class CourseLoginWebWindow : Window
                         try {
                             log('启动教务双通道全量数据提取器');
                             var stdId = '';
-                            var semId = '354';
+                            var semId = '__HFUT_DEFAULT_SEMESTER_ID__';
                             var bizId = '23';
                             var gradeHtml = '';
                             var examHtml = '';
@@ -2945,6 +2955,7 @@ public class CourseLoginWebWindow : Window
 
                     runExtraction();
                 })();";
+            runnerScript = runnerScript.Replace("__HFUT_DEFAULT_SEMESTER_ID__", fallbackSemesterId);
 
             await _webView.ExecuteScriptAsync(runnerScript);
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
@@ -3015,6 +3026,30 @@ public class CourseLoginWebWindow : Window
                         string startMonday = resElem.TryGetProperty("startMonday", out var smElem) ? smElem.GetString() ?? "2026-09-07" : "2026-09-07";
                         DateTime.TryParseExact(startMonday, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var mondayDate);
                         if (mondayDate == default) mondayDate = new DateTime(2026, 9, 7);
+                        string studentId = resElem.TryGetProperty("stdId", out var studentIdElem) ? studentIdElem.GetString() ?? string.Empty : string.Empty;
+                        string semesterId = resElem.TryGetProperty("semId", out var semesterIdElem) ? semesterIdElem.GetString() ?? string.Empty : string.Empty;
+                        string businessId = resElem.TryGetProperty("bizId", out var businessIdElem) ? businessIdElem.GetString() ?? string.Empty : string.Empty;
+                        string effectiveStudentId = string.Empty;
+                        string effectiveSemesterId = string.Empty;
+                        string effectiveBusinessId = string.Empty;
+                        int semesterCode = 0;
+                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+                        {
+                            var settings = SettingsManager.Shared;
+                            if (!string.IsNullOrWhiteSpace(studentId)) settings.CourseStudentId = studentId;
+                            if (int.TryParse(semesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pageSemesterId) && pageSemesterId > 0)
+                                settings.CourseSemesterId = pageSemesterId.ToString(CultureInfo.InvariantCulture);
+                            if (!string.IsNullOrWhiteSpace(businessId)) settings.CourseBizTypeId = businessId;
+                            if (!int.TryParse(settings.CourseSemesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out semesterCode) || semesterCode <= 0)
+                            {
+                                semesterCode = CourseCalendarHelper.InferSemesterId(mondayDate);
+                                settings.CourseSemesterId = semesterCode.ToString(CultureInfo.InvariantCulture);
+                            }
+                            settings.Save();
+                            effectiveStudentId = settings.CourseStudentId;
+                            effectiveSemesterId = settings.CourseSemesterId;
+                            effectiveBusinessId = settings.CourseBizTypeId;
+                        })) return;
 
                         var allParsedLessons = new List<CourseLesson>();
                         int idx = 0;
@@ -3060,10 +3095,10 @@ public class CourseLoginWebWindow : Window
                         {
                             schedule = new CourseScheduleData
                             {
-                                StudentId = SettingsManager.Shared.CourseStudentId,
-                                SemesterId = SettingsManager.Shared.CourseSemesterId,
-                                SemesterName = "2026-2027学年 第一学期",
-                                BizTypeId = SettingsManager.Shared.CourseBizTypeId,
+                                StudentId = effectiveStudentId,
+                                SemesterId = effectiveSemesterId,
+                                SemesterName = CourseCalendarHelper.FormatSemesterName(semesterCode),
+                                BizTypeId = effectiveBusinessId,
                                 LastSyncTime = DateTime.Now,
                                 Lessons = allParsedLessons
                             };
