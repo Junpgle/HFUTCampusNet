@@ -203,6 +203,7 @@ public sealed class CampusHistoryManager
     private Dictionary<string, List<ElectricityDailyRecord>> _archivedElectricityRecords = new(StringComparer.Ordinal);
     private string _activeElectricityDormKey = string.Empty;
     private bool _historyBackupRequired;
+    private bool _electricityPartitionBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -454,6 +455,8 @@ public sealed class CampusHistoryManager
     {
         if (_historyBackupRequired && !TryBackupUnreadableHistory()) return;
         _historyBackupRequired = false;
+        if (_electricityPartitionBackupRequired && !BackupHistoryBeforeElectricityPartitionMigration()) return;
+        _electricityPartitionBackupRequired = false;
 
         var temporaryFile = _historyFile + ".tmp";
         try
@@ -526,10 +529,16 @@ public sealed class CampusHistoryManager
             else
             {
                 // Legacy records belong to the dorm currently configured in settings.
-                BackupHistoryBeforeElectricityPartitionMigration();
-                _activeElectricityDormKey = currentDormKey;
-                _archivedElectricityRecords.Remove(currentDormKey);
-                needsSave = true;
+                if (BackupHistoryBeforeElectricityPartitionMigration())
+                {
+                    _activeElectricityDormKey = currentDormKey;
+                    _archivedElectricityRecords.Remove(currentDormKey);
+                    needsSave = true;
+                }
+                else
+                {
+                    _electricityPartitionBackupRequired = true;
+                }
             }
 
             if (needsSave) Save();
@@ -566,18 +575,20 @@ public sealed class CampusHistoryManager
         settings.DormEndNumber ?? "11"
     });
 
-    private void BackupHistoryBeforeElectricityPartitionMigration()
+    private bool BackupHistoryBeforeElectricityPartitionMigration()
     {
-        if (!File.Exists(_historyFile)) return;
+        if (!File.Exists(_historyFile)) return true;
         var backupFile = _historyFile + ".pre-dorm-history-partition.bak";
-        if (File.Exists(backupFile)) return;
+        if (File.Exists(backupFile)) return true;
         try
         {
             File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"Electricity history migration backup failed: {ex.Message}");
+            return false;
         }
     }
 
