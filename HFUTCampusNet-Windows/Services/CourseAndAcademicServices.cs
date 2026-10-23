@@ -74,6 +74,7 @@ public sealed class CourseScheduleService
 
     private bool TryApplySyncedSchedule(CourseScheduleData schedule, int generation, long accountGeneration)
     {
+        EnsureSemesterOptions(schedule);
         lock (_scheduleStateLock)
         {
             if (generation != _scheduleGeneration) return false;
@@ -83,6 +84,40 @@ public sealed class CourseScheduleService
                 SaveCache();
             });
         }
+    }
+
+    private static void EnsureSemesterOptions(CourseScheduleData schedule)
+    {
+        var namesById = new Dictionary<int, string>();
+        foreach (var option in schedule.Semesters ?? new List<SemesterOptionItem>())
+        {
+            if (option != null && int.TryParse(option.Id, out var semesterId) && semesterId > 0 &&
+                !namesById.ContainsKey(semesterId))
+            {
+                namesById[semesterId] = option.NameZh;
+            }
+        }
+
+        var semesterIds = new HashSet<int>(namesById.Keys);
+        var latestSemesterId = CourseCalendarHelper.InferSemesterId();
+        for (var offset = 0; offset < 8; offset++)
+        {
+            var semesterId = latestSemesterId - offset * 20;
+            if (semesterId > 0) semesterIds.Add(semesterId);
+        }
+        if (int.TryParse(schedule.SemesterId, out var currentSemesterId) && currentSemesterId > 0)
+            semesterIds.Add(currentSemesterId);
+
+        schedule.Semesters = semesterIds
+            .OrderByDescending(semesterId => semesterId)
+            .Select(semesterId => new SemesterOptionItem
+            {
+                Id = semesterId.ToString(CultureInfo.InvariantCulture),
+                NameZh = namesById.TryGetValue(semesterId, out var name) && !string.IsNullOrWhiteSpace(name)
+                    ? name
+                    : CourseCalendarHelper.FormatSemesterName(semesterId)
+            })
+            .ToList();
     }
 
     public void TryBackgroundLogin(Action<bool>? callback = null)
@@ -234,6 +269,7 @@ public sealed class CourseScheduleService
     public void ApplyCustomSchedule(CourseScheduleData schedule, long? expectedAccountGeneration = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        EnsureSemesterOptions(schedule);
         CourseLesson.EnrichLessons(schedule.Lessons);
         lock (_scheduleStateLock)
         {
@@ -284,6 +320,7 @@ public sealed class CourseScheduleService
                         LastSyncTime = DateTime.Now,
                         Lessons = parsedLessons
                     };
+                    EnsureSemesterOptions(schedule);
 
                     CurrentSchedule = schedule;
                     SaveCache();
@@ -712,6 +749,10 @@ public sealed class CourseScheduleService
                 if (CurrentSchedule?.Lessons != null && CurrentSchedule.Lessons.Count > 0)
                 {
                     CourseLesson.EnrichLessons(CurrentSchedule.Lessons);
+                }
+                if (CurrentSchedule != null)
+                {
+                    EnsureSemesterOptions(CurrentSchedule);
                 }
             }
         }
