@@ -946,7 +946,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private static func invalidateAccountScopedData(previousUsername: String, previousStudentID: String) {
         let previousUser = previousUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let currentUser = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !previousUser.isEmpty, currentUser != previousUser else { return }
+        guard currentUser != previousUser else { return }
 
         CourseScheduleService.shared.clearSchedule()
         SettingsManager.shared.sessionCookie = nil

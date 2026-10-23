@@ -482,8 +482,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
 
     private func clearPreviousAccountDataIfNeeded() {
         let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !loginSessionUsernameAtStart.isEmpty,
-              !currentUsername.isEmpty,
+        guard !currentUsername.isEmpty,
               currentUsername != loginSessionUsernameAtStart else { return }
 
         CourseScheduleService.shared.clearSchedule()
