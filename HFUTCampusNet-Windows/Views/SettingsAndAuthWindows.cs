@@ -1352,7 +1352,10 @@ public class UnifiedLoginWebWindow : Window
         _statusDetailText.Text = "如页面提示验证码，请在上方网页完成验证后继续";
 
         // Auto-fill credentials if on login form
-        if (currentUrl.Contains("cas.hfut.edu.cn") || currentUrl.Contains("/login"))
+        if (Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri) &&
+            currentUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.Host.Equals("cas.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
+            currentUri.AbsolutePath.Equals("/cas/login", StringComparison.OrdinalIgnoreCase))
         {
             string username = string.Empty;
             string password = string.Empty;
