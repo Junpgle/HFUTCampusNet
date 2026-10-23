@@ -764,6 +764,9 @@ public sealed class EmptyClassroomService
 
                 foreach (var campusId in campusesToSync)
                 {
+                    var todayCacheWasComplete = IsCampusSnapshotComplete(campusId, today);
+                    var tomorrowCacheWasComplete = IsCampusSnapshotComplete(campusId, tomorrow);
+
                     // 并发拉取当前校区的今日与明日数据
                     var todayTask = FetchCampusRoomsAsync(campusId, today, forceRefresh);
                     var tomorrowTask = FetchCampusRoomsAsync(campusId, tomorrow, forceRefresh);
@@ -772,8 +775,8 @@ public sealed class EmptyClassroomService
 
                     var todayRooms = await todayTask;
                     var tomorrowRooms = await tomorrowTask;
-                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, today, todayRooms, allResults);
-                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, tomorrow, tomorrowRooms, allResults);
+                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, today, todayRooms, allResults, todayCacheWasComplete);
+                    hasFreshSnapshot |= AddSnapshotOrKeepCache(campusId, tomorrow, tomorrowRooms, allResults, tomorrowCacheWasComplete);
                 }
 
                 if (hasFreshSnapshot)
@@ -837,7 +840,12 @@ public sealed class EmptyClassroomService
         }
     }
 
-    private bool AddSnapshotOrKeepCache(int campusId, string dateString, List<ClassroomOccupationItem> fetched, List<ClassroomOccupationItem> destination)
+    private bool AddSnapshotOrKeepCache(
+        int campusId,
+        string dateString,
+        List<ClassroomOccupationItem> fetched,
+        List<ClassroomOccupationItem> destination,
+        bool cachedSnapshotWasComplete)
     {
         var cached = CachedRooms.Where(room => room.CampusId == campusId && room.DateString == dateString).ToList();
         bool isComplete = IsCampusSnapshotComplete(campusId, dateString);
@@ -848,6 +856,7 @@ public sealed class EmptyClassroomService
         }
 
         destination.AddRange(cached);
+        _campusSnapshotCompleteness[$"{campusId}|{dateString}"] = cachedSnapshotWasComplete;
         return false;
     }
 
