@@ -367,6 +367,14 @@ public sealed class CourseScheduleService
             {
                 return null;
             }
+            if (!redirectUrl.IsAbsoluteUri ||
+                !(redirectUrl.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                  redirectUrl.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)) ||
+                !redirectUrl.Host.Equals("jxglstu.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) ||
+                !redirectUrl.AbsolutePath.Equals("/eams5-student/neusoft-sso/login", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
 
             // 2. 跟随重定向到教务系统 (http://jxglstu.hfut.edu.cn/eams5-student/neusoft-sso/login?ticket=ST-...)
             using var req2 = new HttpRequestMessage(HttpMethod.Get, redirectUrl);

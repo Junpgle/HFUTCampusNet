@@ -858,13 +858,14 @@ public class CourseScheduleService {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
 
         ssoSession.dataTask(with: req) { [weak self] _, response, error in
+            let finalURL = (response as? HTTPURLResponse)?.url
             guard let self = self,
                   self.isCurrentScheduleGeneration(generation),
                   error == nil,
-                  let http = response as? HTTPURLResponse,
-                  let finalURL = http.url?.absoluteString,
-                  finalURL.contains("jxglstu.hfut.edu.cn"),
-                  !finalURL.contains("cas.hfut.edu.cn/cas/login") else {
+                  let finalURL,
+                  ["http", "https"].contains(finalURL.scheme?.lowercased() ?? ""),
+                  finalURL.host?.lowercased() == "jxglstu.hfut.edu.cn",
+                  finalURL.path == "/eams5-student" || finalURL.path.hasPrefix("/eams5-student/") else {
                 ssoSession.finishTasksAndInvalidate()
                 completion(false)
                 return
