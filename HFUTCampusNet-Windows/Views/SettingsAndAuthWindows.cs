@@ -1328,7 +1328,19 @@ public class UnifiedLoginWebWindow : Window
         Show();
         Activate();
 
-        await _webView.EnsureCoreWebView2Async();
+        try
+        {
+            await _webView.EnsureCoreWebView2Async();
+        }
+        catch (Exception ex)
+        {
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, _accountSessionGenerationAtStart)) return;
+            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
+            _statusDetailText.Text = "请检查 WebView2 Runtime 是否可用，然后重新加载页面";
+            _progressBar.Visibility = Visibility.Collapsed;
+            UpdateStep(0, StepStatus.Failure);
+            return;
+        }
         if (_loginWindowSessionId != loginWindowSessionId ||
             !AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
         _webView.CoreWebView2.Navigate("https://cas.hfut.edu.cn/cas/login?service=https%3A%2F%2Fcas.hfut.edu.cn%2Fcas%2Flogin");
@@ -1773,7 +1785,16 @@ public class LoginWebWindow : Window
         Show();
         Activate();
 
-        await _webView.EnsureCoreWebView2Async();
+        try
+        {
+            await _webView.EnsureCoreWebView2Async();
+        }
+        catch (Exception ex)
+        {
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
+            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
+            return;
+        }
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         _statusText.Text = "正在连接校园网自服务系统，若已保存账号密码将自动填充...";
         _webView.CoreWebView2.Navigate("https://xywzz.hfut.edu.cn:8443/Self/login/?302=LI");
@@ -2205,7 +2226,16 @@ public class CourseLoginWebWindow : Window
         Show();
         Activate();
 
-        await _webView.EnsureCoreWebView2Async();
+        try
+        {
+            await _webView.EnsureCoreWebView2Async();
+        }
+        catch (Exception ex)
+        {
+            if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
+            _statusText.Text = $"WebView2 初始化失败: {ex.Message}";
+            return;
+        }
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         _statusText.Text = "请登录教务系统（如已登录将自动同步课表与考试）...";
         // 对齐 Mac 端：直接导航至课表页，教务系统会自动无缝重定向到统一认证登录，登录后携票据自动跳回
