@@ -2212,25 +2212,13 @@ public class CourseLoginWebWindow : Window
         {
             if (!AccountSessionManager.IsGenerationCurrent(_accountSessionGenerationAtStart)) return;
             if (!Uri.TryCreate(e.Source, UriKind.Absolute, out var sourceUri)) return;
-
             bool sourceIsCasLoginPage = sourceUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
                 sourceUri.Host.Equals("cas.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
                 sourceUri.AbsolutePath.Equals("/cas/login", StringComparison.OrdinalIgnoreCase);
-            bool sourceIsEamsCourseTable =
-                (sourceUri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
-                 sourceUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)) &&
-                sourceUri.Host.Equals("jxglstu.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
-                (sourceUri.AbsolutePath.Equals("/eams5-student/for-std/course-table", StringComparison.OrdinalIgnoreCase) ||
-                 sourceUri.AbsolutePath.StartsWith("/eams5-student/for-std/course-table/", StringComparison.OrdinalIgnoreCase));
-            if (!sourceIsCasLoginPage && !sourceIsEamsCourseTable) return;
+            if (!sourceIsCasLoginPage) return;
 
             string raw = e.TryGetWebMessageAsString();
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                raw = e.WebMessageAsJson;
-            }
-
-            // 安全解包任何外层 JSON 字符串包裹
+            if (string.IsNullOrWhiteSpace(raw)) raw = e.WebMessageAsJson;
             while (raw.StartsWith("\"") && raw.EndsWith("\"") && raw.Length > 2)
             {
                 try
@@ -2239,187 +2227,33 @@ public class CourseLoginWebWindow : Window
                     if (string.IsNullOrEmpty(unescaped)) break;
                     raw = unescaped;
                 }
-                catch
-                {
-                    break;
-                }
+                catch { break; }
             }
 
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("type", out var typeElem)) return;
+
+            var type = typeElem.GetString();
+            if (type == "casCredentials")
             {
-                _statusText.Text = "⚠️ 收到非对象消息";
-                return;
+                string username = root.TryGetProperty("username", out var usernameElem) ? usernameElem.GetString() ?? string.Empty : string.Empty;
+                string password = root.TryGetProperty("password", out var passwordElem) ? passwordElem.GetString() ?? string.Empty : string.Empty;
+                bool submitted = root.TryGetProperty("submitted", out var submittedElem) &&
+                    submittedElem.ValueKind == JsonValueKind.True;
+                if (!submitted) return;
+                if (!string.IsNullOrWhiteSpace(username)) _pendingCasUsername = username.Trim();
+                if (!string.IsNullOrWhiteSpace(password)) _pendingCasPassword = password.Trim();
             }
-
-            if (root.TryGetProperty("type", out var typeElem))
+            else if (type == "casLoginFailed")
             {
-                var typeStr = typeElem.GetString();
-                if (typeStr == "casCredentials")
-                {
-                    if (!sourceIsCasLoginPage) return;
-                    string u = root.TryGetProperty("username", out var uE) ? uE.GetString() ?? "" : "";
-                    string p = root.TryGetProperty("password", out var pE) ? pE.GetString() ?? "" : "";
-                    bool submitted = root.TryGetProperty("submitted", out var submittedElem) &&
-                        submittedElem.ValueKind == JsonValueKind.True;
-                    if (!submitted) return;
-                    if (!string.IsNullOrWhiteSpace(u)) _pendingCasUsername = u.Trim();
-                    if (!string.IsNullOrWhiteSpace(p)) _pendingCasPassword = p.Trim();
-                    return;
-                }
-
-                if (typeStr == "casLoginFailed")
-                {
-                    if (!sourceIsCasLoginPage) return;
-                    _pendingCasUsername = null;
-                    _pendingCasPassword = null;
-                    return;
-                }
-
-                if (typeStr != "courseExtract")
-                {
-                    return;
-                }
-                if (!sourceIsEamsCourseTable) return;
+                _pendingCasUsername = null;
+                _pendingCasPassword = null;
             }
-            else
-            {
-                return;
-            }
-
-            bool success = root.TryGetProperty("success", out var succElem) && succElem.GetBoolean();
-            if (success)
-            {
-                CommitPendingCasCredentialsAfterAuthentication();
-                var accountGeneration = _accountSessionGenerationAtStart;
-                string stdId = root.TryGetProperty("stdId", out var sElem) ? sElem.GetString() ?? "" : "";
-                string semId = root.TryGetProperty("semId", out var smElem) ? smElem.GetString() ?? "" : "";
-                string bizId = root.TryGetProperty("bizId", out var bElem) ? bElem.GetString() ?? "" : "";
-
-                string? gradeHtml = root.TryGetProperty("gradeHtml", out var ghE) ? ghE.GetString() : null;
-                string? examHtml = root.TryGetProperty("examHtml", out var ehE) ? ehE.GetString() : null;
-                string? derivedPwd = root.TryGetProperty("derivedUniAppPwd", out var dpE) ? dpE.GetString() : null;
-
-                if (!string.IsNullOrWhiteSpace(derivedPwd))
-                {
-                    if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                    {
-                        SettingsManager.Shared.JxglstuDefaultPasswordCache = derivedPwd.Trim();
-                        SettingsManager.Shared.Save();
-                    })) return;
-                }
-
-                CourseScheduleData? schedule = null;
-
-                // 1. 优先通过 API datum JSON 还原
-                if (root.TryGetProperty("datum", out var dElem) && !string.IsNullOrWhiteSpace(dElem.GetString()))
-                {
-                    string datum = dElem.GetString()!;
-                    schedule = CourseScheduleService.Shared.ApplyDatumJSONString(
-                        datum, stdId, semId, bizId, accountGeneration);
-                }
-
-                // 2. 兜底：通过页内 DOM 表格解析出的 lessons 数组还原
-                if ((schedule == null || schedule.Lessons.Count == 0) && root.TryGetProperty("lessons", out var lessonsElem) && lessonsElem.ValueKind == JsonValueKind.Array)
-                {
-                    var parsedDomLessons = new List<CourseLesson>();
-                    foreach (var item in lessonsElem.EnumerateArray())
-                    {
-                        var lesson = new CourseLesson
-                        {
-                            Id = item.TryGetProperty("id", out var idElem) ? idElem.GetString() ?? Guid.NewGuid().ToString("N") : Guid.NewGuid().ToString("N"),
-                            CourseName = item.TryGetProperty("name", out var nElem) ? nElem.GetString() ?? "" : "",
-                            CourseCode = item.TryGetProperty("code", out var cElem) ? cElem.GetString() : null,
-                            Classroom = item.TryGetProperty("room", out var rElem) ? rElem.GetString() : null,
-                            Teacher = item.TryGetProperty("teacher", out var tElem) ? tElem.GetString() : null,
-                            Weekday = item.TryGetProperty("weekday", out var wElem) ? wElem.GetInt32() : 1,
-                            StartUnit = item.TryGetProperty("startUnit", out var suElem) ? suElem.GetInt32() : 1,
-                            EndUnit = item.TryGetProperty("endUnit", out var euElem) ? euElem.GetInt32() : 2,
-                            DateString = item.TryGetProperty("dateString", out var dsElem) ? dsElem.GetString() ?? "" : "",
-                            StartTime = item.TryGetProperty("startTime", out var stElem) ? stElem.GetInt32() : 800,
-                            EndTime = item.TryGetProperty("endTime", out var etElem) ? etElem.GetInt32() : 940,
-                            WeekIndex = item.TryGetProperty("weekIndex", out var wiElem) ? wiElem.GetInt32() : null,
-                            WeekText = item.TryGetProperty("weekText", out var wtElem) ? wtElem.GetString() ?? "" : ""
-                        };
-                        if (!string.IsNullOrWhiteSpace(lesson.CourseName))
-                        {
-                            parsedDomLessons.Add(lesson);
-                        }
-                    }
-
-                    if (parsedDomLessons.Count > 0)
-                    {
-                        string effectiveStdId = string.Empty;
-                        string effectiveSemId = string.Empty;
-                        string effectiveBizId = string.Empty;
-                        if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                        {
-                            if (!string.IsNullOrEmpty(stdId)) SettingsManager.Shared.CourseStudentId = stdId;
-                            if (!string.IsNullOrEmpty(semId)) SettingsManager.Shared.CourseSemesterId = semId;
-                            if (!string.IsNullOrEmpty(bizId)) SettingsManager.Shared.CourseBizTypeId = bizId;
-                            SettingsManager.Shared.Save();
-                            effectiveStdId = SettingsManager.Shared.CourseStudentId;
-                            effectiveSemId = SettingsManager.Shared.CourseSemesterId;
-                            effectiveBizId = SettingsManager.Shared.CourseBizTypeId;
-                        })) return;
-
-                        int.TryParse(semId, out int sIdNum);
-                        schedule = new CourseScheduleData
-                        {
-                            StudentId = effectiveStdId,
-                            SemesterId = effectiveSemId,
-                            SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
-                            BizTypeId = effectiveBizId,
-                            LastSyncTime = DateTime.Now,
-                            Lessons = parsedDomLessons
-                        };
-                        CourseScheduleService.Shared.ApplyCustomSchedule(schedule, accountGeneration);
-                    }
-                }
-
-                // 立即在 UI 线程同步 Cookie
-                _ = SyncAllCookiesAsync();
-
-                // 立即就地应用同源提取到的成绩单和考场排考
-                if (!string.IsNullOrWhiteSpace(gradeHtml) || !string.IsNullOrWhiteSpace(examHtml))
-                {
-                    AcademicService.Shared.ApplyWebGradeAndExamHtml(
-                        gradeHtml, examHtml, accountGeneration);
-                }
-
-                if (schedule != null && schedule.Lessons.Count > 0)
-                {
-                    _statusText.Text = $"🎉 成功同步 {schedule.Lessons.Count} 节课程！正在同步期末考试、成绩单与空教室...";
-                    
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await EmptyClassroomService.Shared.EnsureValidTokenAsync(
-                                forceRelogin: true,
-                                expectedAccountGeneration: accountGeneration);
-                            if (!AccountSessionManager.IsGenerationCurrent(accountGeneration)) return;
-                            EmptyClassroomService.Shared.SyncTodayAndTomorrowStudyRooms(forceRefresh: true);
-                            AcademicService.Shared.SyncAll(silent: false, expectedAccountGeneration: accountGeneration);
-                        }
-                        catch { }
-                    });
-
-                    TrayMenuController.Shared.ShowNotification("🎉 教务数据全量同步成功", $"已成功同步本学期 {schedule.Lessons.Count} 节课、期末排考及全学期成绩！");
-                    Task.Delay(1500).ContinueWith(_ => AppEvents.InvokeOnUI(Hide));
-                    return;
-                }
-                else
-                {
-                    _statusText.Text = "⚠️ 提取到的排课数据为空，请确认当前学期是否已排课";
-                }
-            }
-            else
-            {
-                string errMsg = root.TryGetProperty("error", out var errElem) ? errElem.GetString() ?? "未知错误" : "提取失败";
-                _statusText.Text = $"⚠️ 提取提示: {errMsg}";
-            }
+            // Course extraction results are polled from window.__hfutExtractor below.
+            // The same JavaScript also posts them to WebMessageReceived, so consuming
+            // both channels here would apply and sync one result twice.
         }
         catch (Exception ex)
         {
