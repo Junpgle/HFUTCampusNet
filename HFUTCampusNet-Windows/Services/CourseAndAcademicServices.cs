@@ -774,7 +774,16 @@ public sealed class AcademicService
 
     public AcademicDataSnapshot? LatestData { get; private set; }
 
-    public int UnreadGradeCount => SettingsManager.Shared.UnreadGradeIds.Count;
+    public int UnreadGradeCount
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return SettingsManager.Shared.UnreadGradeIds.Count;
+            }
+        }
+    }
 
     private readonly string _cacheFile;
     private readonly HttpClient _client;
@@ -828,8 +837,11 @@ public sealed class AcademicService
 
     public void MarkAllGradesAsRead()
     {
-        SettingsManager.Shared.UnreadGradeIds.Clear();
-        SettingsManager.Shared.Save();
+        lock (_stateLock)
+        {
+            SettingsManager.Shared.UnreadGradeIds.Clear();
+            SettingsManager.Shared.Save();
+        }
         AppEvents.RaiseAcademicDataUpdated();
     }
 
