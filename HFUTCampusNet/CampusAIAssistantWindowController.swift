@@ -97,7 +97,9 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
         configuration.timeoutIntervalForResource = 15
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
-        let abortSession = URLSession(configuration: configuration)
+        let abortSession = URLSession(configuration: configuration,
+                                      delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                      delegateQueue: nil)
         let abortTask = abortSession.dataTask(with: request) { _, _, _ in
             abortSession.finishTasksAndInvalidate()
         }
@@ -117,6 +119,13 @@ private final class CampusAIStreamClient: NSObject, URLSessionDataDelegate {
         } else {
             completionHandler(.allow)
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(CampusAIAuthenticatedRedirectDelegate.permitsRedirect(to: request.url) ? request : nil)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -1158,7 +1167,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 configuration.httpCookieAcceptPolicy = .never
                 configuration.httpShouldSetCookies = false
                 configuration.timeoutIntervalForRequest = 30
-                let session = URLSession(configuration: configuration)
+                let session = URLSession(configuration: configuration,
+                                         delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                         delegateQueue: nil)
                 let task = session.dataTask(with: request) { [weak self] data, response, error in
                     let http = response as? HTTPURLResponse
                     let successful = (200...299).contains(http?.statusCode ?? 0)
@@ -1261,7 +1272,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                 configuration.httpCookieAcceptPolicy = .never
                 configuration.httpShouldSetCookies = false
                 configuration.timeoutIntervalForRequest = 30
-                let session = URLSession(configuration: configuration)
+                let session = URLSession(configuration: configuration,
+                                         delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                         delegateQueue: nil)
                 let task = session.dataTask(with: request) { [weak self] data, response, error in
                     let http = response as? HTTPURLResponse
                     let successfulHTTP = (200...299).contains(http?.statusCode ?? 0)
@@ -1399,7 +1412,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 30
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration,
+                                 delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                 delegateQueue: nil)
         let lookupID = UUID()
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let http = response as? HTTPURLResponse
@@ -1534,7 +1549,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 30
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration,
+                                 delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                 delegateQueue: nil)
         let lookupID = UUID()
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let http = response as? HTTPURLResponse

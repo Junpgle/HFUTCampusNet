@@ -73,6 +73,34 @@ enum CampusAIEndpoint {
     }
 }
 
+final class CampusAIAuthenticatedRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    static let shared = CampusAIAuthenticatedRedirectDelegate()
+
+    private override init() {}
+
+    static func permitsRedirect(to url: URL?) -> Bool {
+        guard let url,
+              let baseHost = CampusAIEndpoint.api.host,
+              let baseScheme = CampusAIEndpoint.api.scheme?.lowercased(),
+              let urlScheme = url.scheme?.lowercased(),
+              let urlHost = url.host,
+              urlScheme == baseScheme,
+              urlHost.caseInsensitiveCompare(baseHost) == .orderedSame,
+              url.user == nil, url.password == nil else { return false }
+
+        let defaultPort = urlScheme == "https" ? 443 : 80
+        let baseDefaultPort = baseScheme == "https" ? 443 : 80
+        return (url.port ?? defaultPort) == (CampusAIEndpoint.api.port ?? baseDefaultPort)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(Self.permitsRedirect(to: request.url) ? request : nil)
+    }
+}
+
 enum CampusAIRequestBuilder {
     static func historyBody(agentID: String, pageNumber: Int = 1) -> Data? {
         guard CampusAIEndpoint.validID(agentID), pageNumber > 0 else { return nil }

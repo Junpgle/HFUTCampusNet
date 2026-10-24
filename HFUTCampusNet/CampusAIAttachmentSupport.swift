@@ -241,7 +241,9 @@ final class CampusAIAttachmentClient {
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         configuration.httpMaximumConnectionsPerHost = 2
-        self.session = URLSession(configuration: configuration)
+        self.session = URLSession(configuration: configuration,
+                                  delegate: CampusAIAuthenticatedRedirectDelegate.shared,
+                                  delegateQueue: nil)
     }
 
     func start() {
