@@ -362,6 +362,11 @@ public sealed class ElectricityService
                     return (null, "授权结果已过期，请重新操作");
                 var respBytes = await resp.Content.ReadAsByteArrayAsync();
                 var respText = Encoding.UTF8.GetString(respBytes);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    lastError = $"慧新易校授权请求失败 (HTTP {(int)resp.StatusCode})";
+                    continue;
+                }
 
                 using var doc = JsonDocument.Parse(respText);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object &&
@@ -501,6 +506,8 @@ public sealed class ElectricityService
             string? defaultMsg = root.TryGetProperty("msg", out var msgElem) && msgElem.ValueKind == JsonValueKind.String
                 ? msgElem.GetString()
                 : null;
+            if (!resp.IsSuccessStatusCode)
+                return (null, defaultMsg ?? $"电费服务请求失败 (HTTP {statusCode})", false);
 
             JsonElement showDataElem = default;
             bool hasShowData = root.TryGetProperty("map", out var mapElem) &&
@@ -1242,6 +1249,13 @@ public sealed class CampusCardService
                         return (null, retryErr ?? "慧新易校授权已过期，请核对学号与密码");
                     }
                     return (null, "慧新易校授权已过期，请核对学号与密码");
+                }
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    if (!useLegacyEndpoint)
+                        return await ExecuteCardQueryAsync(token, generation, accountGeneration, allowRetry: false, useLegacyEndpoint: true);
+                    return (null, $"校园卡服务请求失败 (HTTP {httpStatus})");
                 }
 
                 if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
