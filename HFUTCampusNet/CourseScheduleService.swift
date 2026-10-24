@@ -51,6 +51,14 @@ public class CourseScheduleService {
         do {
             let decoder = JSONDecoder()
             let schedule = try decoder.decode(CourseScheduleData.self, from: data)
+            let currentStudentId = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cachedStudentId = schedule.studentId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !currentStudentId.isEmpty,
+                  !cachedStudentId.isEmpty,
+                  cachedStudentId == currentStudentId else {
+                print("⚠️ 忽略与当前教务账号不匹配的课表缓存")
+                return
+            }
             self.currentSchedule = schedule
         } catch {
             print("⚠️ 读取本地课表缓存失败: \(error)")
