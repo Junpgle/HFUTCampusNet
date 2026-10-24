@@ -355,10 +355,12 @@ public class CourseScheduleService {
             throw CourseSyncError.invalidResponse
         }
         let parsedLessons = try CourseScheduleService.parseDatumJSON(data: data)
+        let scheduleSemesterId = semesterId.isEmpty ? SettingsManager.shared.courseSemesterId : semesterId
+        let scheduleSemesterNumber = Int(scheduleSemesterId) ?? CourseCalendarHelper.inferSemesterId()
         let schedule = CourseScheduleData(
             studentId: studentId.isEmpty ? SettingsManager.shared.courseStudentId : studentId,
             semesterId: semesterId.isEmpty ? SettingsManager.shared.courseSemesterId : semesterId,
-            semesterName: "当前学期",
+            semesterName: CourseCalendarHelper.formatSemesterName(for: scheduleSemesterNumber),
             bizTypeId: bizTypeId.isEmpty ? SettingsManager.shared.courseBizTypeId : bizTypeId,
             lastSyncTime: Date(),
             lessons: parsedLessons
@@ -624,10 +626,11 @@ public class CourseScheduleService {
             // 解析 Datum
             do {
                 let parsedLessons = try CourseScheduleService.parseDatumJSON(data: data)
+                let semesterNumber = Int(semesterId) ?? CourseCalendarHelper.inferSemesterId()
                 let schedule = CourseScheduleData(
                     studentId: studentId,
                     semesterId: semesterId,
-                    semesterName: "当前学期",
+                    semesterName: CourseCalendarHelper.formatSemesterName(for: semesterNumber),
                     bizTypeId: bizTypeId,
                     lastSyncTime: Date(),
                     lessons: parsedLessons
