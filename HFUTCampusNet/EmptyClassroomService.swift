@@ -2,6 +2,12 @@ import Foundation
 import AppKit
 import Security
 
+private struct StudyRoomsCacheEnvelope: Codable {
+    let version: Int
+    let studyRoomsByDate: [String: [EmptyClassroomItem]]
+    let roomsByQuery: [String: [EmptyClassroomItem]]
+}
+
 public class EmptyClassroomService: NSObject, URLSessionDelegate {
     public static let shared = EmptyClassroomService()
 
@@ -57,6 +63,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     private var isMonitoring = false
     private var isPausedForSleep = false
     private let fileManager = FileManager.default
+    private var studyRoomsCacheFormatSupported = true
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -177,19 +184,30 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             self.allBuildings = decoded
         }
         if fileManager.fileExists(atPath: studyRoomsCacheURL.path),
-           let data = try? Data(contentsOf: studyRoomsCacheURL),
-           let decoded = try? JSONDecoder().decode([String: [EmptyClassroomItem]].self, from: data) {
-            let uniqueRoomsByDate = decoded.mapValues(Self.uniqueRooms)
-            self.studyRoomsByDate = uniqueRoomsByDate
-            for (key, rooms) in uniqueRoomsByDate {
-                let parts = key.split(separator: "|")
-                guard parts.count >= 2 else { continue }
-                let campusPart = String(parts[0])
-                let datePart = String(parts[1])
-                let grouped = Dictionary(grouping: rooms, by: { $0.buildingId })
-                for (bidOpt, bRooms) in grouped {
-                    if let bid = bidOpt, !bRooms.isEmpty {
-                        self.roomsCache["\(campusPart)|\(datePart)|\(bid)"] = bRooms
+           let data = try? Data(contentsOf: studyRoomsCacheURL) {
+            let decoder = JSONDecoder()
+            if let envelope = try? decoder.decode(StudyRoomsCacheEnvelope.self, from: data) {
+                if envelope.version == 1 {
+                    self.studyRoomsByDate = envelope.studyRoomsByDate.mapValues(Self.uniqueRooms)
+                    self.roomsCache = envelope.roomsByQuery.mapValues(Self.uniqueRooms)
+                } else {
+                    studyRoomsCacheFormatSupported = false
+                }
+            } else if let decoded = try? decoder.decode([String: [EmptyClassroomItem]].self, from: data) {
+                // Legacy format stored only the campus/day aggregate, so exact empty per-building
+                // query results cannot be reconstructed until that building is fetched again.
+                let uniqueRoomsByDate = decoded.mapValues(Self.uniqueRooms)
+                self.studyRoomsByDate = uniqueRoomsByDate
+                for (key, rooms) in uniqueRoomsByDate {
+                    let parts = key.split(separator: "|")
+                    guard parts.count >= 2 else { continue }
+                    let campusPart = String(parts[0])
+                    let datePart = String(parts[1])
+                    let grouped = Dictionary(grouping: rooms, by: { $0.buildingId })
+                    for (bidOpt, bRooms) in grouped {
+                        if let bid = bidOpt, !bRooms.isEmpty {
+                            self.roomsCache["\(campusPart)|\(datePart)|\(bid)"] = bRooms
+                        }
                     }
                 }
             }
@@ -218,6 +236,32 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         return rooms.filter { seenIds.insert($0.id).inserted }
     }
 
+    private static func sortedUniqueRooms(_ rooms: [EmptyClassroomItem], campus: StudyCampus) -> [EmptyClassroomItem] {
+        uniqueRooms(rooms).sorted { a, b in
+            if a.buildingPrefix != b.buildingPrefix {
+                return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
+            }
+            if a.inferredFloor != b.inferredFloor {
+                return a.inferredFloor < b.inferredFloor
+            }
+            return a.inferredRoomNumber < b.inferredRoomNumber
+        }
+    }
+
+    private func cachedRoomsForQuery(
+        cacheKey: String,
+        campus: StudyCampus,
+        dateString: String,
+        buildingIds: [Int]
+    ) -> [EmptyClassroomItem]? {
+        if let cached = roomsCache[cacheKey] { return cached }
+        guard !buildingIds.isEmpty else { return nil }
+
+        let buildingCaches = buildingIds.map { roomsCache["\(campus.rawValue)|\(dateString)|\($0)"] }
+        guard buildingCaches.allSatisfy({ $0 != nil }) else { return nil }
+        return Self.sortedUniqueRooms(buildingCaches.flatMap { $0 ?? [] }, campus: campus)
+    }
+
     private func saveBuildingsCache(_ buildings: [ClassroomBuilding]) {
         self.allBuildings = buildings
         if let data = try? JSONEncoder().encode(buildings) {
@@ -235,12 +279,38 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         }
         self.studyRoomsByDate = filtered
         self.roomsCache = self.roomsCache.filter { key, _ in
-            let parts = key.split(separator: "|")
+            let parts = key.split(separator: "|", omittingEmptySubsequences: false)
             guard parts.count >= 2 else { return false }
             return String(parts[1]) >= today
         }
-        if let data = try? JSONEncoder().encode(filtered) {
-            try? data.write(to: studyRoomsCacheURL, options: .atomic)
+        guard studyRoomsCacheFormatSupported,
+              preserveLegacyStudyRoomsCacheBackup(),
+              let data = try? JSONEncoder().encode(StudyRoomsCacheEnvelope(
+                version: 1,
+                studyRoomsByDate: filtered,
+                roomsByQuery: roomsCache
+              )) else {
+            return
+        }
+        try? data.write(to: studyRoomsCacheURL, options: .atomic)
+    }
+
+    private func preserveLegacyStudyRoomsCacheBackup() -> Bool {
+        guard fileManager.fileExists(atPath: studyRoomsCacheURL.path) else { return true }
+        if let data = try? Data(contentsOf: studyRoomsCacheURL),
+           let cache = try? JSONDecoder().decode(StudyRoomsCacheEnvelope.self, from: data),
+           cache.version == 1 {
+            return true
+        }
+
+        let backupURL = studyRoomsCacheURL.appendingPathExtension("pre-query-cache-v1.bak")
+        guard !fileManager.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try fileManager.copyItem(at: studyRoomsCacheURL, to: backupURL)
+            return true
+        } catch {
+            print("空教室查询缓存迁移备份失败: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -540,10 +610,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     public func hasCachedRooms(dateString: String, campus: StudyCampus, buildingIds: [Int]?) -> Bool {
         let sortedIds = (buildingIds ?? []).sorted()
         let cacheKey = "\(campus.rawValue)|\(dateString)|\(sortedIds.map(String.init).joined(separator: ","))"
-        if roomsCache[cacheKey] != nil {
-            return true
-        }
-        return false
+        return cachedRoomsForQuery(cacheKey: cacheKey, campus: campus, dateString: dateString, buildingIds: sortedIds) != nil
     }
 
     /// 查找当前自习室对应的最新详情对象（同时检索主力教学楼缓存与单栋教学楼缓存）
@@ -1292,7 +1359,13 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
     ) {
         let sortedIds = (buildingIds ?? []).sorted()
         let cacheKey = "\(campus.rawValue)|\(dateString)|\(sortedIds.map(String.init).joined(separator: ","))"
-        if !forceRefresh, let cached = roomsCache[cacheKey] {
+        if !forceRefresh,
+           let cached = cachedRoomsForQuery(
+            cacheKey: cacheKey,
+            campus: campus,
+            dateString: dateString,
+            buildingIds: sortedIds
+           ) {
             completion(.success(cached))
             return
         }
@@ -1405,15 +1478,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     return
                 }
 
-                let sortedRooms = Self.uniqueRooms(accumulatedRooms + rooms).sorted { a, b in
-                    if a.buildingPrefix != b.buildingPrefix {
-                        return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
-                    }
-                    if a.inferredFloor != b.inferredFloor {
-                        return a.inferredFloor < b.inferredFloor
-                    }
-                    return a.inferredRoomNumber < b.inferredRoomNumber
-                }
+                let sortedRooms = Self.sortedUniqueRooms(accumulatedRooms + rooms, campus: campus)
                 let syncIsCurrent = syncToken.map {
                     activeSyncTokenByCampus[campus.rawValue] == $0
                 } ?? true
@@ -1429,6 +1494,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                         DispatchQueue.main.async {
                             self.recordCampusSyncTime(campus)
                         }
+                        self.saveStudyRoomsCache()
                     }
                 }
                 completion(.success(sortedRooms))
