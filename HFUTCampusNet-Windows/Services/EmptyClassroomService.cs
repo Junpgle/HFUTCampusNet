@@ -962,7 +962,14 @@ public sealed class EmptyClassroomService
 
             foreach (var item in roomList.EnumerateArray())
             {
-                var rid = item.TryGetProperty("id", out var idProp) ? idProp.GetInt32() : 0;
+                if (item.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("id", out var idProp) ||
+                    idProp.ValueKind != JsonValueKind.Number ||
+                    !idProp.TryGetInt32(out var rid) || rid <= 0)
+                {
+                    return null;
+                }
+
                 var rname = item.TryGetProperty("nameZh", out var nzProp) ? nzProp.GetString() ?? "" : "";
                 var code = item.TryGetProperty("code", out var cProp) ? cProp.GetString() ?? "" : "";
                 var buildingId = item.TryGetProperty("buildingId", out var bIdProp) && bIdProp.ValueKind == JsonValueKind.Number ? bIdProp.GetInt32() : 0;
