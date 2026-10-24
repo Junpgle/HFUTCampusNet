@@ -1329,11 +1329,6 @@ public sealed class CampusNetworkClient
         var selfHandler = new HttpClientHandler
         {
             UseCookies = false,
-            ServerCertificateCustomValidationCallback = (request, _, _, _) =>
-                request?.RequestUri is Uri uri &&
-                uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
-                uri.Host.Equals("xywzz.hfut.edu.cn", StringComparison.OrdinalIgnoreCase) &&
-                uri.Port == 8443,
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
         _selfServiceClient = new HttpClient(selfHandler) { Timeout = TimeSpan.FromSeconds(10) };
