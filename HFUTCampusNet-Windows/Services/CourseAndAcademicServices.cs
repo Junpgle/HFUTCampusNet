@@ -200,7 +200,7 @@ public sealed class CourseScheduleService
                 if (!string.IsNullOrEmpty(cookie))
                 {
                     var data = await FetchFromEamsAsync(cookie, generation, accountGeneration);
-                    if (data != null && data.Lessons.Count > 0 && TryApplySyncedSchedule(data, generation, accountGeneration))
+                    if (data != null && TryApplySyncedSchedule(data, generation, accountGeneration))
                     {
                         AppEvents.RaiseCourseScheduleUpdated();
                         callback?.Invoke(true);
@@ -303,7 +303,7 @@ public sealed class CourseScheduleService
         {
             var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
             var parsedLessons = ParseDatumScheduleJson(jsonString);
-            if (parsedLessons.Count == 0) return null;
+            if (parsedLessons.Count == 0 && !HasValidEmptyDatumSchedule(jsonString)) return null;
 
             CourseLesson.EnrichLessons(parsedLessons);
 
@@ -324,7 +324,8 @@ public sealed class CourseScheduleService
                     {
                         StudentId = !string.IsNullOrEmpty(studentId) ? studentId : SettingsManager.Shared.CourseStudentId,
                         SemesterId = !string.IsNullOrEmpty(semesterId) ? semesterId : SettingsManager.Shared.CourseSemesterId,
-                        SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
+                        SemesterName = CourseCalendarHelper.FormatSemesterName(
+                            sIdNum > 0 ? sIdNum : CourseCalendarHelper.InferSemesterId()),
                         BizTypeId = !string.IsNullOrEmpty(bizTypeId) ? bizTypeId : SettingsManager.Shared.CourseBizTypeId,
                         LastSyncTime = DateTime.Now,
                         Lessons = parsedLessons
@@ -537,6 +538,15 @@ public sealed class CourseScheduleService
                 bizId = SettingsManager.Shared.CourseBizTypeId;
             })) return null;
             if (string.IsNullOrEmpty(bizId) || bizId == "2") bizId = "23";
+            if (string.IsNullOrWhiteSpace(semId))
+            {
+                semId = CourseCalendarHelper.InferSemesterId().ToString(CultureInfo.InvariantCulture);
+                if (!TryUpdateCourseSettings(scheduleGeneration, accountGeneration, () =>
+                {
+                    if (!SettingsManager.Shared.CourseSemesterIdManuallySelected)
+                        SettingsManager.Shared.CourseSemesterId = semId;
+                })) return null;
+            }
 
             // 1. 如果没有真实 stdId 则先请求 /for-std/course-table 自动提取
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
@@ -588,12 +598,17 @@ public sealed class CourseScheduleService
             using var getResp = await _client.SendAsync(getReq);
             var getJson = await getResp.Content.ReadAsStringAsync();
             if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
+            if (!getResp.IsSuccessStatusCode) return null;
 
             var lessonIds = new List<int>();
+            bool hasLessonIdsArray = false;
+            int rawLessonIdCount = 0;
             using (var doc = SafeParseJson(getJson))
             {
                 if (doc != null && doc.RootElement.TryGetProperty("lessonIds", out var idsElem) && idsElem.ValueKind == JsonValueKind.Array)
                 {
+                    hasLessonIdsArray = true;
+                    rawLessonIdCount = idsElem.GetArrayLength();
                     foreach (var item in idsElem.EnumerateArray())
                     {
                         if (item.TryGetInt32(out int idVal))
@@ -602,7 +617,22 @@ public sealed class CourseScheduleService
                 }
             }
 
-            if (lessonIds.Count == 0) return null;
+            if (!hasLessonIdsArray) return null;
+            if (rawLessonIdCount > 0 && lessonIds.Count == 0) return null;
+            if (lessonIds.Count == 0)
+            {
+                int.TryParse(semId, NumberStyles.Integer, CultureInfo.InvariantCulture, out int emptySemesterNumber);
+                return new CourseScheduleData
+                {
+                    StudentId = stdId,
+                    SemesterId = semId,
+                    SemesterName = CourseCalendarHelper.FormatSemesterName(
+                        emptySemesterNumber > 0 ? emptySemesterNumber : CourseCalendarHelper.InferSemesterId()),
+                    BizTypeId = bizId,
+                    LastSyncTime = DateTime.Now,
+                    Lessons = new List<CourseLesson>()
+                };
+            }
 
             // 3. 第二步：请求 ws/schedule-table/datum 获取真实课程与排期
             var datumUrl = "http://jxglstu.hfut.edu.cn/eams5-student/ws/schedule-table/datum";
@@ -621,16 +651,18 @@ public sealed class CourseScheduleService
             using var datumResp = await _client.SendAsync(datumReq);
             var datumJson = await datumResp.Content.ReadAsStringAsync();
             if (!IsScheduleGenerationCurrent(scheduleGeneration, accountGeneration)) return null;
+            if (!datumResp.IsSuccessStatusCode) return null;
 
             var lessons = ParseDatumScheduleJson(datumJson);
-            if (lessons.Count == 0) return null;
+            if (lessons.Count == 0 && !HasValidEmptyDatumSchedule(datumJson)) return null;
 
             int.TryParse(semId, out int sIdNum);
             return new CourseScheduleData
             {
                 StudentId = stdId,
                 SemesterId = semId,
-                SemesterName = CourseCalendarHelper.FormatSemesterName(sIdNum > 0 ? sIdNum : 354),
+                SemesterName = CourseCalendarHelper.FormatSemesterName(
+                    sIdNum > 0 ? sIdNum : CourseCalendarHelper.InferSemesterId()),
                 BizTypeId = bizId,
                 LastSyncTime = DateTime.Now,
                 Lessons = lessons
@@ -742,6 +774,20 @@ public sealed class CourseScheduleService
         }
         catch { }
         return list;
+    }
+
+    private static bool HasValidEmptyDatumSchedule(string json)
+    {
+        using var doc = SafeParseJson(json);
+        if (doc == null || !doc.RootElement.TryGetProperty("result", out var result) ||
+            result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("lessonList", out var lessons) || lessons.ValueKind != JsonValueKind.Array ||
+            !result.TryGetProperty("scheduleList", out var schedules) || schedules.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        return schedules.GetArrayLength() == 0;
     }
 
     private void SaveCache()

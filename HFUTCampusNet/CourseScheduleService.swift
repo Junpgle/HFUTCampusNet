@@ -500,6 +500,10 @@ public class CourseScheduleService {
                 completion(.failure(CourseSyncError.needLogin))
                 return
             }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(CourseSyncError.invalidResponse))
+                return
+            }
 
             guard let data = data, let text = String(data: data, encoding: .utf8) else {
                 completion(.failure(CourseSyncError.invalidResponse))
@@ -513,20 +517,28 @@ public class CourseScheduleService {
 
             // 解析 lessonIds
             struct GetDataResponse: Decodable {
-                let lessonIds: [Int]?
+                let lessonIds: [Int]
             }
 
             let lessonIds: [Int]
             do {
                 let decoded = try JSONDecoder().decode(GetDataResponse.self, from: data)
-                lessonIds = decoded.lessonIds ?? []
+                lessonIds = decoded.lessonIds
             } catch {
                 completion(.failure(CourseSyncError.invalidResponse))
                 return
             }
 
             guard !lessonIds.isEmpty else {
-                completion(.failure(CourseSyncError.emptySchedule))
+                let parsedSemesterId = Int(semesterId) ?? CourseCalendarHelper.inferSemesterId()
+                completion(.success(CourseScheduleData(
+                    studentId: studentId,
+                    semesterId: semesterId,
+                    semesterName: CourseCalendarHelper.formatSemesterName(for: parsedSemesterId),
+                    bizTypeId: bizTypeId,
+                    lastSyncTime: Date(),
+                    lessons: []
+                )))
                 return
             }
 
@@ -597,6 +609,10 @@ public class CourseScheduleService {
 
             if let finalURL = http.url?.absoluteString, finalURL.contains("/login") || http.statusCode == 302 || http.statusCode == 401 || http.statusCode == 403 {
                 completion(.failure(CourseSyncError.needLogin))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(CourseSyncError.invalidResponse))
                 return
             }
 
@@ -715,10 +731,6 @@ public class CourseScheduleService {
                 weekday: weekday
             )
             courseItems.append(item)
-        }
-
-        guard !courseItems.isEmpty else {
-            throw CourseSyncError.emptySchedule
         }
 
         return courseItems.sorted {
