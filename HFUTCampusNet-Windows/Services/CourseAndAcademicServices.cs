@@ -1091,7 +1091,10 @@ public sealed class AcademicService
                         };
 
                         // 出分静默通知检测
-                        CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
+                        CheckNewGradesNotification(
+                            newSnapshot.AllGrades,
+                            isInitialSnapshot: prevSnapshot == null,
+                            previousGrades: prevSnapshot?.AllGrades);
 
                         LatestData = newSnapshot;
                         SaveCache();
@@ -1424,11 +1427,27 @@ public sealed class AcademicService
         return result.OrderBy(e => e.DateString).ThenBy(e => e.StartTimeString).ToList();
     }
 
-    private void CheckNewGradesNotification(List<GradeItem> grades, bool isInitialSnapshot = false)
+    private void CheckNewGradesNotification(
+        List<GradeItem> grades,
+        bool isInitialSnapshot = false,
+        List<GradeItem>? previousGrades = null)
     {
         var notified = SettingsManager.Shared.NotifiedGradeIds;
         var unread = SettingsManager.Shared.UnreadGradeIds;
         var newOnes = new List<GradeItem>();
+        var previousIdsByMergeKey = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var previous in previousGrades ?? new List<GradeItem>())
+        {
+            if (previous == null || string.IsNullOrWhiteSpace(previous.Id)) continue;
+            var key = GradeMergeKey(previous);
+            if (!previousIdsByMergeKey.TryGetValue(key, out var ids))
+            {
+                ids = new HashSet<string>(StringComparer.Ordinal);
+                previousIdsByMergeKey[key] = ids;
+            }
+            ids.Add(previous.Id);
+        }
+        bool notificationStateChanged = false;
 
         if (isInitialSnapshot && notified.Count == 0)
         {
@@ -1448,19 +1467,45 @@ public sealed class AcademicService
 
         foreach (var g in grades)
         {
-            if (!notified.Contains(g.Id))
+            if (string.IsNullOrWhiteSpace(g.Id)) continue;
+
+            bool alreadyKnown = notified.Contains(g.Id) || unread.Contains(g.Id);
+            if (previousIdsByMergeKey.TryGetValue(GradeMergeKey(g), out var previousIds))
             {
-                notified.Add(g.Id);
-                unread.Add(g.Id);
-                newOnes.Add(g);
+                alreadyKnown = true;
+                foreach (var previousId in previousIds)
+                {
+                    if (string.Equals(previousId, g.Id, StringComparison.Ordinal)) continue;
+                    if (notified.Remove(previousId)) notificationStateChanged = true;
+                    if (unread.Remove(previousId))
+                    {
+                        unread.Add(g.Id);
+                        notificationStateChanged = true;
+                    }
+                }
             }
+
+            if (alreadyKnown)
+            {
+                if (notified.Add(g.Id)) notificationStateChanged = true;
+                continue;
+            }
+
+            notified.Add(g.Id);
+            unread.Add(g.Id);
+            newOnes.Add(g);
+            notificationStateChanged = true;
         }
 
-        if (newOnes.Count > 0)
+        if (notificationStateChanged)
         {
             SettingsManager.Shared.NotifiedGradeIds = notified;
             SettingsManager.Shared.UnreadGradeIds = unread;
             SettingsManager.Shared.Save();
+        }
+
+        if (newOnes.Count > 0)
+        {
 
             // 发送系统通知（若开启隐藏具体分数，则只提示有新科目出分）
             if (SettingsManager.Shared.HideScoreInNotification)
@@ -1521,7 +1566,10 @@ public sealed class AcademicService
                 if (generation != _cacheGeneration) return;
                 if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                 {
-                    CheckNewGradesNotification(newSnapshot.AllGrades, isInitialSnapshot: prevSnapshot == null);
+                    CheckNewGradesNotification(
+                        newSnapshot.AllGrades,
+                        isInitialSnapshot: prevSnapshot == null,
+                        previousGrades: prevSnapshot?.AllGrades);
                     LatestData = newSnapshot;
                     SaveCache();
                 })) return;
