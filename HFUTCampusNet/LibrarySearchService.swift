@@ -90,8 +90,17 @@ public struct LibraryPublicStats {
 public final class LibrarySearchService: NSObject {
     public static let shared = LibrarySearchService()
 
+    private struct AccountOperationSnapshot {
+        let username: String
+        let token: String?
+        let libraryUserName: String
+        let generation: Int
+    }
+
     private let searchAPI = "https://lib.hfut.edu.cn/svc/circulate/collectionSearch/getCollectionSearch"
     private var session: URLSession!
+    private let accountOperationLock = NSLock()
+    private var accountOperationGeneration = 0
 
     private override init() {
         super.init()
@@ -99,6 +108,54 @@ public final class LibrarySearchService: NSObject {
         config.timeoutIntervalForRequest = 10.0
         config.timeoutIntervalForResource = 15.0
         session = URLSession(configuration: config)
+    }
+
+    public func cancelPendingAccountOperations() {
+        accountOperationLock.lock()
+        accountOperationGeneration &+= 1
+        accountOperationLock.unlock()
+    }
+
+    private func accountOperationSnapshot() -> AccountOperationSnapshot {
+        accountOperationLock.lock()
+        let generation = accountOperationGeneration
+        accountOperationLock.unlock()
+        return AccountOperationSnapshot(
+            username: SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines),
+            token: SettingsManager.shared.libraryToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+            libraryUserName: SettingsManager.shared.libraryUserName ?? "合工大读者",
+            generation: generation
+        )
+    }
+
+    private func isCurrentAccountOperation(_ snapshot: AccountOperationSnapshot) -> Bool {
+        accountOperationLock.lock()
+        let isCurrentGeneration = accountOperationGeneration == snapshot.generation
+        accountOperationLock.unlock()
+        return isCurrentGeneration &&
+            SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == snapshot.username
+    }
+
+    private func deliverAccountOperationResult(
+        _ result: Result<String, Error>,
+        snapshot: AccountOperationSnapshot,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        DispatchQueue.main.async {
+            guard self.isCurrentAccountOperation(snapshot) else {
+                completion(.failure(Self.cancelledAccountOperationError()))
+                return
+            }
+            completion(result)
+        }
+    }
+
+    private static func cancelledAccountOperationError() -> NSError {
+        NSError(
+            domain: "LibrarySearchService",
+            code: NSURLErrorCancelled,
+            userInfo: [NSLocalizedDescriptionKey: "账号已切换，本次图书馆操作已取消"]
+        )
     }
 
     /// 执行校内图书检索
@@ -215,11 +272,24 @@ public final class LibrarySearchService: NSObject {
     // MARK: - 真实读者功能：收藏图书 (POST /svc/circulate/myCollect/insertMyCollect)
 
     public func collectBook(item: CampusBookItem, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+        let snapshot = accountOperationSnapshot()
+        guard !snapshot.username.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "缺少当前读者学号，请先在偏好设置中保存学号"])))
+            return
+        }
+        guard let token = snapshot.token, !token.isEmpty else {
             completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
             return
         }
+        guard isCurrentAccountOperation(snapshot) else {
+            deliverAccountOperationResult(.failure(Self.cancelledAccountOperationError()), snapshot: snapshot, completion: completion)
+            return
+        }
         guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/myCollect/insertMyCollect") else { return }
+        let finish: (Result<String, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.deliverAccountOperationResult(result, snapshot: snapshot, completion: completion)
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -246,20 +316,20 @@ public final class LibrarySearchService: NSObject {
 
         session.dataTask(with: req) { data, _, error in
             if let error = error {
-                DispatchQueue.main.async { completion(.failure(error)) }
+                finish(.failure(error))
                 return
             }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"])))
                 return
             }
             let success = (json["success"] as? Bool) ?? false
             if success {
-                DispatchQueue.main.async { completion(.success("已将《\(item.title)》加入您的个人收藏！")) }
+                finish(.success("已将《\(item.title)》加入您的个人收藏！"))
             } else {
                 let msg = (json["message"] as? String) ?? "收藏失败"
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])))
             }
         }.resume()
     }
@@ -267,16 +337,25 @@ public final class LibrarySearchService: NSObject {
     // MARK: - 真实读者功能：加入书架 (POST /svc/circulate/readerBook/insert)
 
     public func addBookToShelf(item: CampusBookItem, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+        let snapshot = accountOperationSnapshot()
+        guard let token = snapshot.token, !token.isEmpty else {
             completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
             return
         }
-        let user = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = snapshot.username
         guard !user.isEmpty else {
             completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "缺少当前读者学号，请先在偏好设置中保存学号再加入书架"])))
             return
         }
+        guard isCurrentAccountOperation(snapshot) else {
+            deliverAccountOperationResult(.failure(Self.cancelledAccountOperationError()), snapshot: snapshot, completion: completion)
+            return
+        }
         guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerBook/insert") else { return }
+        let finish: (Result<String, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.deliverAccountOperationResult(result, snapshot: snapshot, completion: completion)
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -298,7 +377,7 @@ public final class LibrarySearchService: NSObject {
             "tenantId": "hfut",
             "tenantName": "合肥工业大学",
             "userId": user,
-            "userName": SettingsManager.shared.libraryUserName ?? "合工大读者"
+            "userName": snapshot.libraryUserName
         ]
 
         do {
@@ -310,21 +389,21 @@ public final class LibrarySearchService: NSObject {
 
         session.dataTask(with: req) { data, _, error in
             if let error = error {
-                DispatchQueue.main.async { completion(.failure(error)) }
+                finish(.failure(error))
                 return
             }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"])))
                 return
             }
             let code = json["code"] as? String
             let success = (json["success"] as? Bool) ?? (code == "0")
             if success {
-                DispatchQueue.main.async { completion(.success("已将《\(item.title)》加入您的图书馆书架！")) }
+                finish(.success("已将《\(item.title)》加入您的图书馆书架！"))
             } else {
                 let msg = (json["message"] as? String) ?? "加入书架失败"
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])))
             }
         }.resume()
     }
@@ -332,11 +411,24 @@ public final class LibrarySearchService: NSObject {
     // MARK: - 真实读者功能：预约在馆图书 (POST /svc/circulate/readerBooking/insert)
 
     public func reserveBook(barcode: String, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let token = SettingsManager.shared.libraryToken, !token.isEmpty else {
+        let snapshot = accountOperationSnapshot()
+        guard !snapshot.username.isEmpty else {
+            completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "缺少当前读者学号，请先在偏好设置中保存学号"])))
+            return
+        }
+        guard let token = snapshot.token, !token.isEmpty else {
             completion(.failure(NSError(domain: "LibrarySearchService", code: 401, userInfo: [NSLocalizedDescriptionKey: "尚未完成统一身份认证，请先点击「同步借阅」"])))
             return
         }
+        guard isCurrentAccountOperation(snapshot) else {
+            deliverAccountOperationResult(.failure(Self.cancelledAccountOperationError()), snapshot: snapshot, completion: completion)
+            return
+        }
         guard let url = URL(string: "https://lib.hfut.edu.cn/svc/circulate/readerBooking/insert") else { return }
+        let finish: (Result<String, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            self.deliverAccountOperationResult(result, snapshot: snapshot, completion: completion)
+        }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -355,20 +447,20 @@ public final class LibrarySearchService: NSObject {
 
         session.dataTask(with: req) { data, _, error in
             if let error = error {
-                DispatchQueue.main.async { completion(.failure(error)) }
+                finish(.failure(error))
                 return
             }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -1, userInfo: [NSLocalizedDescriptionKey: "服务器响应格式错误"])))
                 return
             }
             let success = (json["success"] as? Bool) ?? (json["code"] as? String == "0")
             if success {
-                DispatchQueue.main.async { completion(.success("图书预约申请已成功提交！到馆后将为您保留。")) }
+                finish(.success("图书预约申请已成功提交！到馆后将为您保留。"))
             } else {
                 let msg = (json["message"] as? String) ?? "当前图书暂不可预约（可能在架可直接外借或已被他人预约）"
-                DispatchQueue.main.async { completion(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+                finish(.failure(NSError(domain: "LibrarySearchService", code: -2, userInfo: [NSLocalizedDescriptionKey: msg])))
             }
         }.resume()
     }

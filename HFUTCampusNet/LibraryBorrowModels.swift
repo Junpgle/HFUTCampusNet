@@ -273,6 +273,7 @@ public final class LibraryBorrowManager {
         syncGeneration &+= 1
         accountGeneration &+= 1
         SettingsManager.shared.libraryToken = nil
+        SettingsManager.shared.libraryUserName = nil
         SettingsManager.shared.libraryBorrowCount = 0
         books.removeAll()
         totalBorrowStatsCount = 0

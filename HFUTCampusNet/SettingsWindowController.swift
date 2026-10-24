@@ -977,6 +977,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if !preserveCourseStudentID {
             SettingsManager.shared.courseStudentId = ""
         }
+        LibrarySearchService.shared.cancelPendingAccountOperations()
         CampusCardService.shared.clearCache()
         SettingsManager.shared.lastNotifiedLowCardBalanceDate = ""
         AcademicService.shared.clearCache()
