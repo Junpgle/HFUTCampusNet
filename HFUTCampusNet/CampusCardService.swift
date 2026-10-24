@@ -310,10 +310,15 @@ public class CampusCardService {
             let combined = accumulated + list
             let total = Self.integerValue(dataObj["total"])
             let totalPages = Self.integerValue(dataObj["pages"])
-            let reachedTotal = total.map { combined.count >= $0 } ?? false
-            let reachedPageCount = totalPages.map { page >= $0 } ?? false
-            let reachedEnd = records.isEmpty || records.count < size ||
-                reachedTotal || reachedPageCount ||
+            let uniqueCount = self.mergeTransactions(combined).count
+            let hasTotal = total.map { $0 > 0 } ?? false
+            let hasPageCount = totalPages.map { $0 > 0 } ?? false
+            let metadataShowsMore = (hasTotal && uniqueCount < (total ?? 0)) ||
+                (hasPageCount && page < (totalPages ?? 0))
+            let hasPaginationMetadata = hasTotal || hasPageCount
+            let reachedEnd = records.isEmpty ||
+                (hasPaginationMetadata && !metadataShowsMore) ||
+                (!hasPaginationMetadata && records.count < size) ||
                 page >= maximumPages
             if reachedEnd {
                 completion(self.mergeTransactions(combined))

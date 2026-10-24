@@ -1394,9 +1394,15 @@ public sealed class CampusCardService
 
                 int? total = GetJsonInt(dataElem, "total");
                 int? totalPages = GetJsonInt(dataElem, "pages");
-                bool reachedEnd = recordsElem.GetArrayLength() == 0 || recordsElem.GetArrayLength() < size ||
-                    (total.HasValue && byId.Count >= total.Value) ||
-                    (totalPages.HasValue && page >= totalPages.Value);
+                bool hasTotal = total is > 0;
+                bool hasPageCount = totalPages is > 0;
+                bool metadataShowsMore = (hasTotal && byId.Count < total.GetValueOrDefault()) ||
+                    (hasPageCount && page < totalPages.GetValueOrDefault());
+                bool hasPaginationMetadata = hasTotal || hasPageCount;
+                bool reachedEnd = recordsElem.GetArrayLength() == 0 ||
+                    (hasPaginationMetadata && !metadataShowsMore) ||
+                    (!hasPaginationMetadata && recordsElem.GetArrayLength() < size) ||
+                    page >= maximumPages;
                 if (reachedEnd) break;
             }
             catch
