@@ -844,8 +844,11 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
         let service = EmptyClassroomService.shared
         let fullText = service.formattedFullLastSync(for: selectedCampus)
         if let date = service.lastSyncDate(for: selectedCampus) {
+            let calendar = CourseCalendarHelper.beijingCalendar
             let formatter = DateFormatter()
-            formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM-dd HH:mm"
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = calendar.isDateInToday(date) ? "HH:mm" : "MM-dd HH:mm"
             lastSyncLabel?.stringValue = "更新 \(formatter.string(from: date))"
         } else {
             lastSyncLabel?.stringValue = "未同步"
@@ -1180,6 +1183,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
             self.reloadFilteredRooms()
             if showCompletionFeedback {
                 let fmt = DateFormatter()
+                fmt.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
                 fmt.dateFormat = "HH:mm:ss"
                 let timeStr = fmt.string(from: Date())
                 self.showRefreshFeedback(
@@ -1210,6 +1214,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                 self.reloadFilteredRooms()
                 if showCompletionFeedback {
                     let fmt = DateFormatter()
+                    fmt.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
                     fmt.dateFormat = "HH:mm:ss"
                     let timeStr = fmt.string(from: Date())
                     self.showRefreshFeedback(
@@ -1270,6 +1275,7 @@ public class EmptyClassroomWindowController: NSWindowController, NSWindowDelegat
                     self.reloadFilteredRooms()
                     if showCompletionFeedback {
                         let fmt = DateFormatter()
+                        fmt.timeZone = CourseCalendarHelper.beijingCalendar.timeZone
                         fmt.dateFormat = "HH:mm:ss"
                         let timeStr = fmt.string(from: Date())
                         self.showRefreshFeedback(

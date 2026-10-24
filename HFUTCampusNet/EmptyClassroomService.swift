@@ -264,8 +264,11 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         guard let date = lastSyncDate(for: campus) else {
             return "上次刷新：暂未同步"
         }
+        let calendar = CourseCalendarHelper.beijingCalendar
         let fmt = DateFormatter()
-        if Calendar.current.isDateInToday(date) {
+        fmt.calendar = calendar
+        fmt.timeZone = calendar.timeZone
+        if calendar.isDateInToday(date) {
             fmt.dateFormat = "HH:mm"
         } else {
             fmt.dateFormat = "MM-dd HH:mm"
@@ -280,8 +283,11 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         guard let date = lastSyncDate(for: campus) else {
             return "上次刷新：暂未同步"
         }
+        let calendar = CourseCalendarHelper.beijingCalendar
         let fmt = DateFormatter()
-        if Calendar.current.isDateInToday(date) {
+        fmt.calendar = calendar
+        fmt.timeZone = calendar.timeZone
+        if calendar.isDateInToday(date) {
             fmt.dateFormat = "HH:mm:ss"
             let rel = Self.relativeTimeDescription(from: date)
             return "上次刷新：今天 \(fmt.string(from: date))（\(rel)）"
