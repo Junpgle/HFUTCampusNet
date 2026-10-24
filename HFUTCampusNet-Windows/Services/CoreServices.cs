@@ -1146,9 +1146,11 @@ public sealed class CampusNetworkClient
     private readonly HttpClient _client;
     private readonly HttpClient _selfServiceClient;
     private readonly object _accountStateLock = new();
+    private readonly object _selfServiceLoginLock = new();
     private readonly AsyncLocal<long?> _fetchGenerationContext = new();
     private long _fetchGeneration;
-    private int _isFetchingSelfService = 0;
+    private long _selfServiceLoginSequence;
+    private long _selfServiceLoginOwner;
     private int _lastPortalFlowMonthKey;
 
     private CampusNetworkClient()
@@ -1189,7 +1191,10 @@ public sealed class CampusNetworkClient
             LatestData = new CampusNetworkData();
             _lastPortalFlowMonthKey = 0;
         }
-        Interlocked.Exchange(ref _isFetchingSelfService, 0);
+        lock (_selfServiceLoginLock)
+        {
+            _selfServiceLoginOwner = 0;
+        }
         AppEvents.InvokeOnUI(AppEvents.RaiseNetworkDataUpdated);
     }
 
@@ -1599,9 +1604,13 @@ public sealed class CampusNetworkClient
             return (false, "请先在偏好设置中配置学号与密码");
         }
 
-        if (Interlocked.CompareExchange(ref _isFetchingSelfService, 1, 0) != 0)
+        long loginRequestId;
+        lock (_selfServiceLoginLock)
         {
-            return (false, "正在进行自服务认证中...");
+            if (_selfServiceLoginOwner != 0)
+                return (false, "正在进行自服务认证中...");
+            loginRequestId = ++_selfServiceLoginSequence;
+            _selfServiceLoginOwner = loginRequestId;
         }
 
         try
@@ -1695,8 +1704,11 @@ public sealed class CampusNetworkClient
         }
         finally
         {
-            if (IsCurrentAccount(accountGeneration))
-                Interlocked.Exchange(ref _isFetchingSelfService, 0);
+            lock (_selfServiceLoginLock)
+            {
+                if (_selfServiceLoginOwner == loginRequestId)
+                    _selfServiceLoginOwner = 0;
+            }
         }
     }
 
