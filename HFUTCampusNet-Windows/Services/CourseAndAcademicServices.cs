@@ -1397,34 +1397,42 @@ public sealed class AcademicService
         if (webExams.Count == 0) return uniExams;
 
         var result = new List<ExamItem>(uniExams);
-
-        // 如果 Web 端有具体的座位号，补充进结果
-        foreach (var item in result)
+        var examsByKey = new Dictionary<string, ExamItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in uniExams)
         {
-            var match = webExams.FirstOrDefault(w => w.CourseName == item.CourseName && w.DateString == item.DateString);
-            if (match != null && !string.IsNullOrEmpty(match.SeatNumber))
-            {
-                item.SeatNumber = match.SeatNumber;
-            }
-            if (match != null && string.IsNullOrEmpty(item.Place) && !string.IsNullOrEmpty(match.Place))
-            {
-                item.Place = match.Place;
-            }
+            var key = ExamMergeKey(item);
+            if (!examsByKey.ContainsKey(key))
+                examsByKey[key] = item;
         }
 
-        // 补充 UniApp 未包含的 Web 端排考
-        var existingNames = new HashSet<string>(result.Select(e => $"{e.CourseName}_{e.DateString}"));
-        foreach (var w in webExams)
+        // 按具体场次匹配，保留同一课程同一天的多场考试。
+        foreach (var webExam in webExams)
         {
-            var key = $"{w.CourseName}_{w.DateString}";
-            if (!existingNames.Contains(key))
+            var key = ExamMergeKey(webExam);
+            if (examsByKey.TryGetValue(key, out var match))
             {
-                result.Add(w);
-                existingNames.Add(key);
+                if (string.IsNullOrEmpty(match.SeatNumber) && !string.IsNullOrEmpty(webExam.SeatNumber))
+                    match.SeatNumber = webExam.SeatNumber;
+                if (string.IsNullOrEmpty(match.Place) && !string.IsNullOrEmpty(webExam.Place))
+                    match.Place = webExam.Place;
+            }
+            else
+            {
+                result.Add(webExam);
+                examsByKey[key] = webExam;
             }
         }
 
         return result.OrderBy(e => e.DateString).ThenBy(e => e.StartTimeString).ToList();
+    }
+
+    private static string ExamMergeKey(ExamItem exam)
+    {
+        var courseName = (exam.CourseName ?? string.Empty).Trim().ToUpperInvariant();
+        var date = (exam.DateString ?? string.Empty).Trim();
+        var start = (exam.StartTimeString ?? string.Empty).Trim();
+        var end = (exam.EndTimeString ?? string.Empty).Trim();
+        return $"{courseName}|{date}|{start}|{end}";
     }
 
     private void CheckNewGradesNotification(
