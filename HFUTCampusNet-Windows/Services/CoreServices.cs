@@ -454,8 +454,10 @@ public sealed class CampusHistoryManager
         }
     }
 
-    public void RecordFlow(double usedMB, double? balanceRMB = null)
+    public void RecordFlow(double usedMB, double? balanceRMB = null, DateTime? observedAt = null)
     {
+        if (!double.IsFinite(usedMB) || usedMB < 0) return;
+
         lock (_lock)
         {
             if (!CompleteFlowAccountingMigrationIfNeeded()) return;
@@ -463,7 +465,7 @@ public sealed class CampusHistoryManager
                 double.IsFinite(balanceRMB.Value) && balanceRMB.Value >= 0
                 ? balanceRMB
                 : null;
-            var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+            var today = CourseCalendarHelper.DateString(observedAt ?? CourseCalendarHelper.BeijingNow);
             var monthPrefix = today[..7];
             // 网关流量是本月累计值；用同月最近一次采样衔接当天，避免跨日后首次刷新漏算。
             var previousRecord = FlowRecords
@@ -472,14 +474,19 @@ public sealed class CampusHistoryManager
                 .OrderBy(r => r.DateString)
                 .LastOrDefault();
             var record = FlowRecords.FirstOrDefault(r => r.DateString == today);
+            var isMonthlyReset = record != null && today.EndsWith("-01", StringComparison.Ordinal) &&
+                usedMB < record.LatestUsedMB * 0.5;
+            var effectiveUsedMB = isMonthlyReset
+                ? usedMB
+                : Math.Max(usedMB, Math.Max(record?.LatestUsedMB ?? 0.0, previousRecord?.LatestUsedMB ?? 0.0));
             if (record == null)
             {
-                var startUsedMB = usedMB;
+                var startUsedMB = effectiveUsedMB;
                 if (previousRecord == null)
                 {
                     if (today.EndsWith("-01", StringComparison.Ordinal)) startUsedMB = 0.0;
                 }
-                else if (usedMB >= previousRecord.LatestUsedMB)
+                else if (effectiveUsedMB >= previousRecord.LatestUsedMB)
                 {
                     startUsedMB = previousRecord.LatestUsedMB;
                 }
@@ -487,7 +494,7 @@ public sealed class CampusHistoryManager
                 {
                     DateString = today,
                     StartUsedMB = startUsedMB,
-                    LatestUsedMB = usedMB,
+                    LatestUsedMB = effectiveUsedMB,
                     BalanceRMB = validBalanceRMB,
                     LastUpdated = DateTime.Now
                 };
@@ -495,16 +502,13 @@ public sealed class CampusHistoryManager
             }
             else
             {
-                if (previousRecord == null && today.EndsWith("-01", StringComparison.Ordinal))
+                if (isMonthlyReset || (previousRecord == null && today.EndsWith("-01", StringComparison.Ordinal)))
                     record.StartUsedMB = 0.0;
-                else if (usedMB < record.StartUsedMB)
-                    record.StartUsedMB = usedMB; // 新月重置或累计值回退
-                record.LatestUsedMB = usedMB;
-                if (previousRecord != null && usedMB >= previousRecord.LatestUsedMB &&
-                    record.StartUsedMB > previousRecord.LatestUsedMB)
+                else if (previousRecord != null)
                 {
                     record.StartUsedMB = previousRecord.LatestUsedMB;
                 }
+                record.LatestUsedMB = effectiveUsedMB;
                 if (validBalanceRMB.HasValue) record.BalanceRMB = validBalanceRMB;
                 record.LastUpdated = DateTime.Now;
             }
@@ -1284,12 +1288,16 @@ public sealed class CampusNetworkClient
                 if (online)
                 {
                     double actualFlowMB = flowMB * 2.0;
+                    var observedAt = requestTime;
+                    bool requestMonthStillCurrent = false;
                     if (!TryUpdateForAccount(accountGeneration, () =>
                     {
                         LatestData.IsLoggedIn = true;
                         var beijingNow = CourseCalendarHelper.BeijingNow;
                         var currentMonthKey = beijingNow.Year * 100 + beijingNow.Month;
-                        if (flowMB > 0 && requestMonthKey == currentMonthKey)
+                        observedAt = beijingNow;
+                        requestMonthStillCurrent = requestMonthKey == currentMonthKey;
+                        if (flowMB > 0 && requestMonthStillCurrent)
                         {
                             var curMB = LatestData.UsedMB ?? 0.0;
                             if (_lastPortalFlowMonthKey != requestMonthKey || curMB == 0 || actualFlowMB >= curMB)
@@ -1312,12 +1320,12 @@ public sealed class CampusNetworkClient
                         LatestData.LastUpdated = DateTime.Now;
                         LatestData.ErrorMessage = null;
 
-                        if (flowMB > 0)
+                        if (flowMB > 0 && requestMonthStillCurrent)
                         {
                             var balanceRMB = fee > 0
                                 ? fee
                                 : CampusNetworkData.ParseBalanceRMB(LatestData.Balance);
-                            CampusHistoryManager.Shared.RecordFlow(actualFlowMB, balanceRMB);
+                            CampusHistoryManager.Shared.RecordFlow(actualFlowMB, balanceRMB, observedAt);
                         }
                     })) return;
 
