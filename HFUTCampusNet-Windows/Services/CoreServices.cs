@@ -350,9 +350,13 @@ public sealed class CampusHistoryManager
             {
                 var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
                 var prefix = today.Substring(0, 7);
-                return FlowRecords.Where(r =>
-                    r.DateString.StartsWith(prefix) &&
-                    string.CompareOrdinal(r.DateString, today) <= 0).Sum(r => r.DeltaMB);
+                // LatestUsedMB is the portal's month-to-date cumulative counter. Summing
+                // daily deltas loses usage before the first sample when monitoring starts mid-month.
+                return FlowRecords
+                    .Where(r => r.DateString.StartsWith(prefix, StringComparison.Ordinal) &&
+                        string.CompareOrdinal(r.DateString, today) <= 0)
+                    .OrderByDescending(r => r.DateString)
+                    .FirstOrDefault()?.LatestUsedMB ?? 0.0;
             }
         }
     }
