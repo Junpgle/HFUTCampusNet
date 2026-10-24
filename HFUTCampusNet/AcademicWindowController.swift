@@ -468,7 +468,7 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
             setCard(
                 index: 2,
                 title: "本学期校历进度",
-                value: "第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (\(milestone.progressPercentage)%)",
+                value: "\(milestone.currentWeekText) (\(milestone.progressPercentage)%)",
                 sub: "\(milestone.startDateString) ~ \(milestone.endDateString) · 官方校历",
                 color: .systemIndigo
             )

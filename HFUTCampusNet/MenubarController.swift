@@ -910,7 +910,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         // 1. 校历与学期进度里程碑
         let milestone = SemesterMilestoneInfo.calculate(at: now)
         let milestoneItem = NSMenuItem(
-            title: "校历进度：第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (\(milestone.progressPercentage)%)  ·  距期末周约 \(milestone.daysUntilExamWeek) 天  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
+            title: "校历进度：\(milestone.currentWeekText) (\(milestone.progressPercentage)%)  ·  距期末周约 \(milestone.daysUntilExamWeek) 天  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
             action: #selector(openExamScheduleWindowAction),
             keyEquivalent: ""
         )
@@ -1211,7 +1211,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         let milestone = SemesterMilestoneInfo.calculate(schedule: schedule)
 
         let milestoneHeader = NSMenuItem(
-            title: "校历：第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周 (进度 \(milestone.progressPercentage)%)  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
+            title: "校历：\(milestone.currentWeekText) (进度 \(milestone.progressPercentage)%)  ·  距\(milestone.vacationName) \(milestone.remainingDays) 天",
             action: #selector(openCourseTableAction),
             keyEquivalent: ""
         )
@@ -1222,12 +1222,12 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
 
         if let schedule = schedule, !schedule.lessons.isEmpty {
             if todayLessons.isEmpty {
-                courseParent.title = "今日课程：今日无课 (第\(milestone.currentWeek)周)"
+                courseParent.title = "今日课程：今日无课 (\(milestone.currentTeachingWeekText))"
                 let noClassItem = NSMenuItem(title: "今日暂无排课", action: nil, keyEquivalent: "")
                 noClassItem.isEnabled = false
                 submenu.addItem(noClassItem)
             } else {
-                courseParent.title = "今日课程：\(todayLessons.count) 节课 (第\(milestone.currentWeek)周)"
+                courseParent.title = "今日课程：\(todayLessons.count) 节课 (\(milestone.currentTeachingWeekText))"
                 for lesson in todayLessons {
                     let room = lesson.classroom.map { "· \($0)" } ?? ""
                     let teacher = lesson.teacher.map { "(\($0))" } ?? ""

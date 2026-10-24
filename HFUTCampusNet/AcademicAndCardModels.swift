@@ -538,6 +538,14 @@ public struct SemesterMilestoneInfo: Equatable {
         return min(100, max(0, Int(round(Double(elapsedDays) / Double(totalDays) * 100.0))))
     }
 
+    public var currentWeekText: String {
+        currentWeek > 0 ? "第 \(currentWeek)/\(totalWeeks) 周" : "尚未开学"
+    }
+
+    public var currentTeachingWeekText: String {
+        currentWeek > 0 ? "第\(currentWeek)周" : "尚未开学"
+    }
+
     /// 根据当前课表与合工大官方校历推算本学期进度里程碑
     public static func calculate(
         schedule: CourseScheduleData? = CourseScheduleService.shared.currentSchedule,
@@ -586,7 +594,9 @@ public struct SemesterMilestoneInfo: Equatable {
         let remainingDays = max(0, totalDays - elapsedDays)
 
         let totalWeeks = max(18, Int(ceil(Double(totalDays) / 7.0)))
-        let computedWeek = schedule?.currentWeek(at: now) ?? min(totalWeeks, max(1, (elapsedDays - 1) / 7 + 1))
+        let computedWeek = todayDate < startDate
+            ? 0
+            : (schedule?.currentWeek(at: now) ?? min(totalWeeks, max(1, (elapsedDays - 1) / 7 + 1)))
         let daysUntilExamWeek: Int
         if let examStart = campusTerm?.examStartDate,
            let examStartDate = CourseCalendarHelper.parseDate(examStart, "00:00") {

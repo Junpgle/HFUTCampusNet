@@ -1006,7 +1006,9 @@ public sealed class SemesterMilestoneInfo
     public int DaysUntilVacation { get; set; }
     public string VacationName { get; set; } = "假期";
 
-    public string StatusSummaryText => $"校历: 第 {CurrentWeek}/{TotalWeeks} 周 ({ProgressPercentage:F0}%) · 距期末周约 {DaysUntilExamWeek} 天";
+    public string CurrentWeekText => CurrentWeek > 0 ? $"第 {CurrentWeek}/{TotalWeeks} 周" : "尚未开学";
+
+    public string StatusSummaryText => $"校历: {CurrentWeekText} ({ProgressPercentage:F0}%) · 距期末周约 {DaysUntilExamWeek} 天";
 
     public static SemesterMilestoneInfo Calculate(int? semId = null, CourseScheduleData? schedule = null, DateTime? date = null)
     {
@@ -1037,7 +1039,9 @@ public sealed class SemesterMilestoneInfo
         var startDate = DateTime.ParseExact(config.Start, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var endDate = DateTime.ParseExact(config.End, "yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-        var curWeek = schedule?.CurrentWeek(now) ?? Math.Clamp((int)Math.Floor((now - startDate).Days / 7.0) + 1, 1, config.Weeks);
+        var curWeek = now < startDate
+            ? 0
+            : (schedule?.CurrentWeek(now) ?? Math.Clamp((int)Math.Floor((now - startDate).Days / 7.0) + 1, 1, config.Weeks));
         var totalDays = Math.Max(1, (endDate - startDate).Days);
         var passedDays = Math.Clamp((now - startDate).Days, 0, totalDays);
         var progress = Math.Round((double)passedDays / totalDays * 100.0, 1);

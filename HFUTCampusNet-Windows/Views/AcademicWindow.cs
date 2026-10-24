@@ -555,7 +555,7 @@ public sealed class AcademicWindow : Window
                     SetCard(0, "正式考试安排", "暂无待考科目", allExams.Count == 0 ? "教务系统尚未公布；预测日期见下方" : "本学期正式考试已全部结束", Brushes.SeaGreen);
                     SetCard(1, "期末考试周倒计时", milestone.DaysUntilExamWeek > 0 ? $"约 {milestone.DaysUntilExamWeek} 天" : "已进入期末阶段", $"待考 {upcoming.Count} 场 / 已考 {finished.Count} 场", Brushes.DodgerBlue);
                 }
-                SetCard(2, "本学期校历进度", $"第 {milestone.CurrentWeek}/{milestone.TotalWeeks} 周 ({milestone.ProgressPercentage:F0}%)", $"{milestone.StartDateString} ~ {milestone.EndDateString}", Brushes.Teal);
+                SetCard(2, "本学期校历进度", $"{milestone.CurrentWeekText} ({milestone.ProgressPercentage:F0}%)", $"{milestone.StartDateString} ~ {milestone.EndDateString}", Brushes.Teal);
                 SetCard(3, $"距离{milestone.VacationName}放假", milestone.DaysUntilVacation > 0 ? $"还有 {milestone.DaysUntilVacation} 天" : "假期进行中", $"学期结束日：{milestone.EndDateString}", Brushes.MediumPurple);
 
                 _dataGrid.Columns.Add(new DataGridTextColumn { Header = "考试科目", Binding = new System.Windows.Data.Binding("CourseName"), Width = 220 });

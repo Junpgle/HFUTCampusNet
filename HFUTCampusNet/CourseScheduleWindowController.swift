@@ -266,7 +266,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
             f.dateFormat = "yyyy-MM-dd HH:mm"
             let count = schedule?.lessons.count ?? 0
             let examWeekText = milestone.examWeekStartDateString.map { " · 考试周 \($0) 至 \(milestone.examWeekEndDateString ?? $0)" } ?? " · 距考试周约 \(milestone.daysUntilExamWeek) 天"
-            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共 \(count) 节排课 | \(milestone.campusName)校历: \(milestone.startDateString) ~ \(milestone.endDateString) (第 \(milestone.currentWeek)/\(milestone.totalWeeks) 周\(examWeekText))"
+            statusInfoLabel?.stringValue = "最后同步: \(f.string(from: syncTime)) | 本学期共 \(count) 节排课 | \(milestone.campusName)校历: \(milestone.startDateString) ~ \(milestone.endDateString) (\(milestone.currentWeekText)\(examWeekText))"
         } else {
             statusInfoLabel?.stringValue = "尚未同步教务课表，请点击右上角「网页登录同步」"
         }
