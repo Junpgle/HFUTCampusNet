@@ -972,6 +972,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             SettingsManager.shared.courseStudentId = ""
         }
         CampusCardService.shared.clearCache()
+        SettingsManager.shared.lastNotifiedLowCardBalanceDate = ""
         AcademicService.shared.clearCache()
         LibraryBorrowManager.shared.clearCache()
     }
