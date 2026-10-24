@@ -499,6 +499,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 self.silentLoginSelfServiceAndFetch()
             }
         }
+        tagAccountScopedTask(task, generation: generation)
         task.resume()
     }
 
@@ -557,7 +558,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         req.setValue(dashboardURL.absoluteString, forHTTPHeaderField: "Referer")
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 
-        session.dataTask(with: req) { [weak self] data, _, error in
+        let task = session.dataTask(with: req) { [weak self] data, _, error in
             guard let self = self else {
                 completion?()
                 return
@@ -624,7 +625,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 }
                 completion?()
             }
-        }.resume()
+        }
+        tagAccountScopedTask(task, generation: generation)
+        task.resume()
     }
 
     /// 强制注销指定在线设备 (dashboard/tooffline?sessionid=xxx)
@@ -644,7 +647,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         req.setValue(dashboardURL.absoluteString, forHTTPHeaderField: "Referer")
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
 
-        session.dataTask(with: req) { [weak self] data, _, error in
+        let task = session.dataTask(with: req) { [weak self] data, _, error in
             guard let self = self else { return }
             guard self.isCurrentPortalAccount(username, generation: generation) else {
                 DispatchQueue.main.async { completion(false, "账号已切换，本次操作已取消") }
@@ -680,7 +683,9 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     completion(false, "注销失败，该设备可能已下线或会话已过期")
                 }
             }
-        }.resume()
+        }
+        tagAccountScopedTask(task, generation: generation)
+        task.resume()
     }
 
     /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取可用流量与消费保护
@@ -897,7 +902,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        guard isTaskForCurrentAccount(task) else {
+        guard isTaskForCurrentAccount(task),
+              let redirectURL = request.url,
+              redirectURL.scheme?.caseInsensitiveCompare(dashboardURL.scheme ?? "") == .orderedSame,
+              redirectURL.host?.caseInsensitiveCompare(dashboardURL.host ?? "") == .orderedSame,
+              redirectURL.port == dashboardURL.port else {
             completionHandler(nil)
             return
         }
