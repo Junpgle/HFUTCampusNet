@@ -1267,7 +1267,7 @@ public sealed class CampusCardData
     public string CardStatusText { get => StatusText; set => StatusText = value; }
     public string CardStatus => StatusText;
     public double TodaySpentYuan => TodaySpentRMB();
-    public double WeekSpentYuan => Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, CourseCalendarHelper.BeijingNow.Date.AddDays(-7).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)) >= 0 && t.IsExpense).Sum(t => t.AmountRMB);
+    public double WeekSpentYuan => ExpensesInPastSevenDays().Sum(t => t.AmountRMB);
     public double MonthSpentYuan => CurrentMonthSpentRMB();
     public string ErrorMessage { get; set; } = string.Empty;
 
@@ -1288,11 +1288,20 @@ public sealed class CampusCardData
 
     public double Past7DaysAverageSpentRMB(DateTime? now = null)
     {
-        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date;
-        var cutoff = dt.AddDays(-7).ToString("yyyy-MM-dd");
-        var expenses = Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, cutoff) >= 0 && t.IsExpense).ToList();
+        var expenses = ExpensesInPastSevenDays(now);
         var activeDays = Math.Max(1, expenses.Select(t => t.DateOnlyString).Distinct().Count());
         return expenses.Sum(t => t.AmountRMB) / activeDays;
+    }
+
+    private List<CampusCardTransaction> ExpensesInPastSevenDays(DateTime? now = null)
+    {
+        var today = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date;
+        var firstDate = today.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var lastDate = today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        return Transactions.Where(t =>
+            string.CompareOrdinal(t.DateOnlyString, firstDate) >= 0 &&
+            string.CompareOrdinal(t.DateOnlyString, lastDate) <= 0 &&
+            t.IsExpense).ToList();
     }
 
     public double CurrentMonthSpentRMB(DateTime? now = null)

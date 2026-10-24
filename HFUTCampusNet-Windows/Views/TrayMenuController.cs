@@ -960,7 +960,7 @@ public sealed class TrayMenuController : IDisposable
             double budget = SettingsManager.Shared.CampusCardDailyBudget;
             rootItem.Items.Add(CreateInfoMenuItem($"卡内余额：¥{card.BalanceYuan:F2}   ({card.CardStatus})"));
             rootItem.Items.Add(CreateInfoMenuItem($"今日消费：¥{card.TodaySpentYuan:F2}   (日预算 ¥{budget:F0})"));
-            rootItem.Items.Add(CreateInfoMenuItem($"本周消费：¥{card.WeekSpentYuan:F2}   |   本月消费：¥{card.MonthSpentYuan:F2}"));
+            rootItem.Items.Add(CreateInfoMenuItem($"近 7 天消费：¥{card.WeekSpentYuan:F2}   |   本月消费：¥{card.MonthSpentYuan:F2}"));
             rootItem.Items.Add(CreateSeparator());
 
             rootItem.Items.Add(CreateInfoMenuItem("最近 6 笔流水记录："));
