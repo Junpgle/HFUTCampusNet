@@ -180,6 +180,9 @@ public class CampusHistoryManager {
         }
 
         let continuityBeforeSelection = reconcileContinuity()
+        if continuityBeforeSelection {
+            flowHistoryContinuityBackupRequired = true
+        }
         let currentDormKey = Self.electricityDormKey(
             campus: SettingsManager.shared.dormCampus,
             building: SettingsManager.shared.dormBuilding,
@@ -188,6 +191,9 @@ public class CampusHistoryManager {
         )
         let selectedCurrentHistory = store.activateElectricityHistory(for: currentDormKey)
         let continuityAfterSelection = selectedCurrentHistory ? reconcileContinuity() : false
+        if continuityAfterSelection {
+            flowHistoryContinuityBackupRequired = true
+        }
 
         if loaded != nil && (needsFlowPartitionMigration || needsFlowMigration || continuityBeforeSelection || selectedCurrentHistory || continuityAfterSelection) {
             saveStore()
@@ -321,7 +327,9 @@ public class CampusHistoryManager {
         let dormKey = Self.electricityDormKey(campus: campus, building: building, room: room, endNumber: endNumber)
         let didChange = queue.sync {
             guard self.store.activateElectricityHistory(for: dormKey) else { return false }
-            self.reconcileContinuity()
+            if self.reconcileContinuity() {
+                self.flowHistoryContinuityBackupRequired = true
+            }
             self.saveStore()
             return true
         }
@@ -659,7 +667,9 @@ public class CampusHistoryManager {
                 self.store.flowRecords.append(newRecord)
             }
 
-            self.reconcileContinuity()
+            if self.reconcileContinuity() {
+                self.flowHistoryContinuityBackupRequired = true
+            }
 
             // 保留近 90 天
             if self.store.flowRecords.count > 90 {
@@ -773,7 +783,9 @@ public class CampusHistoryManager {
                 self.store.electricityRecords.append(newRecord)
             }
 
-            self.reconcileContinuity()
+            if self.reconcileContinuity() {
+                self.flowHistoryContinuityBackupRequired = true
+            }
 
             // 保留近 90 天
             if self.store.electricityRecords.count > 90 {
