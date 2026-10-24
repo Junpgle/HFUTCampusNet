@@ -346,8 +346,21 @@ public class CampusHistoryManager {
                 let prev = expandedElec.last!
                 var curr = store.electricityRecords[i]
                 let gap = daysBetween(prev.dateString, curr.dateString)
+                let hasBalanceRechargeEvidence = prev.balanceRMB.isFinite && curr.startOfDayBalanceRMB.isFinite &&
+                    curr.startOfDayBalanceRMB > prev.balanceRMB + 0.05
+                let hasKWhRechargeEvidence: Bool = {
+                    guard let previousKWh = prev.remainingKWh, previousKWh.isFinite else { return false }
+                    let currentKWhIncreased = curr.remainingKWh.map {
+                        $0.isFinite && $0 > previousKWh + 0.05
+                    } ?? false
+                    let startOfDayKWhIncreased = curr.startOfDayKWh.map {
+                        $0.isFinite && $0 > previousKWh + 0.05
+                    } ?? false
+                    return currentKWhIncreased || startOfDayKWhIncreased
+                }()
 
-                if gap > 1 && gap <= 30 && curr.balanceRMB <= prev.balanceRMB {
+                if gap > 1 && gap <= 30 && curr.balanceRMB < prev.balanceRMB - 0.001 &&
+                    !hasBalanceRechargeEvidence && !hasKWhRechargeEvidence {
                     // 若 curr 的起始余额仍停留在多日前的 prev.balanceRMB，将期间总消耗均摊到断档的每一天
                     let targetEndOfPrevDay: Double
                     if abs(curr.startOfDayBalanceRMB - prev.balanceRMB) < 0.001 {
