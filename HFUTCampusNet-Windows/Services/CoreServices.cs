@@ -71,6 +71,7 @@ public sealed class SettingsManager
         "HFUTCampusNet");
     private static readonly string SettingsFile = Path.Combine(AppDataFolder, "settings.json");
     private static readonly object SaveLock = new();
+    private static bool _settingsBackupRequired;
 
     // 配置字段
     public string? SessionCookie { get; set; }
@@ -169,6 +170,12 @@ public sealed class SettingsManager
             var temporaryFile = SettingsFile + ".tmp";
             try
             {
+                if (_settingsBackupRequired)
+                {
+                    if (!TryBackupUnreadableSettings()) return;
+                    _settingsBackupRequired = false;
+                }
+
                 Directory.CreateDirectory(AppDataFolder);
                 var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(temporaryFile, json, Encoding.UTF8);
@@ -188,17 +195,40 @@ public sealed class SettingsManager
 
     private static SettingsManager Load()
     {
+        if (!File.Exists(SettingsFile)) return new SettingsManager();
+
         try
         {
-            if (File.Exists(SettingsFile))
-            {
-                var json = File.ReadAllText(SettingsFile, Encoding.UTF8);
-                var obj = JsonSerializer.Deserialize<SettingsManager>(json);
-                if (obj != null) return obj;
-            }
+            var json = File.ReadAllText(SettingsFile, Encoding.UTF8);
+            var obj = JsonSerializer.Deserialize<SettingsManager>(json);
+            if (obj == null) throw new JsonException("Settings file does not contain a JSON object.");
+            obj.NotifiedGradeIds ??= new();
+            obj.UnreadGradeIds ??= new();
+            return obj;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SettingsManager] Load failed: {ex.Message}");
+            _settingsBackupRequired = !TryBackupUnreadableSettings();
+        }
         return new SettingsManager();
+    }
+
+    private static bool TryBackupUnreadableSettings()
+    {
+        if (!File.Exists(SettingsFile)) return true;
+
+        var backupFile = SettingsFile + $".load-failure-{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}.bak";
+        try
+        {
+            File.Copy(SettingsFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SettingsManager] Could not preserve unreadable settings: {ex.Message}");
+            return false;
+        }
     }
 }
 
