@@ -290,6 +290,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private func performHeartbeatCheck(forceDashboard: Bool = false) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = accountGeneration
+        let observedAt = Date()
         if forceDashboard {
             pendingForceDashboard = true
         }
@@ -372,7 +373,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     usedFlowStr: data.usedFlow,
                     availableFlowStr: (data.availableFlow != "-- M") ? data.availableFlow : nil,
                     balanceStr: data.balance,
-                    currentSpeedMBs: currentSpd
+                    currentSpeedMBs: currentSpd,
+                    observedAt: observedAt
                 )
 
                 let shouldRetryMissingFlow = (data.availableFlow == "-- M") &&
@@ -384,11 +386,17 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             case .notInCampusNet:
                 self.markOfflineInstantly(reason: "未连接校园网络 Wi-Fi")
                 if shouldForceDashboard || !self.hasFetchedHuiXinFallback {
+                    let observedAt = Date()
                     ElectricityService.shared.fetchSchoolNetInfoFromHuiXin { [weak self] flow, balance in
                         DispatchQueue.main.async {
                             guard let self = self,
                                   self.isCurrentPortalAccount(username, generation: generation) else { return }
-                            self.applyHuiXinFallback(usedFlow: flow, balance: balance, expectedAccountGeneration: generation)
+                            self.applyHuiXinFallback(
+                                usedFlow: flow,
+                                balance: balance,
+                                expectedAccountGeneration: generation,
+                                observedAt: observedAt
+                            )
                         }
                     }
                 }
@@ -400,7 +408,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     public func applyHuiXinFallback(
         usedFlow: String?,
         balance: String?,
-        expectedAccountGeneration: Int? = nil
+        expectedAccountGeneration: Int? = nil,
+        observedAt: Date = Date()
     ) {
         let generation = expectedAccountGeneration ?? accountGeneration
         guard generation == accountGeneration else { return }
@@ -428,7 +437,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
         self.latestData = updated
         self.delegate?.clientDidUpdate(data: updated)
         if updated.usedFlow != "-- M" && !updated.usedFlow.isEmpty {
-            CampusHistoryManager.shared.recordFlow(usedFlowStr: updated.usedFlow, balanceStr: updated.balance)
+            CampusHistoryManager.shared.recordFlow(
+                usedFlowStr: updated.usedFlow,
+                balanceStr: updated.balance,
+                observedAt: observedAt
+            )
         }
     }
 
@@ -437,6 +450,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     private func fetchDashboardData() {
         guard !isFetchingDashboard else { return }
         lastDashboardAttemptTime = Date()
+        let observedAt = Date()
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = accountGeneration
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -480,7 +494,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                 return
             }
 
-            if !self.applyParsedDashboardHTML(html, expectedAccountGeneration: generation) {
+            if !self.applyParsedDashboardHTML(html, expectedAccountGeneration: generation, observedAt: observedAt) {
                 SettingsManager.shared.sessionCookie = nil
                 self.silentLoginSelfServiceAndFetch()
             }
@@ -489,7 +503,11 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     @discardableResult
-    public func applyParsedDashboardHTML(_ html: String, expectedAccountGeneration: Int? = nil) -> Bool {
+    public func applyParsedDashboardHTML(
+        _ html: String,
+        expectedAccountGeneration: Int? = nil,
+        observedAt: Date = Date()
+    ) -> Bool {
         let generation = expectedAccountGeneration ?? accountGeneration
         guard generation == accountGeneration else { return false }
         guard let parsed = self.parseDashboardHTML(html) else { return false }
@@ -516,14 +534,15 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
             usedFlowStr: result.usedFlow,
             availableFlowStr: result.availableFlow,
             balanceStr: result.balance,
-            currentSpeedMBs: currentSpd
+            currentSpeedMBs: currentSpd,
+            observedAt: observedAt
         )
-        self.fetchOnlineDevices()
+        self.fetchOnlineDevices(observedAt: observedAt)
         return true
     }
 
     /// 获取当前自服务平台在线设备列表 (dashboard/getOnlineList)
-    public func fetchOnlineDevices(completion: (() -> Void)? = nil) {
+    public func fetchOnlineDevices(completion: (() -> Void)? = nil, observedAt: Date = Date()) {
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = accountGeneration
         guard let cookie = SettingsManager.shared.sessionCookie, !cookie.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -597,7 +616,8 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                     CampusHistoryManager.shared.recordFlow(
                         usedFlowStr: updated.usedFlow,
                         availableFlowStr: (updated.availableFlow != "-- M") ? updated.availableFlow : nil,
-                        balanceStr: updated.balance
+                        balanceStr: updated.balance,
+                        observedAt: observedAt
                     )
                 } else {
                     NotificationCenter.default.post(name: .historyStatsDidUpdate, object: nil)
@@ -665,6 +685,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
 
     /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取可用流量与消费保护
     public func silentLoginSelfServiceAndFetch() {
+        let observedAt = Date()
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let password = SettingsManager.shared.portalPassword.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = accountGeneration
@@ -756,7 +777,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
                        let dashHTML = String(data: verifyData, encoding: .utf8) ?? String(data: verifyData, encoding: .ascii),
                        dashHTML.contains("可用流量") || dashHTML.contains("已用流量") {
                         SettingsManager.shared.sessionCookie = finalSid
-                        self.applyParsedDashboardHTML(dashHTML, expectedAccountGeneration: generation)
+                        self.applyParsedDashboardHTML(dashHTML, expectedAccountGeneration: generation, observedAt: observedAt)
                     }
                 }
                 self.tagAccountScopedTask(step3Task, generation: generation)

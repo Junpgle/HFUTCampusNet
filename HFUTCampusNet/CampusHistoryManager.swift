@@ -527,10 +527,14 @@ public class CampusHistoryManager {
         usedFlowStr: String,
         availableFlowStr: String? = nil,
         balanceStr: String? = nil,
-        currentSpeedMBs: Double? = nil
+        currentSpeedMBs: Double? = nil,
+        observedAt: Date = Date()
     ) {
         queue.async {
-            let today = self.todayString()
+            let today = CourseCalendarHelper.dateString(from: observedAt)
+            let currentDay = self.todayString()
+            // 网关月累计值在请求过程中遇到月初重置时可能已经过期；不要把上月值写入本月历史。
+            guard today.prefix(7) == currentDay.prefix(7) else { return }
             guard let totalMB = self.parseFlowToMB(usedFlowStr) else { return }
             guard self.completeFlowAccountingMigrationIfNeeded() else { return }
 
