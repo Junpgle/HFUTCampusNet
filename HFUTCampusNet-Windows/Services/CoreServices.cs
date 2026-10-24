@@ -1887,11 +1887,16 @@ public sealed class CampusNetworkClient
                 if (!cookieCleared) return (false, "设备列表请求已过期", new());
                 return (false, "自服务会话已失效", new());
             }
+            if (!resp.IsSuccessStatusCode)
+                return (false, $"设备列表请求失败 (HTTP {(int)resp.StatusCode})", new());
 
             var text = await resp.Content.ReadAsStringAsync();
             if (!IsCurrentOnlineDevicesRequest(accountGeneration, requestGeneration))
                 return (false, "设备列表请求已过期", new());
-            if (string.IsNullOrWhiteSpace(text) || text.Contains("欢迎登录用户自助服务系统") || text.TrimStart().StartsWith("<"))
+            var responsePath = resp.RequestMessage?.RequestUri?.AbsolutePath ?? string.Empty;
+            bool isLoginPage = text.Contains("欢迎登录用户自助服务系统", StringComparison.Ordinal) ||
+                responsePath.Contains("/Self/login", StringComparison.OrdinalIgnoreCase);
+            if (isLoginPage)
             {
                 bool cookieCleared = TryUpdateOnlineDevicesForRequest(accountGeneration, requestGeneration, cookie, () =>
                 {
@@ -1901,60 +1906,62 @@ public sealed class CampusNetworkClient
                 if (!cookieCleared) return (false, "设备列表请求已过期", new());
                 return (false, "自服务会话已失效", new());
             }
+            if (string.IsNullOrWhiteSpace(text))
+                return (false, "设备列表响应为空", new());
 
             var list = new List<OnlineDeviceSession>();
             using (var doc = JsonDocument.Parse(text))
             {
-                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                    return (false, "设备列表响应格式无效", new());
+
+                foreach (var item in doc.RootElement.EnumerateArray())
                 {
-                    foreach (var item in doc.RootElement.EnumerateArray())
+                    var sid = item.TryGetProperty("sessionId", out var sidProp) ? sidProp.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(sid)) continue;
+
+                    var ip = item.TryGetProperty("ip", out var ipProp) ? ipProp.GetString() ?? "--" : "--";
+                    var mac = item.TryGetProperty("mac", out var macProp) ? macProp.GetString() ?? "" : "";
+                    var loginTime = item.TryGetProperty("loginTime", out var ltProp) ? ltProp.GetString() ?? "--" : "--";
+
+                    int useTimeSec = 0;
+                    if (item.TryGetProperty("useTime", out var utProp))
                     {
-                        var sid = item.TryGetProperty("sessionId", out var sidProp) ? sidProp.GetString() ?? "" : "";
-                        if (string.IsNullOrEmpty(sid)) continue;
-
-                        var ip = item.TryGetProperty("ip", out var ipProp) ? ipProp.GetString() ?? "--" : "--";
-                        var mac = item.TryGetProperty("mac", out var macProp) ? macProp.GetString() ?? "" : "";
-                        var loginTime = item.TryGetProperty("loginTime", out var ltProp) ? ltProp.GetString() ?? "--" : "--";
-
-                        int useTimeSec = 0;
-                        if (item.TryGetProperty("useTime", out var utProp))
-                        {
-                            if (utProp.ValueKind == JsonValueKind.Number) useTimeSec = utProp.GetInt32();
-                            else if (int.TryParse(utProp.GetString(), out int utVal)) useTimeSec = utVal;
-                        }
-                        int useMinutes = Math.Max(0, (int)Math.Round(useTimeSec / 60.0));
-
-                        double downKB = 0, upKB = 0;
-                        if (item.TryGetProperty("downFlow", out var dfProp))
-                        {
-                            if (dfProp.ValueKind == JsonValueKind.Number) downKB = dfProp.GetDouble();
-                            else if (double.TryParse(dfProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double dfVal)) downKB = dfVal;
-                        }
-                        if (item.TryGetProperty("upFlow", out var ufProp))
-                        {
-                            if (ufProp.ValueKind == JsonValueKind.Number) upKB = ufProp.GetDouble();
-                            else if (double.TryParse(ufProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double ufVal)) upKB = ufVal;
-                        }
-                        double usedMB = (downKB + upKB) / 1024.0;
-
-                        var termType = item.TryGetProperty("terminalType", out var ttProp) ? ttProp.GetString() ?? "在线终端" : "在线终端";
-                        if (termType.StartsWith("#")) termType = termType[1..];
-                        if (string.IsNullOrWhiteSpace(termType)) termType = "在线终端";
-
-                        var hostName = item.TryGetProperty("hostName", out var hnProp) ? hnProp.GetString() ?? "" : "";
-
-                        list.Add(new OnlineDeviceSession
-                        {
-                            SessionId = sid,
-                            Ip = ip,
-                            Mac = mac,
-                            LoginTime = loginTime,
-                            UseMinutes = useMinutes,
-                            UsedFlowMB = usedMB,
-                            TerminalType = termType,
-                            HostName = hostName
-                        });
+                        if (utProp.ValueKind == JsonValueKind.Number) useTimeSec = utProp.GetInt32();
+                        else if (int.TryParse(utProp.GetString(), out int utVal)) useTimeSec = utVal;
                     }
+                    int useMinutes = Math.Max(0, (int)Math.Round(useTimeSec / 60.0));
+
+                    double downKB = 0, upKB = 0;
+                    if (item.TryGetProperty("downFlow", out var dfProp))
+                    {
+                        if (dfProp.ValueKind == JsonValueKind.Number) downKB = dfProp.GetDouble();
+                        else if (double.TryParse(dfProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double dfVal)) downKB = dfVal;
+                    }
+                    if (item.TryGetProperty("upFlow", out var ufProp))
+                    {
+                        if (ufProp.ValueKind == JsonValueKind.Number) upKB = ufProp.GetDouble();
+                        else if (double.TryParse(ufProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double ufVal)) upKB = ufVal;
+                    }
+                    double usedMB = (downKB + upKB) / 1024.0;
+
+                    var termType = item.TryGetProperty("terminalType", out var ttProp) ? ttProp.GetString() ?? "在线终端" : "在线终端";
+                    if (termType.StartsWith("#")) termType = termType[1..];
+                    if (string.IsNullOrWhiteSpace(termType)) termType = "在线终端";
+
+                    var hostName = item.TryGetProperty("hostName", out var hnProp) ? hnProp.GetString() ?? "" : "";
+
+                    list.Add(new OnlineDeviceSession
+                    {
+                        SessionId = sid,
+                        Ip = ip,
+                        Mac = mac,
+                        LoginTime = loginTime,
+                        UseMinutes = useMinutes,
+                        UsedFlowMB = usedMB,
+                        TerminalType = termType,
+                        HostName = hostName
+                    });
                 }
             }
 
