@@ -189,12 +189,23 @@ public class ElectricityService {
             let body = "username=\(encUser)&password=\(encPass)&grant_type=password&logintype=sno"
             request.httpBody = body.data(using: .utf8)
 
-            URLSession.shared.dataTask(with: request) { data, _, error in
+            URLSession.shared.dataTask(with: request) { data, response, error in
                 if let error = error {
                     if index + 1 < candidates.count {
                         tryCandidate(at: index + 1)
                     } else {
                         DispatchQueue.main.async { completion(.failure(error)) }
+                    }
+                    return
+                }
+
+                let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
+                guard (200..<300).contains(httpStatus) else {
+                    if index + 1 < candidates.count {
+                        tryCandidate(at: index + 1)
+                    } else {
+                        let err = NSError(domain: "cn.edu.hfut.electricity", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: "慧新易校授权请求失败 (HTTP \(httpStatus))"])
+                        DispatchQueue.main.async { completion(.failure(err)) }
                     }
                     return
                 }
@@ -354,6 +365,13 @@ public class ElectricityService {
                     return
                 }
                 let err = NSError(domain: "cn.edu.hfut.electricity", code: 401, userInfo: [NSLocalizedDescriptionKey: "登录凭据已过期"])
+                DispatchQueue.main.async { completion?(.failure(err)) }
+                return
+            }
+
+            guard (200..<300).contains(httpStatus) else {
+                let message = (jsonObject["msg"] as? String) ?? "电费服务请求失败 (HTTP \(httpStatus))"
+                let err = NSError(domain: "cn.edu.hfut.electricity", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: message])
                 DispatchQueue.main.async { completion?(.failure(err)) }
                 return
             }
@@ -551,6 +569,11 @@ public class ElectricityService {
                     } else {
                         completeWithoutResult()
                     }
+                    return
+                }
+
+                guard (200..<300).contains(httpStatus) else {
+                    DispatchQueue.main.async { completion?(nil, nil) }
                     return
                 }
 
