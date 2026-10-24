@@ -121,7 +121,6 @@ public class CourseScheduleService {
     private func saveDiscoveredCourseMetadata(
         cookieHeader: String,
         studentId: String?,
-        semesterId: String?,
         bizTypeId: String?,
         cookies: [HTTPCookie],
         generation: Int
@@ -136,9 +135,6 @@ public class CourseScheduleService {
         SettingsManager.shared.courseSessionCookie = cookieHeader
         if let studentId, !studentId.isEmpty {
             SettingsManager.shared.courseStudentId = studentId
-        }
-        if let semesterId, !semesterId.isEmpty {
-            SettingsManager.shared.courseSemesterId = semesterId
         }
         if let bizTypeId, !bizTypeId.isEmpty {
             SettingsManager.shared.courseBizTypeId = bizTypeId
@@ -256,9 +252,8 @@ public class CourseScheduleService {
                     finish(.failure(CourseSyncError.needLogin))
                     return
                 }
-                let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
                 let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
-                self.fetchCourseData(studentId: discoveredStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                self.fetchCourseData(studentId: discoveredStd, semesterId: semFinal, bizTypeId: refreshedBiz) { retryResult in
                     switch retryResult {
                     case .success(let schedule):
                         finish(.success(schedule))
@@ -281,7 +276,7 @@ public class CourseScheduleService {
             case .success(let schedule):
                 finish(.success(schedule))
             case .failure(let error):
-                // 如果会话过期或返回空课程列表（可能因会话失效或学期 ID 变更），尝试后台自动 SSO 登录并重新探测最新元数据后重试
+                // 如果会话过期或返回空课程列表，尝试后台自动 SSO 登录后按本次选定的学期重试
                 if let syncErr = error as? CourseSyncError,
                    case .needLogin = syncErr {
                     self.tryBackgroundLogin(generation: generation) { loginSuccess in
@@ -291,9 +286,8 @@ public class CourseScheduleService {
                         }
                         if loginSuccess {
                             let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
-                            let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
                             let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
-                            self.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                            self.fetchCourseData(studentId: refreshedStd, semesterId: semFinal, bizTypeId: refreshedBiz) { retryResult in
                                 switch retryResult {
                                 case .success(let schedule):
                                     finish(.success(schedule))
@@ -314,9 +308,8 @@ public class CourseScheduleService {
                         }
                         if loginSuccess {
                             let refreshedStd = SettingsManager.shared.courseStudentId.isEmpty ? std : SettingsManager.shared.courseStudentId
-                            let refreshedSem = SettingsManager.shared.courseSemesterId.isEmpty ? semFinal : SettingsManager.shared.courseSemesterId
                             let refreshedBiz = (SettingsManager.shared.courseBizTypeId.isEmpty || SettingsManager.shared.courseBizTypeId == "2") ? "23" : SettingsManager.shared.courseBizTypeId
-                            self.fetchCourseData(studentId: refreshedStd, semesterId: refreshedSem, bizTypeId: refreshedBiz) { retryResult in
+                            self.fetchCourseData(studentId: refreshedStd, semesterId: semFinal, bizTypeId: refreshedBiz) { retryResult in
                                 switch retryResult {
                                 case .success(let schedule):
                                     finish(.success(schedule))
@@ -756,7 +749,7 @@ public class CourseScheduleService {
         loginViaSaltPassword(generation: generation, completion: completion)
     }
 
-    /// 在已建立教务会话的 URLSession 中请求 /for-std/course-table，自动提取 SESSION/SRVID 与 studentId/semesterId/bizTypeId
+    /// 在已建立教务会话的 URLSession 中请求 /for-std/course-table，自动提取 SESSION/SRVID 与 studentId/bizTypeId
     private func discoverCourseTableMetadata(
         using session: URLSession,
         generation: Int,
@@ -790,10 +783,9 @@ public class CourseScheduleService {
                 return
             }
 
-            // 从重定向 URL 或 HTML 中提取 studentId、bizTypeId、semesterId
+            // 从重定向 URL 或 HTML 中提取 studentId、bizTypeId；学期由用户设置或调用参数决定
             var studentId: String?
             var discoveredBizTypeId: String?
-            var discoveredSemesterId: String?
             if let stdFromURL = self.matchRegex(pattern: #"/for-std/course-table/info/(\d+)"#, in: tFinalURL) {
                 studentId = stdFromURL
             }
@@ -804,15 +796,10 @@ public class CourseScheduleService {
                 if let biz = self.matchRegex(pattern: #"bizTypeId\s*:\s*(\d+)"#, in: html) {
                     discoveredBizTypeId = biz
                 }
-                if let sem = self.matchRegex(pattern: #"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)"#, in: html)
-                    ?? self.matchRegex(pattern: #"semesterId\s*:\s*(\d+)"#, in: html) {
-                    discoveredSemesterId = sem
-                }
             }
             guard self.saveDiscoveredCourseMetadata(
                 cookieHeader: jxCookieHeader,
                 studentId: studentId,
-                semesterId: discoveredSemesterId,
                 bizTypeId: discoveredBizTypeId,
                 cookies: allCookies,
                 generation: generation
@@ -824,7 +811,7 @@ public class CourseScheduleService {
         }.resume()
     }
 
-    /// 通过 CAS TGC Cookie 执行单点登录获取教务系统专属 SESSION + SRVID 及最新 studentId/semesterId/bizTypeId
+    /// 通过 CAS TGC Cookie 执行单点登录获取教务系统专属 SESSION + SRVID 及最新 studentId/bizTypeId
     private func loginViaCASTgc(tgc: String, generation: Int, completion: @escaping (Bool) -> Void) {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieAcceptPolicy = .always
@@ -971,7 +958,7 @@ public class CourseScheduleService {
                 if let lData = lData,
                    let json = try? JSONSerialization.jsonObject(with: lData) as? [String: Any],
                    let result = json["result"] as? Bool, result == true {
-                    // 登录成功后进一步访问 /for-std/course-table 以自动获取 SESSION、SRVID、studentId、semesterId
+                    // 登录成功后进一步访问 /for-std/course-table 以自动获取 SESSION、SRVID、studentId
                     self.discoverCourseTableMetadata(using: session, generation: generation, completion: completion)
                 } else {
                     self.trySaltPasswordSequential(
