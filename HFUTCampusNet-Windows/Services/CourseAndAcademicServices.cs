@@ -139,6 +139,7 @@ public sealed class CourseScheduleService
         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
         {
             SettingsManager.Shared.CourseSemesterId = semesterId;
+            SettingsManager.Shared.CourseSemesterIdManuallySelected = true;
             SettingsManager.Shared.Save();
         })) return;
         SyncSchedule(_ => { });
@@ -156,6 +157,7 @@ public sealed class CourseScheduleService
         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
         {
             SettingsManager.Shared.CourseSemesterId = semesterId;
+            SettingsManager.Shared.CourseSemesterIdManuallySelected = true;
             SettingsManager.Shared.Save();
         }))
         {
@@ -312,7 +314,8 @@ public sealed class CourseScheduleService
                 {
                     _scheduleGeneration++;
                     if (!string.IsNullOrEmpty(studentId)) SettingsManager.Shared.CourseStudentId = studentId;
-                    if (!string.IsNullOrEmpty(semesterId)) SettingsManager.Shared.CourseSemesterId = semesterId;
+                    if (!string.IsNullOrEmpty(semesterId) && !SettingsManager.Shared.CourseSemesterIdManuallySelected)
+                        SettingsManager.Shared.CourseSemesterId = semesterId;
                     if (!string.IsNullOrEmpty(bizTypeId)) SettingsManager.Shared.CourseBizTypeId = bizTypeId;
                     SettingsManager.Shared.Save();
 
@@ -557,7 +560,8 @@ public sealed class CourseScheduleService
                 if (!semMatch.Success) semMatch = Regex.Match(pageHtml, @"'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)");
                 if (semMatch.Success)
                 {
-                    semId = semMatch.Groups[1].Value;
+                    if (!SettingsManager.Shared.CourseSemesterIdManuallySelected)
+                        semId = semMatch.Groups[1].Value;
                 }
                 var bizMatch = Regex.Match(pageHtml, @"bizTypeId\s*:\s*(\d+)");
                 if (bizMatch.Success)
@@ -567,7 +571,8 @@ public sealed class CourseScheduleService
                 if (!TryUpdateCourseSettings(scheduleGeneration, accountGeneration, () =>
                 {
                     if (stdMatch.Success) SettingsManager.Shared.CourseStudentId = stdId;
-                    if (semMatch.Success) SettingsManager.Shared.CourseSemesterId = semId;
+                    if (semMatch.Success && !SettingsManager.Shared.CourseSemesterIdManuallySelected)
+                        SettingsManager.Shared.CourseSemesterId = semId;
                     if (bizMatch.Success) SettingsManager.Shared.CourseBizTypeId = bizId;
                 })) return null;
             }

@@ -1018,6 +1018,7 @@ public class CourseScheduleWindow : Window
             if (semId == currentId) return;
 
             var previousSemesterId = currentId ?? SettingsManager.Shared.CourseSemesterId;
+            var previousSemesterManuallySelected = SettingsManager.Shared.CourseSemesterIdManuallySelected;
             var accountGeneration = AccountSessionManager.Generation;
             _statusLabel.Text = "正在切换学期并拉取课表...";
             _syncBtn.IsEnabled = false;
@@ -1044,6 +1045,7 @@ public class CourseScheduleWindow : Window
                         if (SettingsManager.Shared.CourseSemesterId == semId)
                         {
                             SettingsManager.Shared.CourseSemesterId = previousSemesterId;
+                            SettingsManager.Shared.CourseSemesterIdManuallySelected = previousSemesterManuallySelected;
                             SettingsManager.Shared.Save();
                         }
                         ReloadInterface(autoPositionWeek: false);

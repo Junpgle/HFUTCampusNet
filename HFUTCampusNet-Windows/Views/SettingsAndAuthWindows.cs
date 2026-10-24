@@ -2631,12 +2631,15 @@ public class CourseLoginWebWindow : Window
 
         // 2. 双引擎页内提取：引擎 1 (官方 API) + 引擎 2 (DOM 视觉扫描)
         string fallbackSemesterId = CourseCalendarHelper.InferSemesterId().ToString(CultureInfo.InvariantCulture);
+        string preferredSemesterId = string.Empty;
         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
         {
             if (int.TryParse(SettingsManager.Shared.CourseSemesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var configuredSemesterId) &&
                 configuredSemesterId > 0)
             {
                 fallbackSemesterId = configuredSemesterId.ToString(CultureInfo.InvariantCulture);
+                if (SettingsManager.Shared.CourseSemesterIdManuallySelected)
+                    preferredSemesterId = fallbackSemesterId;
             }
         })) return;
 
@@ -2661,6 +2664,8 @@ public class CourseLoginWebWindow : Window
                             log('启动教务双通道全量数据提取器');
                             var stdId = '';
                             var semId = '__HFUT_DEFAULT_SEMESTER_ID__';
+                            var preferredSemesterId = '__HFUT_PREFERRED_SEMESTER_ID__';
+                            var pageSemesterId = '';
                             var bizId = '23';
                             var gradeHtml = '';
                             var examHtml = '';
@@ -2680,8 +2685,10 @@ public class CourseLoginWebWindow : Window
 
                                 var semSelect = document.getElementById('allSemesters') || document.querySelector('select');
                                 var semMatch = html.match(/'fileInfoAssoc'\s*:\s*null\s*,\s*'id'\s*:\s*(\d+)/) || html.match(/semesterId\s*[:=]\s*[""']?(\d+)/);
-                                if (semSelect && semSelect.value) semId = semSelect.value;
-                                else if (semMatch) semId = semMatch[1];
+                                if (semSelect && semSelect.value) pageSemesterId = semSelect.value;
+                                else if (semMatch) pageSemesterId = semMatch[1];
+                                if (preferredSemesterId) semId = preferredSemesterId;
+                                else if (pageSemesterId) semId = pageSemesterId;
 
                                 var bizMatch = html.match(/bizTypeId\s*[:=]\s*[""']?(\d+)/);
                                 if (bizMatch) bizId = bizMatch[1];
@@ -2768,6 +2775,12 @@ public class CourseLoginWebWindow : Window
                                 }
                             } catch(apiEx) {
                                 log('API 引擎探测未通过: ' + apiEx.message + '，无缝切换至 DOM 视觉提取引擎');
+                            }
+
+                            if (preferredSemesterId && pageSemesterId !== preferredSemesterId) {
+                                window.__hfutExtractor.status = 'error';
+                                window.__hfutExtractor.error = '当前页面学期与手动设置的学期不同，已改用后台接口同步';
+                                return;
                             }
 
                             // ----------------- 引擎 2：DOM 视觉与几何碰撞提取 -----------------
@@ -2973,7 +2986,9 @@ public class CourseLoginWebWindow : Window
 
                     runExtraction();
                 })();";
-            runnerScript = runnerScript.Replace("__HFUT_DEFAULT_SEMESTER_ID__", fallbackSemesterId);
+            runnerScript = runnerScript
+                .Replace("__HFUT_DEFAULT_SEMESTER_ID__", fallbackSemesterId)
+                .Replace("__HFUT_PREFERRED_SEMESTER_ID__", preferredSemesterId);
 
             await _webView.ExecuteScriptAsync(runnerScript);
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
@@ -3055,7 +3070,8 @@ public class CourseLoginWebWindow : Window
                         {
                             var settings = SettingsManager.Shared;
                             if (!string.IsNullOrWhiteSpace(studentId)) settings.CourseStudentId = studentId;
-                            if (int.TryParse(semesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pageSemesterId) && pageSemesterId > 0)
+                            if (!settings.CourseSemesterIdManuallySelected &&
+                                int.TryParse(semesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pageSemesterId) && pageSemesterId > 0)
                                 settings.CourseSemesterId = pageSemesterId.ToString(CultureInfo.InvariantCulture);
                             if (!string.IsNullOrWhiteSpace(businessId)) settings.CourseBizTypeId = businessId;
                             if (!int.TryParse(settings.CourseSemesterId, NumberStyles.Integer, CultureInfo.InvariantCulture, out semesterCode) || semesterCode <= 0)

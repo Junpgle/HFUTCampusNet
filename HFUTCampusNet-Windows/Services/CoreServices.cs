@@ -90,6 +90,7 @@ public sealed class SettingsManager
 
     public string CourseStudentId { get; set; } = string.Empty;
     public string CourseSemesterId { get; set; } = "354";
+    public bool CourseSemesterIdManuallySelected { get; set; }
     public string CourseBizTypeId { get; set; } = "23";
     public string? CourseSessionCookie { get; set; }
     public bool CourseTableEnabled { get; set; } = true;
