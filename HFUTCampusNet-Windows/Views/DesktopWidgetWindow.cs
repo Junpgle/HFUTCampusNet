@@ -1201,13 +1201,21 @@ public sealed class DesktopWidgetWindow : Window
         var schedule = CourseScheduleService.Shared.CurrentSchedule;
         if (schedule == null || schedule.Lessons.Count == 0)
         {
-            CourseScheduleWindow.Shared.ShowWindow();
+            CourseScheduleWindow.Shared.ShowWindow(syncIfMissing: false);
+            var accountGeneration = AccountSessionManager.Generation;
             CourseScheduleService.Shared.SyncSchedule((sched, err) =>
             {
-                if (sched == null && !string.IsNullOrEmpty(err))
+                if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) ||
+                    sched != null || string.IsNullOrEmpty(err))
                 {
-                    CourseLoginWebWindow.Shared.ShowLoginWindow();
+                    return;
                 }
+
+                AppEvents.InvokeOnUI(() =>
+                {
+                    if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+                        CourseLoginWebWindow.Shared.ShowLoginWindow();
+                });
             });
             return;
         }

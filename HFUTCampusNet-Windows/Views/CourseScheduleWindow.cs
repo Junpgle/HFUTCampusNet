@@ -269,7 +269,7 @@ public class CourseScheduleWindow : Window
         ThemeManager.Shared.ApplyComboBoxTheme(_weekCombo);
     }
 
-    public void ShowWindow()
+    public void ShowWindow(bool syncIfMissing = true)
     {
         ApplyTheme();
         if (!IsVisible)
@@ -289,7 +289,7 @@ public class CourseScheduleWindow : Window
         ReloadInterface(autoPositionWeek: !_hasAutoPositionedWeek);
         UpdatePendingSurveyBadge();
 
-        if (CourseScheduleService.Shared.CurrentSchedule == null)
+        if (syncIfMissing && CourseScheduleService.Shared.CurrentSchedule == null)
         {
             TriggerSync(false);
         }
