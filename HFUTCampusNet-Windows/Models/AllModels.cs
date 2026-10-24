@@ -1003,17 +1003,19 @@ public sealed class SemesterMilestoneInfo
             ? scheduleSemesterId
             : CourseCalendarHelper.InferSemesterId(now));
 
-        // 合工大校历官方起止日期表 (学期ID -> (开始日期, 结束日期, 总周数))
-        var dates = new Dictionary<int, (string Start, string End, int Weeks, string Vacation)>
+        // Official term dates (semester ID -> teaching start, end, weeks, vacation, exam-week start).
+        var dates = new Dictionary<int, (string Start, string End, int Weeks, string Vacation, string ExamStart)>
         {
-            [354] = ("2026-08-31", "2027-01-17", 20, "寒假"),
-            [334] = ("2026-02-23", "2026-07-12", 20, "暑假"),
-            [314] = ("2025-09-01", "2026-01-18", 20, "寒假"),
-            [294] = ("2025-02-24", "2025-07-13", 20, "暑假"),
-            [274] = ("2024-09-02", "2025-01-19", 20, "寒假"),
+            [374] = ("2027-02-22", "2027-07-04", 20, "暑假", "2027-06-28"),
+            [354] = ("2026-09-07", "2027-01-17", 20, "寒假", "2027-01-11"),
+            [334] = ("2026-03-02", "2026-07-12", 20, "暑假", ""),
+            [314] = ("2025-09-08", "2026-01-25", 20, "寒假", ""),
+            [294] = ("2025-02-24", "2025-07-13", 20, "暑假", ""),
+            [274] = ("2024-09-09", "2025-01-19", 20, "寒假", ""),
         };
 
-        (string Start, string End, int Weeks, string Vacation) defaultConfig = ("2026-08-31", "2027-01-17", 20, "寒假");
+        (string Start, string End, int Weeks, string Vacation, string ExamStart) defaultConfig =
+            ("2026-09-07", "2027-01-17", 20, "寒假", "");
         var config = dates.TryGetValue(sid, out var tuple) ? tuple : defaultConfig;
         var startDate = DateTime.ParseExact(config.Start, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var endDate = DateTime.ParseExact(config.End, "yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -1023,7 +1025,9 @@ public sealed class SemesterMilestoneInfo
         var passedDays = Math.Clamp((now - startDate).Days, 0, totalDays);
         var progress = Math.Round((double)passedDays / totalDays * 100.0, 1);
 
-        var examWeekStart = endDate.AddDays(-14);
+        var examWeekStart = string.IsNullOrEmpty(config.ExamStart)
+            ? endDate.AddDays(-14)
+            : DateTime.ParseExact(config.ExamStart, "yyyy-MM-dd", CultureInfo.InvariantCulture);
         var daysToExam = Math.Max(0, (examWeekStart - now).Days);
         var daysToVac = Math.Max(0, (endDate - now).Days);
 
