@@ -248,6 +248,7 @@ public sealed class CampusHistoryManager
     private const int FlowAccountingVersion = 2;
     private const int FlowHistoryPartitionVersion = 1;
     private const int FlowHistoryContinuityVersion = 1;
+    private const int ElectricityHistoryContinuityVersion = 1;
 
     private readonly string _historyFile;
     private readonly object _lock = new();
@@ -260,6 +261,7 @@ public sealed class CampusHistoryManager
     private bool _flowAccountPartitionBackupRequired;
     private bool _flowAccountingMigrationBackupRequired;
     private bool _flowContinuityMigrationBackupRequired;
+    private bool _electricityContinuityMigrationBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -575,6 +577,8 @@ public sealed class CampusHistoryManager
                 record.RemainingKWh = remainingKWh;
                 record.LastUpdated = DateTime.Now;
             }
+            if (ReconcileElectricityContinuity(ElectricityRecords))
+                _electricityContinuityMigrationBackupRequired = true;
             Save();
         }
         AppEvents.RaiseHistoryStatsUpdated();
@@ -587,7 +591,12 @@ public sealed class CampusHistoryManager
         lock (_lock)
         {
             changed = SwitchElectricityDormLocked(targetDormKey);
-            if (changed) Save();
+            if (changed)
+            {
+                if (ReconcileElectricityContinuity(ElectricityRecords))
+                    _electricityContinuityMigrationBackupRequired = true;
+                Save();
+            }
         }
         if (changed) AppEvents.RaiseHistoryStatsUpdated();
         return changed;
@@ -651,6 +660,8 @@ public sealed class CampusHistoryManager
         _electricityPartitionBackupRequired = false;
         if (_flowContinuityMigrationBackupRequired && !BackupHistoryBeforeFlowContinuityMigration()) return;
         _flowContinuityMigrationBackupRequired = false;
+        if (_electricityContinuityMigrationBackupRequired && !BackupHistoryBeforeElectricityContinuityMigration()) return;
+        _electricityContinuityMigrationBackupRequired = false;
         if (!CompleteFlowAccountingMigrationIfNeeded()) return;
 
         var temporaryFile = _historyFile + ".tmp";
@@ -665,6 +676,7 @@ public sealed class CampusHistoryManager
                 FlowAccountingVersion,
                 FlowHistoryPartitionVersion,
                 FlowHistoryContinuityVersion,
+                ElectricityHistoryContinuityVersion,
                 FlowRecordsByAccount = flowRecordsByAccount,
                 ElectricityDormKey = _activeElectricityDormKey,
                 ArchivedElectricityRecords = _archivedElectricityRecords,
@@ -806,6 +818,18 @@ public sealed class CampusHistoryManager
                     ReconcileFlowContinuity(records);
                 needsSave = true;
             }
+            int electricityContinuityVersion = root.TryGetProperty("ElectricityHistoryContinuityVersion", out var electricityContinuityVersionProp) &&
+                electricityContinuityVersionProp.TryGetInt32(out var parsedElectricityContinuityVersion)
+                    ? parsedElectricityContinuityVersion
+                    : 0;
+            if (electricityContinuityVersion < ElectricityHistoryContinuityVersion)
+            {
+                _electricityContinuityMigrationBackupRequired = true;
+                ReconcileElectricityContinuity(ElectricityRecords);
+                foreach (var records in _archivedElectricityRecords.Values)
+                    ReconcileElectricityContinuity(records);
+                needsSave = true;
+            }
             if (needsSave) Save();
         }
         catch (Exception ex)
@@ -923,6 +947,92 @@ public sealed class CampusHistoryManager
             Debug.WriteLine($"Flow continuity migration backup failed: {ex.Message}");
             return false;
         }
+    }
+
+    private bool BackupHistoryBeforeElectricityContinuityMigration()
+    {
+        if (!File.Exists(_historyFile)) return true;
+        var backupFile = _historyFile + ".pre-electricity-continuity-v1.bak";
+        if (File.Exists(backupFile)) return true;
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Electricity continuity migration backup failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool ReconcileElectricityContinuity(List<ElectricityDailyRecord> records)
+    {
+        if (records.Count < 2) return false;
+
+        records.Sort((left, right) => string.CompareOrdinal(left.DateString, right.DateString));
+        var expanded = new List<ElectricityDailyRecord>(records.Count);
+        expanded.Add(records[0]);
+        bool modified = false;
+
+        for (int i = 1; i < records.Count; i++)
+        {
+            var previous = expanded[^1];
+            var current = records[i];
+            if (DateTime.TryParseExact(previous.DateString, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var previousDate) &&
+                DateTime.TryParseExact(current.DateString, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var currentDate))
+            {
+                int gap = (currentDate.Date - previousDate.Date).Days;
+                bool validBalances = double.IsFinite(previous.LatestBalanceRMB) &&
+                    double.IsFinite(current.StartBalanceRMB) &&
+                    double.IsFinite(current.LatestBalanceRMB) &&
+                    previous.LatestBalanceRMB >= current.LatestBalanceRMB &&
+                    Math.Abs(current.StartBalanceRMB - previous.LatestBalanceRMB) <= 0.001;
+
+                if (gap > 1 && gap <= 30 && validBalances &&
+                    previous.LatestBalanceRMB - current.LatestBalanceRMB > 0.001)
+                {
+                    var dailyCost = (previous.LatestBalanceRMB - current.LatestBalanceRMB) / gap;
+                    for (int step = 1; step < gap; step++)
+                    {
+                        var startBalance = previous.LatestBalanceRMB - dailyCost * (step - 1);
+                        var endBalance = previous.LatestBalanceRMB - dailyCost * step;
+                        double? remainingKWh = null;
+                        if (previous.RemainingKWh is double previousKWh &&
+                            current.RemainingKWh is double currentKWh &&
+                            double.IsFinite(previousKWh) && double.IsFinite(currentKWh) &&
+                            previousKWh >= currentKWh)
+                        {
+                            var dailyKWh = (previousKWh - currentKWh) / gap;
+                            remainingKWh = Math.Max(0.0, previousKWh - dailyKWh * step);
+                        }
+
+                        expanded.Add(new ElectricityDailyRecord
+                        {
+                            DateString = previousDate.AddDays(step).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                            StartBalanceRMB = startBalance,
+                            LatestBalanceRMB = endBalance,
+                            RemainingKWh = remainingKWh,
+                            LastUpdated = current.LastUpdated
+                        });
+                    }
+
+                    current.StartBalanceRMB = previous.LatestBalanceRMB - dailyCost * (gap - 1);
+                    modified = true;
+                }
+            }
+
+            expanded.Add(current);
+        }
+
+        if (modified)
+        {
+            records.Clear();
+            records.AddRange(expanded);
+        }
+        return modified;
     }
 
     private static bool ReconcileFlowContinuity(List<FlowDailyRecord> records)
