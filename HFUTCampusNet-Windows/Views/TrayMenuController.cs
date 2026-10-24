@@ -1004,6 +1004,7 @@ public sealed class TrayMenuController : IDisposable
         var schedule = CourseScheduleService.Shared.CurrentSchedule;
         DateTime now = CourseCalendarHelper.BeijingNow;
         var milestone = schedule?.NextCourseMilestone(now);
+        var todayCourses = schedule?.TodayLessons(now) ?? new List<CourseLesson>();
 
         string header;
         if (schedule == null)
@@ -1017,7 +1018,9 @@ public sealed class TrayMenuController : IDisposable
         }
         else
         {
-            header = "📅 今日课程：今日课程已全部结束";
+            header = todayCourses.Count > 0
+                ? "📅 今日课程：今日课程已全部结束"
+                : "📅 今日课程：今日无课";
         }
 
         var rootItem = CreateStyledMenuItem(header, null);
