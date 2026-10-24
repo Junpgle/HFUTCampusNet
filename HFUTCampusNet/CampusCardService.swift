@@ -1,5 +1,11 @@
 import Foundation
 import AppKit
+import CryptoKit
+
+private struct AccountScopedCampusCardCache: Codable {
+    let accountKey: String
+    let data: CampusCardData
+}
 
 public class CampusCardService {
     public static let shared = CampusCardService()
@@ -20,11 +26,14 @@ public class CampusCardService {
     }
 
     private func loadCachedData() {
-        guard let data = try? Data(contentsOf: cacheURL),
-              let cached = try? JSONDecoder().decode(CampusCardData.self, from: data) else {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty,
+              let data = try? Data(contentsOf: cacheURL),
+              let cached = try? JSONDecoder().decode(AccountScopedCampusCardCache.self, from: data),
+              cached.accountKey == Self.cacheAccountKey(for: username) else {
             return
         }
-        self.latestData = cached
+        self.latestData = cached.data
     }
 
     private func saveCachedData(_ data: CampusCardData, generation: Int) -> Bool {
@@ -32,10 +41,19 @@ public class CampusCardService {
         defer { stateLock.unlock() }
         guard dataGeneration == generation else { return false }
         latestData = data
-        if let encoded = try? JSONEncoder().encode(data) {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cache = AccountScopedCampusCardCache(accountKey: Self.cacheAccountKey(for: username), data: data)
+        if let encoded = try? JSONEncoder().encode(cache) {
             try? encoded.write(to: cacheURL, options: .atomic)
         }
         return true
+    }
+
+    private static func cacheAccountKey(for username: String) -> String {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let identity = normalizedUsername.isEmpty ? "UNCONFIGURED" : normalizedUsername
+        let digest = SHA256.hash(data: Data("portal-username:\(identity)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     public func clearCache() {

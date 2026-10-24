@@ -1,5 +1,11 @@
 import Foundation
 import AppKit
+import CryptoKit
+
+private struct AccountScopedAcademicCache: Codable {
+    let accountKey: String
+    let snapshot: AcademicDataSnapshot
+}
 
 public class AcademicService: NSObject, URLSessionDelegate {
     public static let shared = AcademicService()
@@ -126,11 +132,15 @@ public class AcademicService: NSObject, URLSessionDelegate {
     // MARK: - 本地持久化缓存
 
     private func loadCachedData() {
-        guard fileManager.fileExists(atPath: cacheFileURL.path),
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty,
+              fileManager.fileExists(atPath: cacheFileURL.path),
               let data = try? Data(contentsOf: cacheFileURL),
-              let decoded = try? JSONDecoder().decode(AcademicDataSnapshot.self, from: data) else {
+              let cached = try? JSONDecoder().decode(AccountScopedAcademicCache.self, from: data),
+              cached.accountKey == Self.cacheAccountKey(for: username) else {
             return
         }
+        let decoded = cached.snapshot
         self.latestData = decoded
         // 确保已缓存过的成绩已记录在 notifiedGradeIds 中，避免升级/重启后把旧成绩当新成绩刷屏
         var notified = SettingsManager.shared.notifiedGradeIds
@@ -144,12 +154,21 @@ public class AcademicService: NSObject, URLSessionDelegate {
 
     private func saveCachedData(_ snapshot: AcademicDataSnapshot) {
         self.latestData = snapshot
-        if let encoded = try? JSONEncoder().encode(snapshot) {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cache = AccountScopedAcademicCache(accountKey: Self.cacheAccountKey(for: username), snapshot: snapshot)
+        if let encoded = try? JSONEncoder().encode(cache) {
             try? encoded.write(to: cacheFileURL, options: .atomic)
         }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .academicDataDidUpdate, object: snapshot)
         }
+    }
+
+    private static func cacheAccountKey(for username: String) -> String {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let identity = normalizedUsername.isEmpty ? "UNCONFIGURED" : normalizedUsername
+        let digest = SHA256.hash(data: Data("portal-username:\(identity)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     public var unreadGradeCount: Int {
