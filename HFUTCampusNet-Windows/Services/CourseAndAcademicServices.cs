@@ -1333,11 +1333,11 @@ public sealed class AcademicService
         if (secondary.Count == 0) return primary;
 
         var result = new List<GradeItem>(primary);
-        var existingKeys = new HashSet<string>(primary.Select(g => $"{g.TermName}|{g.CourseName}"));
+        var existingKeys = new HashSet<string>(primary.Select(GradeMergeKey), StringComparer.OrdinalIgnoreCase);
 
         foreach (var sec in secondary)
         {
-            var key = $"{sec.TermName}|{sec.CourseName}";
+            var key = GradeMergeKey(sec);
             if (!existingKeys.Contains(key))
             {
                 result.Add(sec);
@@ -1349,6 +1349,20 @@ public sealed class AcademicService
         return result.OrderByDescending(g => g.SemesterId ?? 0)
                      .ThenByDescending(g => g.TermName)
                      .ToList();
+    }
+
+    private static string GradeMergeKey(GradeItem grade)
+    {
+        var term = (grade.TermName ?? string.Empty).Trim().ToUpperInvariant();
+        var courseCode = grade.CourseCode?.Trim();
+        var lessonCode = grade.LessonCode?.Trim();
+        var courseName = (grade.CourseName ?? string.Empty).Trim();
+        var courseIdentity = !string.IsNullOrWhiteSpace(courseCode)
+            ? $"code:{courseCode.ToUpperInvariant()}"
+            : !string.IsNullOrWhiteSpace(lessonCode)
+                ? $"lesson:{lessonCode.ToUpperInvariant()}"
+                : $"name:{courseName.ToUpperInvariant()}";
+        return $"{term}|{courseIdentity}";
     }
 
     private static List<ExamItem> MergeExams(List<ExamItem> uniExams, List<ExamItem> webExams)
