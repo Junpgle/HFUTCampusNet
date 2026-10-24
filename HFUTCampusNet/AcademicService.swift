@@ -118,15 +118,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        let protectionSpace = challenge.protectionSpace
-        if protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           protectionSpace.host.caseInsensitiveCompare("jwglapp.hfut.edu.cn") == .orderedSame,
-           protectionSpace.port == 443,
-           let trust = protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+        completionHandler(.performDefaultHandling, nil)
     }
 
     // MARK: - 本地持久化缓存

@@ -157,22 +157,14 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         scheduleMonitorTimer()
     }
 
-    // MARK: - SSL Trust Delegate (仅兼容教务移动端证书)
+    // MARK: - SSL Trust Delegate
 
     public func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        let protectionSpace = challenge.protectionSpace
-        if protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           protectionSpace.host.caseInsensitiveCompare("jwglapp.hfut.edu.cn") == .orderedSame,
-           protectionSpace.port == 443,
-           let trust = protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+        completionHandler(.performDefaultHandling, nil)
     }
 
     // MARK: - 本地缓存读写

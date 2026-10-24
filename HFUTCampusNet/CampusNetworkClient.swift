@@ -893,15 +893,7 @@ public class CampusNetworkClient: NSObject, URLSessionDelegate, URLSessionTaskDe
     }
 
     public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        let protectionSpace = challenge.protectionSpace
-        if protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           protectionSpace.host.caseInsensitiveCompare("xywzz.hfut.edu.cn") == .orderedSame,
-           protectionSpace.port == 8443,
-           let serverTrust = protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: serverTrust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+        completionHandler(.performDefaultHandling, nil)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {

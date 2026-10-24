@@ -189,17 +189,9 @@ public class LoginWebViewController: NSWindowController, WKNavigationDelegate, W
         return true
     }
 
-    // 仅为自服务旧版 HTTPS 端口兼容证书；重定向到其他主机时走系统校验。
+    // 使用系统默认的 HTTPS 证书与主机名校验。
     public func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        let protectionSpace = challenge.protectionSpace
-        if protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           protectionSpace.host.caseInsensitiveCompare("xywzz.hfut.edu.cn") == .orderedSame,
-           protectionSpace.port == 8443,
-           let serverTrust = protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: serverTrust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+        completionHandler(.performDefaultHandling, nil)
     }
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
