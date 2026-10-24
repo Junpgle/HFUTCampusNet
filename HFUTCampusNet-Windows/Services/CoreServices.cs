@@ -522,13 +522,20 @@ public sealed class CampusHistoryManager
         lock (_lock)
         {
             var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+            var previousRecord = ElectricityRecords
+                .Where(r => string.CompareOrdinal(r.DateString, today) < 0)
+                .OrderBy(r => r.DateString)
+                .LastOrDefault();
             var record = ElectricityRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
             {
+                var startBalanceRMB = previousRecord != null && balanceRMB <= previousRecord.LatestBalanceRMB
+                    ? previousRecord.LatestBalanceRMB
+                    : balanceRMB;
                 record = new ElectricityDailyRecord
                 {
                     DateString = today,
-                    StartBalanceRMB = balanceRMB,
+                    StartBalanceRMB = startBalanceRMB,
                     LatestBalanceRMB = balanceRMB,
                     RemainingKWh = remainingKWh,
                     LastUpdated = DateTime.Now
@@ -537,7 +544,15 @@ public sealed class CampusHistoryManager
             }
             else
             {
-                if (balanceRMB > record.StartBalanceRMB) record.StartBalanceRMB = balanceRMB; // 充值后调整基准
+                var accumulatedCostRMB = record.CostRMB;
+                if (balanceRMB > record.LatestBalanceRMB + 0.05)
+                {
+                    record.StartBalanceRMB = balanceRMB + accumulatedCostRMB;
+                }
+                else if (previousRecord != null && balanceRMB <= previousRecord.LatestBalanceRMB)
+                {
+                    record.StartBalanceRMB = previousRecord.LatestBalanceRMB;
+                }
                 record.LatestBalanceRMB = balanceRMB;
                 record.RemainingKWh = remainingKWh;
                 record.LastUpdated = DateTime.Now;
