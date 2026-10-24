@@ -220,6 +220,15 @@ public class CampusHistoryManager {
             guard activeFlowAccountKey != targetAccountKey else { return false }
 
             var partitions = store.flowRecordsByAccount ?? [:]
+            let unconfiguredAccountKey = Self.flowAccountKey(for: "")
+            if activeFlowAccountKey == unconfiguredAccountKey && partitions.isEmpty {
+                // Legacy records migrated before a username was configured belong to the first configured account.
+                activeFlowAccountKey = targetAccountKey
+                store.flowRecordsByAccount = partitions
+                saveStore()
+                return true
+            }
+
             partitions[activeFlowAccountKey] = store.flowRecords
             store.flowRecords = partitions.removeValue(forKey: targetAccountKey) ?? []
             store.flowRecordsByAccount = partitions

@@ -469,15 +469,26 @@ public sealed class CampusHistoryManager
             if (string.Equals(_activeFlowAccountKey, targetAccountKey, StringComparison.Ordinal))
                 return false;
 
-            _archivedFlowRecords[_activeFlowAccountKey] = FlowRecords.ToList();
-            if (_archivedFlowRecords.Remove(targetAccountKey, out var targetRecords))
-                FlowRecords = targetRecords ?? new();
+            if (string.Equals(_activeFlowAccountKey, CreateFlowAccountKey(string.Empty), StringComparison.Ordinal) &&
+                _archivedFlowRecords.Count == 0)
+            {
+                // Legacy records migrated before a username was configured belong to the first configured account.
+                _activeFlowAccountKey = targetAccountKey;
+                Save();
+                changed = true;
+            }
             else
-                FlowRecords = new();
+            {
+                _archivedFlowRecords[_activeFlowAccountKey] = FlowRecords.ToList();
+                if (_archivedFlowRecords.Remove(targetAccountKey, out var targetRecords))
+                    FlowRecords = targetRecords ?? new();
+                else
+                    FlowRecords = new();
 
-            _activeFlowAccountKey = targetAccountKey;
-            Save();
-            changed = true;
+                _activeFlowAccountKey = targetAccountKey;
+                Save();
+                changed = true;
+            }
         }
         if (changed) AppEvents.RaiseHistoryStatsUpdated();
         return changed;
