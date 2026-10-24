@@ -606,7 +606,9 @@ public sealed class CampusHistoryManager
                 _archivedFlowRecords.Count == 0)
             {
                 // Legacy records migrated before a username was configured belong to the first configured account.
+                _flowContinuityMigrationBackupRequired = true;
                 _activeFlowAccountKey = targetAccountKey;
+                ReconcileFlowContinuity(FlowRecords);
                 Save();
                 changed = true;
             }
@@ -619,6 +621,8 @@ public sealed class CampusHistoryManager
                     FlowRecords = new();
 
                 _activeFlowAccountKey = targetAccountKey;
+                _flowContinuityMigrationBackupRequired = true;
+                ReconcileFlowContinuity(FlowRecords);
                 Save();
                 changed = true;
             }

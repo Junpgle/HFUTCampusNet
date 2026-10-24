@@ -224,8 +224,13 @@ public class CampusHistoryManager {
             let unconfiguredAccountKey = Self.flowAccountKey(for: "")
             if activeFlowAccountKey == unconfiguredAccountKey && partitions.isEmpty {
                 // Legacy records migrated before a username was configured belong to the first configured account.
+                flowHistoryContinuityBackupRequired = true
+                if backupHistoryBeforeFlowContinuityAdjustment() {
+                    flowHistoryContinuityBackupRequired = false
+                }
                 activeFlowAccountKey = targetAccountKey
                 store.flowRecordsByAccount = partitions
+                reconcileContinuity()
                 saveStore()
                 return true
             }
