@@ -1479,6 +1479,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
     private Button _studyBtn = null!;
     private Grid _timetableContainer = null!;
     private DispatcherTimer? _clockTimer;
+    private Guid _activeScheduleRequestID = Guid.Empty;
 
     private CourseScheduleData? _scheduleData;
     private int _selectedWeek = 1;
@@ -1556,6 +1557,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         Closed += (_, _) =>
         {
+            _activeScheduleRequestID = Guid.Empty;
             _clockTimer?.Stop();
             _clockTimer = null;
         };
@@ -1860,12 +1862,28 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         _statusLabel.Text = $"正在拉取 {_room.RoomName} 排课明细...";
         _refreshBtn.IsEnabled = false;
+        var requestID = Guid.NewGuid();
+        _activeScheduleRequestID = requestID;
 
         EmptyClassroomService.Shared.FetchClassroomSemesterSchedule(_room, semesterCode, forceRefresh, (data, err) =>
         {
             AppEvents.InvokeOnUI(() =>
             {
+                if (_activeScheduleRequestID != requestID) return;
                 _refreshBtn.IsEnabled = true;
+                if (data == null)
+                {
+                    if (!string.Equals(_scheduleData?.SemesterId, semesterCode.ToString(), StringComparison.Ordinal))
+                    {
+                        _scheduleData = null;
+                        RenderTimetableGrid();
+                    }
+                    _statusLabel.Text = string.IsNullOrWhiteSpace(err)
+                        ? "获取教室排课失败，请检查网络后重试。"
+                        : err;
+                    return;
+                }
+
                 _scheduleData = data;
                 RenderTimetableGrid();
             });
