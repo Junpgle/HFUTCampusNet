@@ -378,7 +378,7 @@ public sealed class TrayMenuController : IDisposable
 
     private void CheckThresholdAlerts()
     {
-        int dayOfYear = DateTime.Now.DayOfYear;
+        int dayOfYear = CourseCalendarHelper.BeijingNow.DayOfYear;
         if (_lastAlertDayOfYear != dayOfYear)
         {
             _lastAlertDayOfYear = dayOfYear;
@@ -1002,7 +1002,7 @@ public sealed class TrayMenuController : IDisposable
     private MenuItem BuildCourseMenuItem()
     {
         var schedule = CourseScheduleService.Shared.CurrentSchedule;
-        DateTime now = DateTime.Now;
+        DateTime now = CourseCalendarHelper.BeijingNow;
         var milestone = schedule?.NextCourseMilestone(now);
 
         string header;
