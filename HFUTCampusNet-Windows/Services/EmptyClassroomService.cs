@@ -1324,12 +1324,21 @@ public sealed class EmptyClassroomService
 
     private void SaveCache()
     {
+        var temporaryFile = _cacheFile + ".tmp";
         try
         {
             var json = JsonSerializer.Serialize(CachedRooms, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_cacheFile, json, Encoding.UTF8);
+            File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+            File.Move(temporaryFile, _cacheFile, overwrite: true);
         }
-        catch { }
+        catch
+        {
+            try
+            {
+                if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+            }
+            catch { }
+        }
     }
 
     private void LoadCache()

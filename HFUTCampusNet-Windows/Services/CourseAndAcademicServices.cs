@@ -817,13 +817,22 @@ public sealed class CourseScheduleService
 
     private void SaveCache()
     {
+        var temporaryFile = _cacheFile + ".tmp";
         try
         {
             if (CurrentSchedule == null) return;
             var json = JsonSerializer.Serialize(CurrentSchedule, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_cacheFile, json, Encoding.UTF8);
+            File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+            File.Move(temporaryFile, _cacheFile, overwrite: true);
         }
-        catch { }
+        catch
+        {
+            try
+            {
+                if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+            }
+            catch { }
+        }
     }
 
     private void LoadCache()
@@ -2002,13 +2011,22 @@ public sealed class AcademicService
 
     private void SaveCache()
     {
+        var temporaryFile = _cacheFile + ".tmp";
         try
         {
             if (LatestData == null) return;
             var json = JsonSerializer.Serialize(LatestData, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_cacheFile, json, Encoding.UTF8);
+            File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+            File.Move(temporaryFile, _cacheFile, overwrite: true);
         }
-        catch { }
+        catch
+        {
+            try
+            {
+                if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+            }
+            catch { }
+        }
     }
 
     private void LoadCache()

@@ -102,14 +102,21 @@ public sealed class ElectricityService
     private void SaveCachedData(ElectricityData data)
     {
         LatestData = data;
+        var temporaryFile = _cacheFilePath + ".tmp";
         try
         {
             var json = JsonSerializer.Serialize(data, JsonOptions);
-            File.WriteAllText(_cacheFilePath, json, Encoding.UTF8);
+            File.WriteAllText(temporaryFile, json, Encoding.UTF8);
+            File.Move(temporaryFile, _cacheFilePath, overwrite: true);
         }
         catch
         {
             // Ignore IO errors
+            try
+            {
+                if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+            }
+            catch { }
         }
     }
 
