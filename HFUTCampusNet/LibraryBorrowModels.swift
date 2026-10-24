@@ -1,5 +1,16 @@
 import Foundation
 import AppKit
+import CryptoKit
+
+private struct AccountScopedLibraryBorrowCache: Codable {
+    let accountKey: String
+    let books: [CampusBorrowedBook]
+}
+
+private struct AccountScopedLibrarySyncStamp: Codable {
+    let accountKey: String
+    let date: Date
+}
 
 /// 借阅状态枚举（对齐 HFUT-Schedule BorrowedStatus）
 public enum CampusBorrowStatus: String, Codable {
@@ -209,12 +220,16 @@ public final class LibraryBorrowManager {
 
     /// 状态说明文字
     public var statusSummaryText: String {
-        guard let date = UserDefaults.standard.object(forKey: lastSyncKey) as? Date else {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty,
+              let data = UserDefaults.standard.data(forKey: lastSyncKey),
+              let stamp = try? JSONDecoder().decode(AccountScopedLibrarySyncStamp.self, from: data),
+              stamp.accountKey == Self.cacheAccountKey(for: username) else {
             return "尚未从校内同步"
         }
         let df = DateFormatter()
         df.dateFormat = "MM-dd HH:mm"
-        return "同步于 " + df.string(from: date)
+        return "同步于 " + df.string(from: stamp.date)
     }
 
     public func addOrUpdate(book: CampusBorrowedBook) {
@@ -241,7 +256,16 @@ public final class LibraryBorrowManager {
     }
 
     public func recordSync() {
-        UserDefaults.standard.set(Date(), forKey: lastSyncKey)
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stamp = AccountScopedLibrarySyncStamp(accountKey: Self.cacheAccountKey(for: username), date: Date())
+        guard let encoded = try? JSONEncoder().encode(stamp) else { return }
+        let defaults = UserDefaults.standard
+        if let legacyValue = defaults.object(forKey: lastSyncKey),
+           !(legacyValue is Data),
+           defaults.object(forKey: lastSyncKey + ".pre-account-scope-v1") == nil {
+            defaults.set(legacyValue, forKey: lastSyncKey + ".pre-account-scope-v1")
+        }
+        defaults.set(encoded, forKey: lastSyncKey)
     }
 
     public func clearCache() {
@@ -655,8 +679,16 @@ public final class LibraryBorrowManager {
 
     private func saveToStorage() {
         do {
-            let data = try JSONEncoder().encode(books)
-            UserDefaults.standard.set(data, forKey: storageKey)
+            let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cache = AccountScopedLibraryBorrowCache(accountKey: Self.cacheAccountKey(for: username), books: books)
+            let data = try JSONEncoder().encode(cache)
+            let defaults = UserDefaults.standard
+            if let existingData = defaults.data(forKey: storageKey),
+               (try? JSONDecoder().decode(AccountScopedLibraryBorrowCache.self, from: existingData)) == nil,
+               defaults.object(forKey: storageKey + ".pre-account-scope-v1") == nil {
+                defaults.set(existingData, forKey: storageKey + ".pre-account-scope-v1")
+            }
+            defaults.set(data, forKey: storageKey)
             DispatchQueue.main.async { [weak self] in
                 self?.onDataChanged?()
             }
@@ -666,11 +698,18 @@ public final class LibraryBorrowManager {
     }
 
     private func loadFromStorage() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return }
-        do {
-            books = try JSONDecoder().decode([CampusBorrowedBook].self, from: data)
-        } catch {
-            print("Failed to decode borrow records: \(error)")
-        }
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty,
+              let data = UserDefaults.standard.data(forKey: storageKey),
+              let cache = try? JSONDecoder().decode(AccountScopedLibraryBorrowCache.self, from: data),
+              cache.accountKey == Self.cacheAccountKey(for: username) else { return }
+        books = cache.books
+    }
+
+    private static func cacheAccountKey(for username: String) -> String {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let identity = normalizedUsername.isEmpty ? "UNCONFIGURED" : normalizedUsername
+        let digest = SHA256.hash(data: Data("portal-username:\(identity)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
