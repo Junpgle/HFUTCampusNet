@@ -894,15 +894,16 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         if nowMin >= 18 * 60 + 30 && SettingsManager.shared.lastNotifiedStudyEveningDate != todayStr {
             let tomorrowRooms = cachedStudyRooms(dateString: Self.tomorrowDateString())
             if !tomorrowRooms.isEmpty {
-                SettingsManager.shared.lastNotifiedStudyEveningDate = todayStr
                 let tomorrowRec = buildTomorrowRecommendation(limit: 4)
                 if tomorrowRec.isCurrentRoomAllDayFreeTomorrow, let curName = tomorrowRec.currentStudyRoomName {
+                    SettingsManager.shared.lastNotifiedStudyEveningDate = todayStr
                     NotificationHelper.showNotification(
                         title: "🌙 明日自习留座好消息 · \(curName)",
                         subtitle: "当前自习室明天全天无课，东西不用搬！",
                         body: "明天 08:00-22:00 全天无排课，书本可直接留原位。"
                     )
                 } else if !tomorrowRec.candidates.isEmpty {
+                    SettingsManager.shared.lastNotifiedStudyEveningDate = todayStr
                     let names = tomorrowRec.candidates.prefix(3).map { "\($0.room.nameZh)(\($0.badgeText))" }.joined(separator: "、")
                     NotificationHelper.showNotification(
                         title: "🌙 晚上走前 · 明日空教室搬书推荐",
