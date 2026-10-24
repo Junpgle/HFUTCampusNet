@@ -1227,7 +1227,7 @@ public sealed class CampusCardService
                 double balanceRMB = dbBalanceFen / 100.0;
                 double unsettleRMB = unsettleFen / 100.0;
 
-                var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150);
+                var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150, generation, accountGeneration);
                 if (!IsCurrentRequest(generation, accountGeneration))
                     return (null, StaleRequestMessage);
 
@@ -1333,13 +1333,20 @@ public sealed class CampusCardService
         return completion.Task;
     }
 
-    private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(string authHeader, int size)
+    private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(
+        string authHeader,
+        int size,
+        long generation,
+        long accountGeneration)
     {
         const int maximumPages = 100;
         var byId = new Dictionary<string, CampusCardTransaction>(StringComparer.Ordinal);
 
         for (var page = 1; page <= maximumPages; page++)
         {
+            if (!IsCurrentRequest(generation, accountGeneration))
+                return MergeTransactions(byId.Values);
+
             try
             {
                 var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current={page}&size={size}&synAccessSource=h5";
@@ -1349,7 +1356,13 @@ public sealed class CampusCardService
                 req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
 
                 using var resp = await _httpClient.SendAsync(req);
+                if (!IsCurrentRequest(generation, accountGeneration))
+                    return MergeTransactions(byId.Values);
+
                 var respText = await resp.Content.ReadAsStringAsync();
+                if (!IsCurrentRequest(generation, accountGeneration))
+                    return MergeTransactions(byId.Values);
+
                 if (!resp.IsSuccessStatusCode || string.IsNullOrWhiteSpace(respText) ||
                     (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
                 {
