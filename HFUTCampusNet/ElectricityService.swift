@@ -476,9 +476,7 @@ public class ElectricityService {
         guard let bal = data.balanceRMB else { return }
         let threshold = SettingsManager.shared.electricityLowWarningThreshold
         if bal < threshold {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            let today = formatter.string(from: Date())
+            let today = CourseCalendarHelper.dateString(from: Date())
 
             if SettingsManager.shared.lastNotifiedLowElectricityDate != today {
                 SettingsManager.shared.lastNotifiedLowElectricityDate = today

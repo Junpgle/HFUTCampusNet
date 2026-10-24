@@ -493,29 +493,23 @@ public class CampusHistoryManager {
     }
 
     private func todayString() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        CourseCalendarHelper.dateString(from: Date())
     }
 
     private func daysBetween(_ startStr: String, _ endStr: String) -> Int {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let d1 = formatter.date(from: startStr),
-              let d2 = formatter.date(from: endStr) else {
+        guard let d1 = CourseCalendarHelper.parseDate(startStr, "00:00"),
+              let d2 = CourseCalendarHelper.parseDate(endStr, "00:00") else {
             return 0
         }
-        return Calendar.current.dateComponents([.day], from: d1, to: d2).day ?? 0
+        return CourseCalendarHelper.beijingCalendar.dateComponents([.day], from: d1, to: d2).day ?? 0
     }
 
     private func addDays(_ days: Int, to dateStr: String) -> String? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let d = formatter.date(from: dateStr),
-              let next = Calendar.current.date(byAdding: .day, value: days, to: d) else {
+        guard let date = CourseCalendarHelper.parseDate(dateStr, "00:00"),
+              let next = CourseCalendarHelper.beijingCalendar.date(byAdding: .day, value: days, to: date) else {
             return nil
         }
-        return formatter.string(from: next)
+        return CourseCalendarHelper.dateString(from: next)
     }
 
     // MARK: - 记录校园网流量
@@ -752,7 +746,7 @@ public class CampusHistoryManager {
 
     /// 距离次日 00:00 单日限额重置倒计时文案
     public var dailyResetCountdownString: String {
-        let cal = Calendar.current
+        let cal = CourseCalendarHelper.beijingCalendar
         let now = Date()
         if let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now)) {
             let diff = Int(tomorrow.timeIntervalSince(now))
@@ -765,7 +759,7 @@ public class CampusHistoryManager {
 
     /// 距离下月 1 日 00:00 月度限额重置倒计时文案
     public var monthlyResetCountdownString: String {
-        let cal = Calendar.current
+        let cal = CourseCalendarHelper.beijingCalendar
         let now = Date()
         var comps = cal.dateComponents([.year, .month], from: now)
         if let m = comps.month, let y = comps.year {
