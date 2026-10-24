@@ -113,6 +113,19 @@ public sealed class CampusNetworkData
         return mb.HasValue && mb.Value >= 0 ? $"{mb.Value * 2.0:F0} M" : null;
     }
 
+    public static double? ParseBalanceRMB(string? balance)
+    {
+        if (string.IsNullOrWhiteSpace(balance)) return null;
+        var match = Regex.Match(balance, @"-?[0-9]+(?:\.[0-9]+)?");
+        return match.Success && double.TryParse(
+            match.Value,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out var value)
+            ? value
+            : null;
+    }
+
     public string FormattedAvailable
     {
         get

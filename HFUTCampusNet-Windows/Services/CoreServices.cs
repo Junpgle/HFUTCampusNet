@@ -454,11 +454,15 @@ public sealed class CampusHistoryManager
         }
     }
 
-    public void RecordFlow(double usedMB)
+    public void RecordFlow(double usedMB, double? balanceRMB = null)
     {
         lock (_lock)
         {
             if (!CompleteFlowAccountingMigrationIfNeeded()) return;
+            var validBalanceRMB = balanceRMB.HasValue &&
+                double.IsFinite(balanceRMB.Value) && balanceRMB.Value >= 0
+                ? balanceRMB
+                : null;
             var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
             var record = FlowRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
@@ -468,6 +472,7 @@ public sealed class CampusHistoryManager
                     DateString = today,
                     StartUsedMB = usedMB,
                     LatestUsedMB = usedMB,
+                    BalanceRMB = validBalanceRMB,
                     LastUpdated = DateTime.Now
                 };
                 FlowRecords.Add(record);
@@ -476,6 +481,7 @@ public sealed class CampusHistoryManager
             {
                 if (usedMB < record.StartUsedMB) record.StartUsedMB = usedMB; // 新月重置
                 record.LatestUsedMB = usedMB;
+                if (validBalanceRMB.HasValue) record.BalanceRMB = validBalanceRMB;
                 record.LastUpdated = DateTime.Now;
             }
             Save();
@@ -1284,7 +1290,10 @@ public sealed class CampusNetworkClient
 
                         if (flowMB > 0)
                         {
-                            CampusHistoryManager.Shared.RecordFlow(actualFlowMB);
+                            var balanceRMB = fee > 0
+                                ? fee
+                                : CampusNetworkData.ParseBalanceRMB(LatestData.Balance);
+                            CampusHistoryManager.Shared.RecordFlow(actualFlowMB, balanceRMB);
                         }
                     })) return;
 
@@ -1392,7 +1401,9 @@ public sealed class CampusNetworkClient
                                         if (cleanMB.Success && double.TryParse(cleanMB.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double parsedMB))
                                         {
                                             if (actualHxFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) parsedMB *= 1024.0;
-                                            CampusHistoryManager.Shared.RecordFlow(parsedMB);
+                                            CampusHistoryManager.Shared.RecordFlow(
+                                                parsedMB,
+                                                CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
                                         }
                                     }
                                 })) return;
@@ -1898,7 +1909,9 @@ public sealed class CampusNetworkClient
                 if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
                 {
                     if (parsed.UsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
-                    CampusHistoryManager.Shared.RecordFlow(flowVal);
+                    CampusHistoryManager.Shared.RecordFlow(
+                        flowVal,
+                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
                 }
             }
         })) return false;
@@ -1956,7 +1969,9 @@ public sealed class CampusNetworkClient
                 if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
                 {
                     if (actualUsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
-                    CampusHistoryManager.Shared.RecordFlow(flowVal);
+                    CampusHistoryManager.Shared.RecordFlow(
+                        flowVal,
+                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
                 }
             }
         })) return false;
