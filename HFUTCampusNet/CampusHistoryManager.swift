@@ -813,10 +813,12 @@ public class CampusHistoryManager {
 
     /// 当月最新记录的累计已用流量 (MB)，跨月自动失效避免上月流量误作本月流量
     public var currentMonthUsedFlowMB: Double? {
-        let monthPrefix = String(todayString().prefix(7))
+        let today = todayString()
+        let monthPrefix = String(today.prefix(7))
         return queue.sync {
-            guard let last = store.flowRecords.sorted(by: { $0.dateString < $1.dateString }).last,
-                  last.dateString.hasPrefix(monthPrefix) else {
+            guard let last = store.flowRecords
+                .filter({ $0.dateString <= today && $0.dateString.hasPrefix(monthPrefix) })
+                .max(by: { $0.dateString < $1.dateString }) else {
                 return nil
             }
             return last.totalUsedMB
@@ -825,15 +827,23 @@ public class CampusHistoryManager {
 
     /// 历史记录中最近一次校园网账户余额 (元)
     public var latestFlowBalanceRMB: Double? {
+        let today = todayString()
         return queue.sync {
-            store.flowRecords.sorted(by: { $0.dateString < $1.dateString }).last(where: { $0.balanceRMB != nil })?.balanceRMB
+            store.flowRecords
+                .filter { $0.dateString <= today }
+                .sorted(by: { $0.dateString < $1.dateString })
+                .last(where: { $0.balanceRMB != nil })?.balanceRMB
         }
     }
 
     /// 历史记录中最近一次宿舍电费记录
     public var latestElectricityRecord: DailyElectricityRecord? {
+        let today = todayString()
         return queue.sync {
-            store.electricityRecords.sorted(by: { $0.dateString < $1.dateString }).last
+            store.electricityRecords
+                .filter { $0.dateString <= today }
+                .sorted(by: { $0.dateString < $1.dateString })
+                .last
         }
     }
 
@@ -889,32 +899,34 @@ public class CampusHistoryManager {
 
     /// 获取近 N 天流量历史记录 (按自然日过滤并由旧到新排序)
     public func getPastDaysFlowRecords(days: Int) -> [DailyFlowRecord] {
+        let dayCount = max(1, days)
         let today = todayString()
-        let cutoff = addDays(-(max(1, days) - 1), to: today) ?? ""
+        let cutoff = addDays(-(dayCount - 1), to: today) ?? ""
         let sorted = queue.sync {
             store.flowRecords
-                .filter { $0.dateString >= cutoff }
+                .filter { $0.dateString >= cutoff && $0.dateString <= today }
                 .sorted { $0.dateString < $1.dateString }
         }
-        if sorted.count <= days {
+        if sorted.count <= dayCount {
             return sorted
         }
-        return Array(sorted.suffix(days))
+        return Array(sorted.suffix(dayCount))
     }
 
     /// 获取近 N 天电费历史记录 (按自然日过滤并由旧到新排序)
     public func getPastDaysElectricityRecords(days: Int) -> [DailyElectricityRecord] {
+        let dayCount = max(1, days)
         let today = todayString()
-        let cutoff = addDays(-(max(1, days) - 1), to: today) ?? ""
+        let cutoff = addDays(-(dayCount - 1), to: today) ?? ""
         let sorted = queue.sync {
             store.electricityRecords
-                .filter { $0.dateString >= cutoff }
+                .filter { $0.dateString >= cutoff && $0.dateString <= today }
                 .sorted { $0.dateString < $1.dateString }
         }
-        if sorted.count <= days {
+        if sorted.count <= dayCount {
             return sorted
         }
-        return Array(sorted.suffix(days))
+        return Array(sorted.suffix(dayCount))
     }
 
     // MARK: - 辅助解析器

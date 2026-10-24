@@ -252,8 +252,12 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).Sum(r => r.DeltaMB);
+                var now = CourseCalendarHelper.BeijingNow;
+                var today = CourseCalendarHelper.DateString(now);
+                var cutoff = now.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                return FlowRecords.Where(r =>
+                    string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
+                    string.CompareOrdinal(r.DateString, today) <= 0).Sum(r => r.DeltaMB);
             }
         }
     }
@@ -264,8 +268,12 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                var records = FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).ToList();
+                var now = CourseCalendarHelper.BeijingNow;
+                var today = CourseCalendarHelper.DateString(now);
+                var cutoff = now.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var records = FlowRecords.Where(r =>
+                    string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
+                    string.CompareOrdinal(r.DateString, today) <= 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.DeltaMB) : 0.0;
             }
         }
@@ -291,8 +299,13 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                var records = ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0 && r.CostRMB > 0).ToList();
+                var now = CourseCalendarHelper.BeijingNow;
+                var today = CourseCalendarHelper.DateString(now);
+                var cutoff = now.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                var records = ElectricityRecords.Where(r =>
+                    string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
+                    string.CompareOrdinal(r.DateString, today) <= 0 &&
+                    r.CostRMB > 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.CostRMB) : 1.20;
             }
         }
@@ -305,8 +318,11 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var prefix = CourseCalendarHelper.BeijingNow.ToString("yyyy-MM", CultureInfo.InvariantCulture);
-                return FlowRecords.Where(r => r.DateString.StartsWith(prefix)).Sum(r => r.DeltaMB);
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+                var prefix = today.Substring(0, 7);
+                return FlowRecords.Where(r =>
+                    r.DateString.StartsWith(prefix) &&
+                    string.CompareOrdinal(r.DateString, today) <= 0).Sum(r => r.DeltaMB);
             }
         }
     }
@@ -336,7 +352,11 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                return FlowRecords.LastOrDefault()?.BalanceRMB;
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+                return FlowRecords
+                    .Where(r => string.CompareOrdinal(r.DateString, today) <= 0)
+                    .OrderBy(r => r.DateString)
+                    .LastOrDefault()?.BalanceRMB;
             }
         }
     }
@@ -347,7 +367,11 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var latest = ElectricityRecords.OrderByDescending(r => r.DateString).FirstOrDefault();
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+                var latest = ElectricityRecords
+                    .Where(r => string.CompareOrdinal(r.DateString, today) <= 0)
+                    .OrderByDescending(r => r.DateString)
+                    .FirstOrDefault();
                 if (latest == null || latest.LatestBalanceRMB <= 0) return null;
                 var avg = Math.Max(0.5, Past7DaysElectricityDailyAverageRMB);
                 return (int)Math.Max(1, Math.Floor(latest.LatestBalanceRMB / avg));
@@ -361,7 +385,11 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                return ElectricityRecords.OrderByDescending(r => r.DateString).FirstOrDefault();
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+                return ElectricityRecords
+                    .Where(r => string.CompareOrdinal(r.DateString, today) <= 0)
+                    .OrderByDescending(r => r.DateString)
+                    .FirstOrDefault();
             }
         }
     }
@@ -370,8 +398,12 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
+            var now = CourseCalendarHelper.BeijingNow;
+            var today = CourseCalendarHelper.DateString(now);
+            var cutoff = now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            return FlowRecords.Where(r =>
+                    string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
+                    string.CompareOrdinal(r.DateString, today) <= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
         }
@@ -381,8 +413,12 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            return ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
+            var now = CourseCalendarHelper.BeijingNow;
+            var today = CourseCalendarHelper.DateString(now);
+            var cutoff = now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            return ElectricityRecords.Where(r =>
+                    string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
+                    string.CompareOrdinal(r.DateString, today) <= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
         }
