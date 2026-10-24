@@ -1426,14 +1426,19 @@ public sealed class CampusNetworkClient
                         var currentMonthKey = beijingNow.Year * 100 + beijingNow.Month;
                         observedAt = beijingNow;
                         requestMonthStillCurrent = requestMonthKey == currentMonthKey;
+                        if (requestMonthStillCurrent && _lastPortalFlowMonthKey != requestMonthKey)
+                        {
+                            LatestData.UsedFlow = "-- M";
+                            LatestData.AvailableFlow = "-- M";
+                            _lastPortalFlowMonthKey = requestMonthKey;
+                        }
                         if (flowMB > 0 && requestMonthStillCurrent)
                         {
                             var curMB = LatestData.UsedMB ?? 0.0;
-                            if (_lastPortalFlowMonthKey != requestMonthKey || curMB == 0 || actualFlowMB >= curMB)
+                            if (curMB == 0 || actualFlowMB >= curMB)
                             {
                                 LatestData.UsedFlow = actualFlowMB >= 1024 ? $"{actualFlowMB / 1024.0:F2} G" : $"{actualFlowMB:F0} M";
                             }
-                            _lastPortalFlowMonthKey = requestMonthKey;
                         }
                         // 网关在部分网络状态下会返回 0；不要用它覆盖自服务里的真实余额，
                         // 也不要在自服务同步前把占位值替换成误导性的 0.00 元。
@@ -1553,6 +1558,7 @@ public sealed class CampusNetworkClient
                                         (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
                                     {
                                         LatestData.UsedFlow = actualHxFlow ?? hxFlow;
+                                        _lastPortalFlowMonthKey = hxRequestMonth;
                                     }
                                     if (!string.IsNullOrEmpty(hxBalance) &&
                                         (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
@@ -2055,6 +2061,8 @@ public sealed class CampusNetworkClient
             if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
             {
                 LatestData.UsedFlow = parsed.UsedFlow;
+                var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
+                _lastPortalFlowMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
                 hasRealData = true;
             }
             if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
@@ -2120,6 +2128,8 @@ public sealed class CampusNetworkClient
             if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualUsedFlow) && actualUsedFlow != "-- M")
             {
                 LatestData.UsedFlow = actualUsedFlow;
+                var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
+                _lastPortalFlowMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
                 hasRealData = true;
             }
             if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualAvailableFlow) && actualAvailableFlow != "-- M")
