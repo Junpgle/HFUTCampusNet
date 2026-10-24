@@ -1,5 +1,11 @@
 import Foundation
 import AppKit
+import CryptoKit
+
+private struct AccountScopedStudentPortraitEatCache: Codable {
+    let accountKey: String
+    let data: StudentPortraitEatData
+}
 
 public struct StudentPortraitEatPlace: Codable, Equatable, Identifiable {
     public var id: String { place }
@@ -210,10 +216,43 @@ public final class StudentPortraitEatService {
     }
 
     private init() {
-        if let data = try? Data(contentsOf: cacheURL),
-           let decoded = try? JSONDecoder().decode(StudentPortraitEatData.self, from: data) {
-            latestData = decoded
+        loadCachedData()
+    }
+
+    private func loadCachedData() {
+        let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty,
+              let data = try? Data(contentsOf: cacheURL),
+              let cached = try? JSONDecoder().decode(AccountScopedStudentPortraitEatCache.self, from: data),
+              cached.accountKey == Self.cacheAccountKey(for: username) else {
+            return
         }
+        latestData = cached.data
+    }
+
+    private func preserveLegacyCacheBackup() -> Bool {
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else { return true }
+        if let data = try? Data(contentsOf: cacheURL),
+           (try? JSONDecoder().decode(AccountScopedStudentPortraitEatCache.self, from: data)) != nil {
+            return true
+        }
+
+        let backupURL = cacheURL.appendingPathExtension("pre-account-scope-v1.bak")
+        guard !FileManager.default.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try FileManager.default.copyItem(at: cacheURL, to: backupURL)
+            return true
+        } catch {
+            print("学生画像缓存账号标记迁移备份失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private static func cacheAccountKey(for username: String) -> String {
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let identity = normalizedUsername.isEmpty ? "UNCONFIGURED" : normalizedUsername
+        let digest = SHA256.hash(data: Data("portal-username:\(identity)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     public func clearCache() {
@@ -254,7 +293,12 @@ public final class StudentPortraitEatService {
             guard let self else { return }
             let encodedData: Data?
             if case .success(let data) = result {
-                encodedData = try? JSONEncoder().encode(data)
+                let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cache = AccountScopedStudentPortraitEatCache(
+                    accountKey: Self.cacheAccountKey(for: username),
+                    data: data
+                )
+                encodedData = try? JSONEncoder().encode(cache)
             } else {
                 encodedData = nil
             }
@@ -273,7 +317,7 @@ public final class StudentPortraitEatService {
             self.syncing = false
             let completions = self.pendingSyncCompletions
             self.pendingSyncCompletions.removeAll(keepingCapacity: false)
-            if let encodedData {
+            if let encodedData, self.preserveLegacyCacheBackup() {
                 try? encodedData.write(to: self.cacheURL, options: .atomic)
             }
             self.stateLock.unlock()
