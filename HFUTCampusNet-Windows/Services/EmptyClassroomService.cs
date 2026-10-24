@@ -50,7 +50,16 @@ public sealed class EmptyClassroomService
     public static List<CampusBuildingOption> AllBuildings =>
         Shared._buildingCatalog.Count > 0 ? Shared._buildingCatalog : DefaultBuildings;
 
-    public static readonly List<int> AvailableSemesters = new() { 354, 334, 314 };
+    public static List<int> AvailableSemesters
+    {
+        get
+        {
+            var currentSemesterId = CourseCalendarHelper.InferSemesterId();
+            return Enumerable.Range(0, 5)
+                .Select(index => currentSemesterId - index * 20)
+                .ToList();
+        }
+    }
     public static string SemesterTitle(int code) => CourseCalendarHelper.FormatSemesterName(code);
 
     // 默认校区与教学楼预设
