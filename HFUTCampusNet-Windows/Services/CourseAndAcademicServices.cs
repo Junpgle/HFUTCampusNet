@@ -602,23 +602,25 @@ public sealed class CourseScheduleService
 
             var lessonIds = new List<int>();
             bool hasLessonIdsArray = false;
-            int rawLessonIdCount = 0;
+            bool hasInvalidLessonId = false;
             using (var doc = SafeParseJson(getJson))
             {
                 if (doc != null && doc.RootElement.TryGetProperty("lessonIds", out var idsElem) && idsElem.ValueKind == JsonValueKind.Array)
                 {
                     hasLessonIdsArray = true;
-                    rawLessonIdCount = idsElem.GetArrayLength();
                     foreach (var item in idsElem.EnumerateArray())
                     {
-                        if (item.TryGetInt32(out int idVal))
-                            lessonIds.Add(idVal);
+                        if (!item.TryGetInt32(out int idVal) || idVal <= 0)
+                        {
+                            hasInvalidLessonId = true;
+                            continue;
+                        }
+                        lessonIds.Add(idVal);
                     }
                 }
             }
 
-            if (!hasLessonIdsArray) return null;
-            if (rawLessonIdCount > 0 && lessonIds.Count == 0) return null;
+            if (!hasLessonIdsArray || hasInvalidLessonId) return null;
             if (lessonIds.Count == 0)
             {
                 int.TryParse(semId, NumberStyles.Integer, CultureInfo.InvariantCulture, out int emptySemesterNumber);

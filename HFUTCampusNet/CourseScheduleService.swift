@@ -530,6 +530,10 @@ public class CourseScheduleService {
                 completion(.failure(CourseSyncError.invalidResponse))
                 return
             }
+            guard lessonIds.allSatisfy({ $0 > 0 }) else {
+                completion(.failure(CourseSyncError.invalidResponse))
+                return
+            }
 
             guard !lessonIds.isEmpty else {
                 let parsedSemesterId = Int(semesterId) ?? CourseCalendarHelper.inferSemesterId()
