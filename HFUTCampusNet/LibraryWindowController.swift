@@ -809,17 +809,18 @@ public final class LibraryWindowController: NSWindowController, NSWindowDelegate
         if physicalHoldings.count == 1 {
             selectedHolding = physicalHoldings[0]
         } else {
+            let displayedHoldings = Array(physicalHoldings.prefix(5))
             let alert = NSAlert()
             alert.messageText = "选择预约校区单册"
             alert.informativeText = "请选择您希望预约的《\(item.title)》单册分布："
-            for h in physicalHoldings.prefix(5) {
+            for h in displayedHoldings {
                 alert.addButton(withTitle: "[\(h.campus)] \(h.location) · \(h.callNumber)")
             }
             alert.addButton(withTitle: "取消")
             let response = alert.runModal()
             let idx = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-            if idx >= 0 && idx < physicalHoldings.count {
-                selectedHolding = physicalHoldings[idx]
+            if idx >= 0 && idx < displayedHoldings.count {
+                selectedHolding = displayedHoldings[idx]
             } else {
                 return
             }
