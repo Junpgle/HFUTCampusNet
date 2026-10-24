@@ -168,10 +168,10 @@ enum HFUTCASLoginSupport {
       };
 
       window.__hfutCampusAICasFindControls = findControls;
-      const sendEvent = event => {
+      const sendEvent = (event, username = '') => {
         try {
           if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.campusAICaptcha) {
-            window.webkit.messageHandlers.campusAICaptcha.postMessage({ event });
+            window.webkit.messageHandlers.campusAICaptcha.postMessage({ event, username });
           }
         } catch (_) {}
       };
@@ -180,6 +180,7 @@ enum HFUTCASLoginSupport {
         window.__hfutCampusAICasObserverInstalled = true;
         let previousSignature = null;
         const watchedImages = new WeakSet();
+        const watchedForms = new WeakSet();
         const inspect = () => {
           const controls = findControls();
           const signature = controls ? [controls.username.id, controls.username.name,
@@ -192,6 +193,25 @@ enum HFUTCASLoginSupport {
           if (controls && !watchedImages.has(controls.image)) {
             watchedImages.add(controls.image);
             controls.image.addEventListener('load', () => sendEvent('captchaChanged'));
+          }
+          for (const form of Array.from(document.forms)) {
+            if (watchedForms.has(form)) continue;
+            const username = Array.from(form.querySelectorAll('#username, #u, input[name="username"], input[name="userName"]'))
+              .find(visible);
+            if (!username) continue;
+            watchedForms.add(form);
+            const reportLoginSubmission = () => {
+              const currentUsername = Array.from(form.querySelectorAll('#username, #u, input[name="username"], input[name="userName"]'))
+                .find(visible) || username;
+              sendEvent('loginSubmitting', currentUsername.value.trim());
+            };
+            form.addEventListener('submit', reportLoginSubmission, true);
+            const submit = Array.from(form.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]'))
+              .filter(visible)
+              .find(element => element.type === 'submit' || element.id === 'sb2'
+                || element.classList.contains('button-submit')
+                || /登录|login|submit/i.test([element.id, element.name, element.innerText, element.value].join(' ')));
+            if (submit) submit.addEventListener('click', reportLoginSubmission, true);
           }
         };
         new MutationObserver(inspect).observe(document.documentElement, {

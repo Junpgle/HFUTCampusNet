@@ -449,7 +449,6 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
               self.syncSessionToken == sessionToken,
               !isSyncingAll else { return }
         isSyncingAll = true
-        casLoginCoordinator.commitPendingCredentials()
         progressIndicator.startAnimation(nil)
 
         statusTitleLabel.stringValue = "统一身份认证成功，正在同步所有校园服务..."
@@ -462,6 +461,7 @@ public class UnifiedLoginWebViewController: NSWindowController, WKNavigationDele
             guard let self = self,
                   self.isAccountAuthFlowEnabled,
                   self.syncSessionToken == sessionToken else { return }
+            self.casLoginCoordinator.commitPendingCredentials()
             self.clearPreviousAccountDataIfNeeded()
             if let confirmedTGC {
                 SettingsManager.shared.casTgcCookie = confirmedTGC

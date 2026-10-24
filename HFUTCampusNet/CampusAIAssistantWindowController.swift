@@ -209,7 +209,7 @@ private struct CampusAIPendingLookupSend {
 
 private struct CampusAIPendingCASCredentials {
     let username: String
-    let password: String
+    let password: String?
     let previousUsername: String
     let previousStudentID: String
     let navigationID: UUID
@@ -783,11 +783,35 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
               webView === loginWebView,
               message.frameInfo.securityOrigin.host.lowercased() == "cas.hfut.edu.cn",
               displayingLogin,
-              ["formChanged", "captchaChanged"].contains(body["event"] ?? "") else { return }
-        if body["event"] == "captchaChanged" {
+              let event = body["event"] else { return }
+        if event == "loginSubmitting" {
+            stageWebCASLoginUsername(body["username"] ?? "")
+            return
+        }
+        guard ["formChanged", "captchaChanged"].contains(event) else { return }
+        if event == "captchaChanged" {
             captchaRefreshToken = nil
         }
         inspectCASLoginPage(webView)
+    }
+
+    private func stageWebCASLoginUsername(_ username: String) {
+        guard pendingCASCredentials == nil,
+              HFUTCASLoginSupport.isLoginPage(loginWebView.url) else { return }
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUsername.isEmpty,
+              normalizedUsername != previousUsername,
+              portalSessionUsername == previousUsername else { return }
+
+        pendingCASCredentials = CampusAIPendingCASCredentials(
+            username: normalizedUsername,
+            password: nil,
+            previousUsername: previousUsername,
+            previousStudentID: SettingsManager.shared.courseStudentId,
+            navigationID: portalNavigationID
+        )
+        portalSessionUsername = normalizedUsername
     }
 
     private func handleAutomaticNavigationMessage(_ body: [String: String], from webView: WKWebView, host: String) {
@@ -1973,6 +1997,16 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                       !HFUTCASLoginSupport.isLoginPage(pageURL),
                       let tgc = HFUTCASLoginSupport.tgcCookieValue(from: cookies) else { return }
 
+                let host = pageURL.host?.lowercased() ?? ""
+                let hasServiceTicket = ["one.hfut.edu.cn", "i.hfut.edu.cn", "jxglstu.hfut.edu.cn", CampusAIEndpoint.host].contains(host)
+                    && (URLComponents(url: pageURL, resolvingAgainstBaseURL: false)?.queryItems?
+                        .contains(where: { $0.name.caseInsensitiveCompare("ticket") == .orderedSame && !($0.value ?? "").isEmpty }) ?? false)
+                let hasConfirmedAISession = host == CampusAIEndpoint.host && self.hasAISession(cookies)
+                let hasPendingCASCredentials = self.pendingCASCredentials.map {
+                    $0.navigationID == navigationID && $0.username == username
+                } ?? false
+                guard hasServiceTicket || (!hasPendingCASCredentials && hasConfirmedAISession) else { return }
+
                 if let pending = self.pendingCASCredentials,
                    pending.navigationID == navigationID,
                    pending.username == username {
@@ -1985,11 +2019,13 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
                         return
                     }
                     SettingsManager.shared.portalUsername = pending.username
-                    SettingsManager.shared.casPassword = pending.password
+                    if let password = pending.password {
+                        SettingsManager.shared.casPassword = password
+                    }
                     SettingsWindowController.shared.handleExternalAccountSwitch(
                         previousUsername: pending.previousUsername,
                         previousStudentID: pending.previousStudentID,
-                        preserveCasPassword: true
+                        preserveCasPassword: pending.password != nil
                     )
                     self.portalSessionUsername = pending.username
                     self.pendingCASCredentials = nil

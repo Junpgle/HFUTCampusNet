@@ -13,7 +13,8 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
     private var formReady = false
     private var probeToken = UUID()
     private var refreshToken: UUID?
-    private var pendingCredentials: (username: String, password: String)?
+    private var navigationGeneration = 0
+    private var pendingCredentials: (username: String, password: String, previousUsername: String)?
 
     var onStatus: ((String) -> Void)?
 
@@ -69,7 +70,16 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
             pendingCredentials = nil
             return
         }
-        pendingCredentials = (normalizedUsername, password)
+        let previousUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingCredentials = (normalizedUsername, password, previousUsername)
+    }
+
+    private func stageWebLoginUsername(_ username: String) {
+        guard pendingCredentials == nil else { return }
+        let normalizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedUsername.isEmpty, normalizedUsername != previousUsername else { return }
+        pendingCredentials = (normalizedUsername, "", previousUsername)
     }
 
     @discardableResult
@@ -78,9 +88,10 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
         pendingCredentials = nil
 
         let settings = SettingsManager.shared
-        let previousUsername = settings.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousUsername = credentials.previousUsername
         let currentUsername = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !currentUsername.isEmpty else { return nil }
+        guard !currentUsername.isEmpty,
+              settings.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines) == previousUsername else { return nil }
         settings.portalUsername = currentUsername
         settings.casPassword = credentials.password
         return (previousUsername, currentUsername)
@@ -95,6 +106,7 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
 
     func navigationStarted(in webView: WKWebView) {
         guard self.webView === webView else { return }
+        navigationGeneration &+= 1
         probeToken = UUID()
         refreshToken = nil
         formReady = false
@@ -113,6 +125,28 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
             return
         }
         inspect(webView)
+        if pendingCredentials != nil {
+            let expectedNavigationGeneration = navigationGeneration
+            let pageURL = webView.url
+            let script = """
+            (() => {
+              const password = document.getElementById('pwd') || document.querySelector('input[type="password"]');
+              return !!password && password.getClientRects().length > 0
+                && getComputedStyle(password).display !== 'none'
+                && getComputedStyle(password).visibility !== 'hidden';
+            })()
+            """
+            webView.evaluateJavaScript(script) { [weak self, weak webView] result, _ in
+                guard result as? Bool == true else { return }
+                DispatchQueue.main.async {
+                    guard let self, let webView, self.webView === webView,
+                          self.navigationGeneration == expectedNavigationGeneration,
+                          webView.url == pageURL,
+                          HFUTCASLoginSupport.isLoginPage(webView.url) else { return }
+                    self.pendingCredentials = nil
+                }
+            }
+        }
     }
 
     func userContentController(_ userContentController: WKUserContentController,
@@ -124,8 +158,13 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
               message.frameInfo.securityOrigin.protocol == "https",
               message.frameInfo.securityOrigin.host.lowercased() == "cas.hfut.edu.cn",
               let body = message.body as? [String: String],
-              ["formChanged", "captchaChanged"].contains(body["event"] ?? "") else { return }
-        if body["event"] == "captchaChanged" { refreshToken = nil }
+              let event = body["event"] else { return }
+        if event == "loginSubmitting" {
+            stageWebLoginUsername(body["username"] ?? "")
+            return
+        }
+        guard ["formChanged", "captchaChanged"].contains(event) else { return }
+        if event == "captchaChanged" { refreshToken = nil }
         inspect(webView)
     }
 
@@ -195,6 +234,7 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
     }
 
     private func showWebLogin() {
+        pendingCredentials = nil
         preferWebLogin = true
         panel.isHidden = true
         webView?.isHidden = false
@@ -241,7 +281,8 @@ final class HFUTCASLoginCoordinator: NSObject, WKScriptMessageHandler {
             panel.setStatus("无法准备当前 CAS 表单提交，请切换到网页登录。")
             return
         }
-        pendingCredentials = (username, password)
+        let previousUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingCredentials = (username, password, previousUsername)
         formReady = false
         preferWebLogin = false
         probeToken = UUID()
