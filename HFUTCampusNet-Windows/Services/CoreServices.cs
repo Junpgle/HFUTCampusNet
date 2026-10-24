@@ -2057,6 +2057,8 @@ public sealed class CampusNetworkClient
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
         bool flowSampleIsCurrentMonth = IsFlowSampleInCurrentMonth(sampleTime);
+        var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
+        int sampleMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
         var parsed = ParseDashboardHTML(html);
         if (parsed == null) return false;
 
@@ -2066,13 +2068,13 @@ public sealed class CampusNetworkClient
             if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
             {
                 LatestData.UsedFlow = parsed.UsedFlow;
-                var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
-                _lastPortalFlowMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
+                _lastPortalFlowMonthKey = sampleMonthKey;
                 hasRealData = true;
             }
             if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
             {
                 LatestData.AvailableFlow = parsed.AvailableFlow;
+                _lastPortalFlowMonthKey = sampleMonthKey;
                 hasRealData = true;
             }
             if (!string.IsNullOrEmpty(parsed.Balance) && parsed.Balance != "-- 元")
@@ -2125,6 +2127,8 @@ public sealed class CampusNetworkClient
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
         bool flowSampleIsCurrentMonth = IsFlowSampleInCurrentMonth(sampleTime);
+        var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
+        int sampleMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
         var actualUsedFlow = CampusNetworkData.ActualTrafficFlow(usedFlow) ?? usedFlow;
         var actualAvailableFlow = CampusNetworkData.ActualTrafficFlow(availFlow) ?? availFlow;
         bool hasRealData = false;
@@ -2133,13 +2137,13 @@ public sealed class CampusNetworkClient
             if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualUsedFlow) && actualUsedFlow != "-- M")
             {
                 LatestData.UsedFlow = actualUsedFlow;
-                var sampleMonth = CourseCalendarHelper.ToBeijingTime(sampleTime);
-                _lastPortalFlowMonthKey = sampleMonth.Year * 100 + sampleMonth.Month;
+                _lastPortalFlowMonthKey = sampleMonthKey;
                 hasRealData = true;
             }
             if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualAvailableFlow) && actualAvailableFlow != "-- M")
             {
                 LatestData.AvailableFlow = actualAvailableFlow;
+                _lastPortalFlowMonthKey = sampleMonthKey;
                 hasRealData = true;
             }
             if (!string.IsNullOrWhiteSpace(balance) && balance != "-- 元")
