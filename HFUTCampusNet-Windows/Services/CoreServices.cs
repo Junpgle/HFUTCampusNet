@@ -633,15 +633,27 @@ public sealed class CampusHistoryManager
             }
             if (root.TryGetProperty("ArchivedElectricityRecords", out var archivedProp))
             {
+                bool loadedElectricityArchive = false;
                 try
                 {
                     var archived = JsonSerializer.Deserialize<Dictionary<string, List<ElectricityDailyRecord>>>(archivedProp.GetRawText());
-                    if (archived != null)
+                    if (archived != null &&
+                        archived.Values.All(records => records != null && records.All(record => record != null)))
+                    {
                         _archivedElectricityRecords = new Dictionary<string, List<ElectricityDailyRecord>>(archived, StringComparer.Ordinal);
+                        loadedElectricityArchive = true;
+                    }
                 }
                 catch (JsonException ex)
                 {
                     Debug.WriteLine($"Electricity history archive is invalid: {ex.Message}");
+                }
+
+                if (!loadedElectricityArchive)
+                {
+                    Debug.WriteLine("Electricity history archive is invalid; preserving the original history file before continuing.");
+                    if (!_historyBackupRequired)
+                        _historyBackupRequired = !TryBackupUnreadableHistory();
                 }
             }
 
