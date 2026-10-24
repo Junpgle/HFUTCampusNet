@@ -181,10 +181,15 @@ public sealed class CourseScheduleService
 
     public void SyncSchedule(Action<bool>? callback = null, long? expectedAccountGeneration = null)
     {
+        SyncScheduleCore((success, _) => callback?.Invoke(success), expectedAccountGeneration);
+    }
+
+    private void SyncScheduleCore(Action<bool, CourseScheduleData?>? callback, long? expectedAccountGeneration)
+    {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration))
         {
-            callback?.Invoke(false);
+            callback?.Invoke(false, null);
             return;
         }
         var generation = BeginScheduleOperation();
@@ -194,7 +199,7 @@ public sealed class CourseScheduleService
             {
                 if (!IsScheduleGenerationCurrent(generation, accountGeneration))
                 {
-                    callback?.Invoke(false);
+                    callback?.Invoke(false, null);
                     return;
                 }
 
@@ -206,7 +211,7 @@ public sealed class CourseScheduleService
                     tgc = SettingsManager.Shared.CasTgcCookie;
                 }))
                 {
-                    callback?.Invoke(false);
+                    callback?.Invoke(false, null);
                     return;
                 }
                 if (!string.IsNullOrEmpty(cookie))
@@ -215,14 +220,14 @@ public sealed class CourseScheduleService
                     if (data != null && TryApplySyncedSchedule(data, generation, accountGeneration))
                     {
                         AppEvents.RaiseCourseScheduleUpdated();
-                        callback?.Invoke(true);
+                        callback?.Invoke(true, data);
                         return;
                     }
                 }
 
                 if (!IsScheduleGenerationCurrent(generation, accountGeneration))
                 {
-                    callback?.Invoke(false);
+                    callback?.Invoke(false, null);
                     return;
                 }
 
@@ -236,28 +241,28 @@ public sealed class CourseScheduleService
                         if (data != null && TryApplySyncedSchedule(data, generation, accountGeneration))
                         {
                             AppEvents.RaiseCourseScheduleUpdated();
-                            callback?.Invoke(true);
+                            callback?.Invoke(true, data);
                             return;
                         }
                     }
                 }
 
-                callback?.Invoke(false);
+                callback?.Invoke(false, null);
             }
             catch
             {
-                callback?.Invoke(false);
+                callback?.Invoke(false, null);
             }
         });
     }
 
     public void SyncSchedule(Action<CourseScheduleData?, string?> callback)
     {
-        SyncSchedule(ok =>
+        SyncScheduleCore((ok, schedule) =>
         {
-            if (ok) callback(CurrentSchedule, null);
+            if (ok && schedule != null) callback(schedule, null);
             else callback(null, "课表同步失败，请重新登录");
-        });
+        }, expectedAccountGeneration: null);
     }
 
     public void ClearSchedule(bool clearCourseCredentials = false)
