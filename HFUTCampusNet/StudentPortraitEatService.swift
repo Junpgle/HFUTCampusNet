@@ -517,6 +517,7 @@ public final class StudentPortraitEatService {
         let resultLock = NSLock()
         var values: [String: Any] = [:]
         var firstError: Error?
+        var failedOptionalEndpoints = Set<String>()
         for (key, path, body, isCritical) in endpoints {
             group.enter()
             post(path: path, body: body, token: normalizedToken) { result in
@@ -527,6 +528,8 @@ public final class StudentPortraitEatService {
                 case .failure(let error):
                     if isCritical && firstError == nil {
                         firstError = error
+                    } else if !isCritical {
+                        failedOptionalEndpoints.insert(key)
                     }
                 }
                 resultLock.unlock()
@@ -537,18 +540,19 @@ public final class StudentPortraitEatService {
             resultLock.lock()
             let values = values
             let firstError = firstError
+            let failedOptionalEndpoints = failedOptionalEndpoints
             resultLock.unlock()
             if let firstError {
                 completion(.failure(firstError))
                 return
             }
             guard let top = values["top3"] as? [String: Any],
-                  let frequency = values["frequency"] as? [String: Any],
                   let oneDay = values["oneDay"] as? [String: Any],
                   let averageValue = values["average"] as? [String: Any] else {
                 completion(.failure(Self.error("EHALL 学生画像响应缺少必要数据")))
                 return
             }
+            let frequency = values["frequency"] as? [String: Any] ?? [:]
             let annualRows = (values["annual"] as? [[String: Any]]) ?? []
 
             let annual = annualRows.map {
@@ -741,26 +745,87 @@ public final class StudentPortraitEatService {
                 libraryBorrowRanges: libraryBorrowRanges,
                 libraryStudyTime: libraryStudyTime
             )
-            self.fetchYearAverages(token: normalizedToken, annual: annual) { yearAverages in
-                var finalData = data
+            self.stateLock.lock()
+            let cachedData = self.latestData
+            self.stateLock.unlock()
+            var mergedData = data
+            self.preserveFailedOptionalData(
+                in: &mergedData,
+                cached: cachedData,
+                failedEndpoints: failedOptionalEndpoints
+            )
+            let cachedYearAverages = failedOptionalEndpoints.contains("annual")
+                ? (cachedData?.yearAverages ?? [])
+                : []
+            self.fetchYearAverages(
+                token: normalizedToken,
+                annual: mergedData.annual,
+                cached: cachedYearAverages
+            ) { yearAverages in
+                var finalData = mergedData
                 finalData.yearAverages = yearAverages
                 completion(.success(finalData))
             }
         }
     }
 
+    private func preserveFailedOptionalData(
+        in data: inout StudentPortraitEatData,
+        cached: StudentPortraitEatData?,
+        failedEndpoints: Set<String>
+    ) {
+        guard let cached else { return }
+
+        if failedEndpoints.contains("frequency") {
+            data.frequencyMine = cached.frequencyMine
+            data.frequencyCampus = cached.frequencyCampus
+        }
+        if failedEndpoints.contains("annual") {
+            data.annual = cached.annual
+            data.yearAverages = cached.yearAverages
+        }
+        if failedEndpoints.contains("gpa") { data.gpaHistory = cached.gpaHistory }
+        if failedEndpoints.contains("extremes") { data.courseExtremes = cached.courseExtremes }
+        if failedEndpoints.contains("courseTypeStats") { data.courseTypeStats = cached.courseTypeStats }
+        if failedEndpoints.contains("progress") {
+            data.completedCredits = cached.completedCredits
+            data.totalRequiredCredits = cached.totalRequiredCredits
+        }
+        if failedEndpoints.contains("secondClass") {
+            data.secondClass = cached.secondClass
+        } else if failedEndpoints.contains("secondClassAnalysis"), let previous = cached.secondClass {
+            if var current = data.secondClass {
+                current.requiredLevel = previous.requiredLevel
+                current.electiveLevel = previous.electiveLevel
+                data.secondClass = current
+            } else {
+                data.secondClass = previous
+            }
+        }
+        if failedEndpoints.contains("welfareTime") { data.volunteerWelfare = cached.volunteerWelfare }
+        if failedEndpoints.contains("virtueCompare") { data.volunteerCompare = cached.volunteerCompare }
+        if failedEndpoints.contains("virtueTotal") { data.virtueScores = cached.virtueScores }
+        if failedEndpoints.contains("healthTest") { data.healthTests = cached.healthTests }
+        if failedEndpoints.contains("awardTotal") { data.awardSummary = cached.awardSummary }
+        if failedEndpoints.contains("awardList") { data.awardList = cached.awardList }
+        if failedEndpoints.contains("libraryStudy") { data.libraryStudyTime = cached.libraryStudyTime }
+        if failedEndpoints.contains("libraryBorrow") { data.libraryBorrowRanges = cached.libraryBorrowRanges }
+    }
+
     private func fetchYearAverages(
         token: String,
         annual: [StudentPortraitAnnualSpend],
+        cached: [StudentPortraitYearAverage],
         completion: @escaping ([StudentPortraitYearAverage]) -> Void
     ) {
         let years = Array(Set(annual.map { String($0.academicYear.prefix(4)) }.filter { Int($0) != nil })).sorted()
-        guard !years.isEmpty else { completion([]); return }
+        guard !years.isEmpty else { completion(cached); return }
         let group = DispatchGroup()
         let lock = NSLock()
         var results: [String: StudentPortraitEatAverage] = [:]
         // Bound parallel requests while keeping the latest years in the trend.
-        for year in years.suffix(8) {
+        let requestedYears = Array(years.suffix(8))
+        for year in requestedYears {
             group.enter()
             post(path: "api/admin/dataway/xshx/eat/average", body: ["year": year, "env": "prod"], token: token) { result in
                 if case .success(let value) = result, let dictionary = value as? [String: Any] {
@@ -775,7 +840,14 @@ public final class StudentPortraitEatService {
             lock.lock()
             let copied = results
             lock.unlock()
-            completion(copied.keys.sorted().map { StudentPortraitYearAverage(academicYear: $0, average: copied[$0]!) })
+            let cachedByYear = Dictionary(cached.map { ($0.academicYear, $0) }, uniquingKeysWith: { first, _ in first })
+            let averages = requestedYears.compactMap { year -> StudentPortraitYearAverage? in
+                if let average = copied[year] {
+                    return StudentPortraitYearAverage(academicYear: year, average: average)
+                }
+                return cachedByYear[year]
+            }
+            completion(averages)
         }
     }
 
