@@ -1877,7 +1877,8 @@ public sealed class CampusNetworkClient
             using var resp = await _selfServiceClient.SendAsync(req);
             if (!IsCurrentOnlineDevicesRequest(accountGeneration, requestGeneration))
                 return (false, "设备列表请求已过期", new());
-            if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
+            if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302 ||
+                resp.StatusCode == HttpStatusCode.Unauthorized || resp.StatusCode == HttpStatusCode.Forbidden)
             {
                 bool cookieCleared = TryUpdateOnlineDevicesForRequest(accountGeneration, requestGeneration, cookie, () =>
                 {
