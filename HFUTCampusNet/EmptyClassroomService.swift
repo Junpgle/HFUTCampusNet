@@ -868,11 +868,27 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         }
 
         let campusKey = targetCampus.rawValue
+        let completeAfterRequestedBuildings: (Result<Void, Error>) -> Void = { [weak self] result in
+            guard case .success = result, !additionalBuildingIds.isEmpty else {
+                completion(result)
+                return
+            }
+            guard let self else {
+                completion(result)
+                return
+            }
+            self.ensureAdditionalBuildingCaches(
+                campus: targetCampus,
+                buildingIds: additionalBuildingIds,
+                completion: completion
+            )
+        }
+
         if !forceRefresh, pendingSyncCompletions[campusKey] != nil {
-            pendingSyncCompletions[campusKey]?.append(completion)
+            pendingSyncCompletions[campusKey]?.append(completeAfterRequestedBuildings)
             return
         }
-        pendingSyncCompletions[campusKey, default: []].append(completion)
+        pendingSyncCompletions[campusKey, default: []].append(completeAfterRequestedBuildings)
         let syncToken = UUID()
         activeSyncTokenByCampus[campusKey] = syncToken
 
@@ -1191,6 +1207,64 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             syncToken: nil,
             completion: completion
         )
+    }
+
+    private func ensureAdditionalBuildingCaches(
+        campus: StudyCampus,
+        buildingIds: [Int],
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let today = Self.todayDateString()
+        let tomorrow = Self.tomorrowDateString()
+        let required = Set(buildingIds).flatMap { buildingId in
+            [today, tomorrow].compactMap { date in
+                let key = "\(campus.rawValue)|\(date)|\(buildingId)"
+                return roomsCache[key] == nil ? (date, buildingId) : nil
+            }
+        }
+        guard !required.isEmpty else {
+            completion(.success(()))
+            return
+        }
+
+        let group = DispatchGroup()
+        let errorLock = NSLock()
+        var firstError: Error?
+        for (date, buildingId) in required {
+            group.enter()
+            fetchRooms(dateString: date, campus: campus, buildingIds: [buildingId]) { result in
+                if case .failure(let error) = result {
+                    errorLock.lock()
+                    if firstError == nil { firstError = error }
+                    errorLock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            errorLock.lock()
+            let fetchError = firstError
+            errorLock.unlock()
+            if let fetchError {
+                completion(.failure(fetchError))
+                return
+            }
+
+            let allCached = Set(buildingIds).allSatisfy { buildingId in
+                self.roomsCache["\(campus.rawValue)|\(today)|\(buildingId)"] != nil &&
+                self.roomsCache["\(campus.rawValue)|\(tomorrow)|\(buildingId)"] != nil
+            }
+            if allCached {
+                completion(.success(()))
+            } else {
+                completion(.failure(NSError(
+                    domain: "EmptyClassroom",
+                    code: -4,
+                    userInfo: [NSLocalizedDescriptionKey: "部分指定教学楼的空教室数据未能加载"]
+                )))
+            }
+        }
     }
 
     private func fetchRooms(
