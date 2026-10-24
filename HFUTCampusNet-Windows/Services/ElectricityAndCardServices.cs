@@ -233,6 +233,8 @@ public sealed class ElectricityService
             }
             if (!IsCurrentRequest(generation, dorm, accountGeneration))
                 return (null, StaleRequestMessage);
+            if (isConfigErr)
+                return (null, firstErr);
 
             // Token 可能失效，尝试通过已保存学号密码静默重新登录
             var (newToken, loginErr) = await ObtainHuiXinTokenAsync(
@@ -247,10 +249,10 @@ public sealed class ElectricityService
                     return (retryData, null);
                 if (!IsCurrentRequest(generation, dorm, accountGeneration))
                     return (null, StaleRequestMessage);
-                return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : retryErr);
+                return (null, retryErr);
             }
 
-            return (null, isConfigErr && !string.IsNullOrEmpty(firstErr) ? firstErr : (loginErr ?? firstErr));
+            return (null, loginErr ?? firstErr);
         }
         else
         {
