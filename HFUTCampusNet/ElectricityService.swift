@@ -87,6 +87,7 @@ public class ElectricityService {
 
     /// 当用户修改宿舍校区/楼栋/房间号/端口时，清理余额缓存并切换到对应历史分区。
     public func invalidateCacheIfDormChanged() {
+        SettingsManager.shared.lastNotifiedLowElectricityDate = ""
         stateLock.lock()
         requestGeneration &+= 1
         if let cached = self.latestData,

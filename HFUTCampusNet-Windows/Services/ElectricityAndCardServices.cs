@@ -126,6 +126,8 @@ public sealed class ElectricityService
     /// </summary>
     public void InvalidateCacheIfDormChanged()
     {
+        SettingsManager.Shared.LastNotifiedLowElectricityDate = string.Empty;
+        SettingsManager.Shared.Save();
         CampusHistoryManager.Shared.ActivateCurrentElectricityDorm();
         bool hadDataOrCache;
         lock (_stateLock)
