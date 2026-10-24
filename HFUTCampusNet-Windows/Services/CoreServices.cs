@@ -557,9 +557,9 @@ public sealed class CampusHistoryManager
                 {
                     record.StartBalanceRMB = balanceRMB + accumulatedCostRMB;
                 }
-                else if (previousRecord != null && balanceRMB <= previousRecord.LatestBalanceRMB)
+                else if (balanceRMB > record.LatestBalanceRMB)
                 {
-                    record.StartBalanceRMB = previousRecord.LatestBalanceRMB;
+                    record.StartBalanceRMB += balanceRMB - record.LatestBalanceRMB;
                 }
                 record.LatestBalanceRMB = balanceRMB;
                 record.RemainingKWh = remainingKWh;
