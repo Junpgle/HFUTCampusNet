@@ -51,7 +51,6 @@ public static class AccountSessionManager
                     settings.PortalPassword = string.Empty;
                     settings.CasPassword = string.Empty;
                 }
-                settings.PortalUsername = newUsername;
                 CampusHistoryManager.Shared.ActivateCurrentFlowAccount(newUsername);
                 UnifiedLoginWebWindow.ClearAuthCookiesForAccountSwitch();
                 LoginWebWindow.ClearAuthCookiesForAccountSwitch();
@@ -74,6 +73,9 @@ public static class AccountSessionManager
                 settings.LastNotifiedLowCardBalanceDate = string.Empty;
                 AcademicService.Shared.ClearCache();
 
+                // Persist the new identity only after clearing account-scoped data so an interrupted switch
+                // cannot leave the new username paired with the previous account's caches.
+                settings.PortalUsername = newUsername;
                 settings.Save();
 
                 AppEvents.RaiseAuthStatusUpdated();
