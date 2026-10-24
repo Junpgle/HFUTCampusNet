@@ -621,11 +621,8 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
     }
 
     @objc private func todayWeekAction() {
-        if let schedule = CourseScheduleService.shared.currentSchedule {
-            currentWeek = schedule.currentWeek() ?? 1
-        } else {
-            currentWeek = 1
-        }
+        guard let week = CourseScheduleService.shared.currentSchedule?.currentWeek() else { return }
+        currentWeek = week
         renderSchedule()
     }
 
@@ -1449,11 +1446,8 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
     }
 
     @objc private func todayWeekAction() {
-        if let schedule = scheduleData {
-            currentWeek = schedule.currentWeek() ?? schedule.allWeeks.first ?? 1
-        } else {
-            currentWeek = 1
-        }
+        guard let week = scheduleData?.currentWeek() else { return }
+        currentWeek = week
         renderClassroomSchedule()
     }
 

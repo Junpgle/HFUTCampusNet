@@ -377,18 +377,19 @@ public class CourseScheduleWindow : Window
             }
 
             int maxWeek = Math.Max(20, schedule?.MaxWeek ?? 20);
-            int currentCalculatedWeek = schedule?.CalculatedCurrentWeek() ?? 1;
+            int? currentCalculatedWeek = schedule?.CurrentWeek();
+            _todayBtn.IsEnabled = currentCalculatedWeek.HasValue;
 
             if (autoPositionWeek || _selectedWeek < 1 || _selectedWeek > maxWeek)
             {
-                _selectedWeek = Math.Clamp(currentCalculatedWeek, 1, maxWeek);
+                _selectedWeek = Math.Clamp(currentCalculatedWeek ?? 1, 1, maxWeek);
                 _hasAutoPositionedWeek = true;
             }
 
             _weekCombo.Items.Clear();
             for (int w = 1; w <= maxWeek; w++)
             {
-                string suffix = (w == currentCalculatedWeek) ? " (本周)" : "";
+                string suffix = (currentCalculatedWeek == w) ? " (本周)" : "";
                 _weekCombo.Items.Add($"第 {w} 周{suffix}");
             }
             _weekCombo.SelectedIndex = Math.Clamp(_selectedWeek - 1, 0, _weekCombo.Items.Count - 1);
@@ -470,8 +471,8 @@ public class CourseScheduleWindow : Window
         var today = DateTime.Today;
         int currentWeekday = TodayIsoWeekday();
         int currentMinutes = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-        int currentCalculatedWeek = schedule.CalculatedCurrentWeek();
-        bool isViewingCurrentWeek = (_selectedWeek == currentCalculatedWeek);
+        int? currentCalculatedWeek = schedule.CurrentWeek();
+        bool isViewingCurrentWeek = currentCalculatedWeek.HasValue && _selectedWeek == currentCalculatedWeek.Value;
 
         // 左上角时间表头
         var cornerBorder = new Border
@@ -1088,7 +1089,8 @@ public class CourseScheduleWindow : Window
     private void OnBackToCurrentWeekClicked(object sender, RoutedEventArgs e)
     {
         var schedule = CourseScheduleService.Shared.CurrentSchedule;
-        _selectedWeek = schedule?.CalculatedCurrentWeek() ?? 1;
+        if (schedule?.CurrentWeek() is not int currentWeek) return;
+        _selectedWeek = currentWeek;
         ReloadInterface(autoPositionWeek: false);
     }
 

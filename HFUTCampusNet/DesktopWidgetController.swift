@@ -496,8 +496,7 @@ public class DesktopWidgetController: NSWindowController, NetworkSpeedMonitorDel
         }
 
         let todayLessons = schedule.todayLessons(at: now)
-        let currentWeek = schedule.currentWeek(at: now) ?? 1
-        let weekStr = "第 \(currentWeek) 周"
+        let weekStr = schedule.currentWeek(at: now).map { "第 \($0) 周" } ?? "非教学周/假期"
 
         if let ongoing = schedule.currentLesson(at: now) {
             titleLabel.stringValue = "上课中：\(ongoing.courseName)"

@@ -1128,8 +1128,9 @@ public sealed class DesktopWidgetWindow : Window
         }
 
         var todayLessons = schedule.TodayLessons(now);
-        int currentWeek = schedule.CurrentWeek(now) ?? 1;
-        string weekStr = $"第 {currentWeek} 周";
+        string weekStr = schedule.CurrentWeek(now) is int currentWeek
+            ? $"第 {currentWeek} 周"
+            : "非教学周/假期";
 
         var ongoing = schedule.CurrentLesson(now);
         var next = schedule.NextLesson(now);

@@ -1729,8 +1729,9 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         _currentWeekBtn = CreateToolbarButton("本周", (_, _) =>
         {
-            int currentWeek = _scheduleData?.CalculatedCurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CalculatedCurrentWeek() ?? 1;
-            _selectedWeek = currentWeek;
+            int? currentWeek = _scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek();
+            if (!currentWeek.HasValue) return;
+            _selectedWeek = currentWeek.Value;
             SwitchViewMode(false);
         });
         _currentWeekBtn.Margin = new Thickness(4, 0, 6, 0);
@@ -1779,7 +1780,8 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         _prevWeekBtn.IsEnabled = !_isOverviewMode && _selectedWeek > 1;
         _nextWeekBtn.IsEnabled = !_isOverviewMode && _selectedWeek < 20;
-        _currentWeekBtn.IsEnabled = !_isOverviewMode;
+        _currentWeekBtn.IsEnabled = !_isOverviewMode &&
+            (_scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek()).HasValue;
 
         _suppressSelectionEvents = true;
         try
@@ -1941,8 +1943,8 @@ public sealed class ClassroomSemesterScheduleWindow : Window
         var today = DateTime.Today;
         int currentWeekday = TodayIsoWeekday();
         int currentMinutes = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-        int currentCalculatedWeek = _scheduleData?.CalculatedCurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CalculatedCurrentWeek() ?? 1;
-        bool isViewingCurrentWeek = (!_isOverviewMode && _selectedWeek == currentCalculatedWeek);
+        int? currentCalculatedWeek = _scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek();
+        bool isViewingCurrentWeek = !_isOverviewMode && currentCalculatedWeek.HasValue && _selectedWeek == currentCalculatedWeek.Value;
 
         var weekDates = !_isOverviewMode ? ResolveWeekDates(_selectedWeek) : new List<DateTime?>();
 
@@ -2587,10 +2589,27 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             }
         }
 
-        int curWeek = CourseScheduleService.Shared.CurrentSchedule?.CalculatedCurrentWeek() ?? 1;
+        var currentSchedule = CourseScheduleService.Shared.CurrentSchedule;
+        if (currentSchedule != null)
+        {
+            var dates = currentSchedule.DatesForWeek(week);
+            if (dates.Count == 7)
+            {
+                var list = new List<DateTime?>();
+                for (int d = 1; d <= 7; d++) list.Add(dates.TryGetValue(d, out var date) ? date : null);
+                return list;
+            }
+        }
+
+        int? currentWeek = _scheduleData?.CurrentWeek() ?? currentSchedule?.CurrentWeek();
+        if (!currentWeek.HasValue)
+        {
+            return Enumerable.Repeat<DateTime?>(null, 7).ToList();
+        }
+
         var today = DateTime.Today;
         int todayIso = TodayIsoWeekday();
-        var monday = today.AddDays(1 - todayIso + (week - curWeek) * 7);
+        var monday = today.AddDays(1 - todayIso + (week - currentWeek.Value) * 7);
 
         var fallbackDates = new List<DateTime?>();
         for (int d = 0; d < 7; d++)
