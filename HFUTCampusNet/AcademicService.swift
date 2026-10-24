@@ -287,18 +287,18 @@ public class AcademicService: NSObject, URLSessionDelegate {
 
         var uniAppGrades: [TermGradeGroup]?
         var eamsGrades: [TermGradeGroup]?
-        var uniAppExams: [ExamItem] = []
-        var eamsExams: [ExamItem] = []
+        var uniAppExams: [ExamItem]?
+        var eamsExams: [ExamItem]?
         var eamsProgram: ProgramCompletionSummary?
-        var eamsTextbooks: [CourseTextbookItem] = []
-        var eamsSurveys: [LessonSurveyItem] = []
+        var eamsTextbooks: [CourseTextbookItem]?
+        var eamsSurveys: [LessonSurveyItem]?
         var lastErr: Error?
 
         // 通道 1：合工大教务移动端 (UniApp JWT)
         group.enter()
         fetchFromUniApp { resGrades, resExams, err in
             resultQueue.sync {
-                if let g = resGrades, !g.isEmpty {
+                if let g = resGrades {
                     uniAppGrades = g
                 }
                 if let e = resExams {
@@ -315,7 +315,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         group.enter()
         fetchFromEamsWeb { resGrades, resExams, resProgram, resTextbooks, resSurveys, err in
             resultQueue.sync {
-                if let g = resGrades, !g.isEmpty {
+                if let g = resGrades {
                     eamsGrades = g
                 }
                 if let e = resExams {
@@ -324,7 +324,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 if let p = resProgram {
                     eamsProgram = p
                 }
-                if let tb = resTextbooks, !tb.isEmpty {
+                if let tb = resTextbooks {
                     eamsTextbooks = tb
                 }
                 if let sv = resSurveys {
@@ -355,9 +355,15 @@ public class AcademicService: NSObject, URLSessionDelegate {
             // 合并成绩（优先使用包含 semesterId 的 UniApp 数据，并补充 EAMS 独有的条目；若 UniApp 失败则使用 EAMS 数据）
             let mergedTermGroups = self.mergeTermGradeGroups(primary: collected.uniAppGrades, secondary: collected.eamsGrades)
             // 合并考试安排（去重并保留字段最完整的一条）
-            let mergedExams = self.mergeExams(uniAppExams: collected.uniAppExams, eamsExams: collected.eamsExams)
+            let mergedExams = self.mergeExams(
+                uniAppExams: collected.uniAppExams ?? [],
+                eamsExams: collected.eamsExams ?? []
+            )
+            let hasFreshResponse = collected.uniAppGrades != nil || collected.eamsGrades != nil ||
+                collected.uniAppExams != nil || collected.eamsExams != nil || collected.eamsProgram != nil ||
+                collected.eamsTextbooks != nil || collected.eamsSurveys != nil
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && collected.eamsProgram == nil && collected.eamsTextbooks.isEmpty && collected.eamsSurveys.isEmpty,
+            if !hasFreshResponse,
                let prev = self.latestData, !prev.allGrades.isEmpty {
                 // 如果本次网络完全失败且已有本地缓存，保留本地缓存
                 self.lastErrorMessage = collected.lastError?.localizedDescription
@@ -370,7 +376,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 return
             }
 
-            if mergedTermGroups.isEmpty && mergedExams.isEmpty && collected.eamsProgram == nil && collected.eamsTextbooks.isEmpty && collected.eamsSurveys.isEmpty,
+            if !hasFreshResponse,
                let err = collected.lastError {
                 self.lastErrorMessage = err.localizedDescription
                 NotificationCenter.default.post(name: .academicDataDidUpdate, object: nil)
@@ -379,11 +385,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
             }
 
             let oldSnapshot = self.latestData
-            let finalExams = mergedExams.isEmpty ? (oldSnapshot?.exams ?? []) : mergedExams
-            let finalGroups = mergedTermGroups.isEmpty ? (oldSnapshot?.termGroups ?? []) : mergedTermGroups
+            let hasFreshExams = collected.uniAppExams != nil || collected.eamsExams != nil
+            let hasFreshGrades = collected.uniAppGrades != nil || collected.eamsGrades != nil
+            let finalExams = hasFreshExams ? mergedExams : (oldSnapshot?.exams ?? [])
+            let finalGroups = hasFreshGrades ? mergedTermGroups : (oldSnapshot?.termGroups ?? [])
             let finalProgram = collected.eamsProgram ?? oldSnapshot?.programCompletion
-            let finalTextbooks = collected.eamsTextbooks.isEmpty ? (oldSnapshot?.textbooks ?? []) : collected.eamsTextbooks
-            let finalSurveys = collected.eamsSurveys.isEmpty ? (oldSnapshot?.surveys ?? []) : collected.eamsSurveys
+            let finalTextbooks = collected.eamsTextbooks ?? oldSnapshot?.textbooks ?? []
+            let finalSurveys = collected.eamsSurveys ?? oldSnapshot?.surveys ?? []
 
             let newSnapshot = AcademicDataSnapshot(
                 exams: finalExams,
@@ -629,10 +637,10 @@ public class AcademicService: NSObject, URLSessionDelegate {
         }
     }
 
-    private func parseUniAppExamsJSON(_ data: Data) -> [ExamItem] {
+    private func parseUniAppExamsJSON(_ data: Data) -> [ExamItem]? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = root["data"] as? [[String: Any]] else {
-            return []
+            return nil
         }
 
         var result: [ExamItem] = []
@@ -672,6 +680,9 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 examType: examType
             )
             result.append(item)
+        }
+        if !list.isEmpty && result.isEmpty {
+            return nil
         }
         return result
     }
@@ -754,12 +765,16 @@ public class AcademicService: NSObject, URLSessionDelegate {
                     resultQueue.sync { sessionExpired = true }
                     return
                 }
-                if let data = data, let html = String(data: data, encoding: .utf8) {
-                    if html.contains("/login") && html.contains("password") {
-                        resultQueue.sync { sessionExpired = true }
-                        return
-                    }
-                    let grades = self?.parseEamsGradeHTML(html)
+                guard http?.statusCode == 200,
+                      let data = data,
+                      let html = String(data: data, encoding: .utf8) else {
+                    return
+                }
+                if html.contains("/login") && html.contains("password") {
+                    resultQueue.sync { sessionExpired = true }
+                    return
+                }
+                if let grades = self?.parseEamsGradeHTMLIfAvailable(html) {
                     resultQueue.sync { htmlGrades = grades }
                 }
             }.resume()
@@ -780,8 +795,16 @@ public class AcademicService: NSObject, URLSessionDelegate {
                     resultQueue.sync { sessionExpired = true }
                     return
                 }
-                if let data = data, let html = String(data: data, encoding: .utf8) {
-                    let exams = self?.parseEamsExamHTML(html)
+                guard http?.statusCode == 200,
+                      let data = data,
+                      let html = String(data: data, encoding: .utf8) else {
+                    return
+                }
+                if html.contains("/login") && html.contains("password") {
+                    resultQueue.sync { sessionExpired = true }
+                    return
+                }
+                if let exams = self?.parseEamsExamHTMLIfAvailable(html) {
                     resultQueue.sync { htmlExams = exams }
                 }
             }.resume()
@@ -802,7 +825,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 if let urlStr = http?.url?.absoluteString, urlStr.contains("/login") || http?.statusCode == 302 {
                     return
                 }
-                if let data = data {
+                if http?.statusCode == 200, let data = data {
                     let program = self?.parseProgramCompletionJSON(data)
                     resultQueue.sync { parsedProgram = program }
                 }
@@ -821,8 +844,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if http?.statusCode == 200, let data = data {
-                    let textbooks = self?.parseTextbooksJSON(data)
-                    resultQueue.sync { parsedTextbooks = textbooks }
+                    if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let lessons = root["lessons"] as? [[String: Any]] {
+                        let textbooks = self?.parseTextbooksJSON(data)
+                        if lessons.isEmpty || textbooks?.isEmpty == false {
+                            resultQueue.sync { parsedTextbooks = textbooks }
+                        }
+                    }
                 }
             }.resume()
         }
@@ -839,8 +867,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 defer { group.leave() }
                 let http = response as? HTTPURLResponse
                 if http?.statusCode == 200, let data = data {
-                    let surveys = self?.parseLessonSurveysJSON(data)
-                    resultQueue.sync { parsedSurveys = surveys }
+                    if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let vms = root["forStdLessonSurveySearchVms"] as? [[String: Any]] {
+                        let surveys = self?.parseLessonSurveysJSON(data)
+                        if vms.isEmpty || surveys?.isEmpty == false {
+                            resultQueue.sync { parsedSurveys = surveys }
+                        }
+                    }
                 }
             }.resume()
         }
@@ -1129,6 +1162,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
         return groups
     }
 
+    private func parseEamsGradeHTMLIfAvailable(_ html: String) -> [TermGradeGroup]? {
+        guard html.range(of: #"<table\b[^>]*\bstudent-grade-table\b"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return parseEamsGradeHTML(html)
+    }
+
     public func parseEamsExamHTML(_ html: String) -> [ExamItem] {
         // 提取 <table id="exams"...> 中的 tbody
         let tbodyPattern = #"<table[^>]*id=["']exams["'][^>]*>[\s\S]*?<tbody>([\s\S]*?)</tbody>"#
@@ -1173,6 +1213,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
             exams.append(item)
         }
         return exams
+    }
+
+    private func parseEamsExamHTMLIfAvailable(_ html: String) -> [ExamItem]? {
+        guard html.range(of: #"<table\b[^>]*\bid=["']exams["']"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        return parseEamsExamHTML(html)
     }
 
     // MARK: - 合并与辅助函数
