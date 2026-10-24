@@ -990,8 +990,13 @@ public sealed class CampusHistoryManager
                     double.IsFinite(current.LatestBalanceRMB) &&
                     previous.LatestBalanceRMB >= current.LatestBalanceRMB &&
                     Math.Abs(current.StartBalanceRMB - previous.LatestBalanceRMB) <= 0.001;
+                bool hasRechargeEvidence = previous.RemainingKWh is double previousRemainingKWh &&
+                    current.RemainingKWh is double currentRemainingKWh &&
+                    double.IsFinite(previousRemainingKWh) &&
+                    double.IsFinite(currentRemainingKWh) &&
+                    currentRemainingKWh > previousRemainingKWh + 0.05;
 
-                if (gap > 1 && gap <= 30 && validBalances &&
+                if (gap > 1 && gap <= 30 && validBalances && !hasRechargeEvidence &&
                     previous.LatestBalanceRMB - current.LatestBalanceRMB > 0.001)
                 {
                     var dailyCost = (previous.LatestBalanceRMB - current.LatestBalanceRMB) / gap;
