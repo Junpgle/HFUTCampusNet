@@ -678,7 +678,7 @@ public sealed class ElectricityService
         double threshold = SettingsManager.Shared.ElectricityLowWarningThreshold;
         if (bal < threshold)
         {
-            string today = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            string today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
             if (SettingsManager.Shared.LastNotifiedLowElectricityDate != today)
             {
                 SettingsManager.Shared.LastNotifiedLowElectricityDate = today;

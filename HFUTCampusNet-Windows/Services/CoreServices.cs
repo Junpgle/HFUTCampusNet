@@ -240,7 +240,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var today = DateTime.Now.ToString("yyyy-MM-dd");
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
                 return FlowRecords.FirstOrDefault(r => r.DateString == today)?.DeltaMB ?? 0.0;
             }
         }
@@ -252,7 +252,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
+                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).Sum(r => r.DeltaMB);
             }
         }
@@ -264,7 +264,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
+                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 var records = FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.DeltaMB) : 0.0;
             }
@@ -277,7 +277,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var today = DateTime.Now.ToString("yyyy-MM-dd");
+                var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
                 return ElectricityRecords.FirstOrDefault(r => r.DateString == today)?.CostRMB ?? 0.0;
             }
         }
@@ -291,7 +291,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var cutoff = DateTime.Now.Date.AddDays(-6).ToString("yyyy-MM-dd");
+                var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-6).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 var records = ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0 && r.CostRMB > 0).ToList();
                 return records.Count > 0 ? records.Average(r => r.CostRMB) : 1.20;
             }
@@ -305,7 +305,7 @@ public sealed class CampusHistoryManager
         {
             lock (_lock)
             {
-                var prefix = DateTime.Now.ToString("yyyy-MM");
+                var prefix = CourseCalendarHelper.BeijingNow.ToString("yyyy-MM", CultureInfo.InvariantCulture);
                 return FlowRecords.Where(r => r.DateString.StartsWith(prefix)).Sum(r => r.DeltaMB);
             }
         }
@@ -314,7 +314,7 @@ public sealed class CampusHistoryManager
     {
         get
         {
-            var now = DateTime.Now;
+            var now = CourseCalendarHelper.BeijingNow;
             var endOfDay = now.Date.AddDays(1);
             var diff = endOfDay - now;
             return $"距重置 {(int)diff.TotalHours}时{diff.Minutes}分";
@@ -324,7 +324,7 @@ public sealed class CampusHistoryManager
     {
         get
         {
-            var now = DateTime.Now;
+            var now = CourseCalendarHelper.BeijingNow;
             var firstOfNextMonth = new DateTime(now.Year, now.Month, 1).AddMonths(1);
             var days = (firstOfNextMonth - now.Date).Days;
             return $"距重置 {days} 天";
@@ -370,7 +370,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = DateTime.Now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd");
+            var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             return FlowRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
@@ -381,7 +381,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var cutoff = DateTime.Now.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd");
+            var cutoff = CourseCalendarHelper.BeijingNow.Date.AddDays(-(Math.Max(1, days) - 1)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             return ElectricityRecords.Where(r => string.CompareOrdinal(r.DateString, cutoff) >= 0)
                 .OrderBy(r => r.DateString)
                 .ToList();
@@ -393,7 +393,7 @@ public sealed class CampusHistoryManager
         lock (_lock)
         {
             if (!CompleteFlowAccountingMigrationIfNeeded()) return;
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
             var record = FlowRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
             {
@@ -421,7 +421,7 @@ public sealed class CampusHistoryManager
     {
         lock (_lock)
         {
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
             var record = ElectricityRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
             {
@@ -1142,7 +1142,8 @@ public sealed class CampusNetworkClient
     {
         var accountGeneration = AccountSessionManager.Generation;
         var fetchGeneration = BeginFetchRequest();
-        var requestMonthKey = DateTime.Now.Year * 100 + DateTime.Now.Month;
+        var requestTime = CourseCalendarHelper.BeijingNow;
+        var requestMonthKey = requestTime.Year * 100 + requestTime.Month;
         Task.Run(async () =>
         {
             _fetchGenerationContext.Value = fetchGeneration;
@@ -1156,7 +1157,8 @@ public sealed class CampusNetworkClient
                     if (!TryUpdateForAccount(accountGeneration, () =>
                     {
                         LatestData.IsLoggedIn = true;
-                        var currentMonthKey = DateTime.Now.Year * 100 + DateTime.Now.Month;
+                        var beijingNow = CourseCalendarHelper.BeijingNow;
+                        var currentMonthKey = beijingNow.Year * 100 + beijingNow.Month;
                         if (flowMB > 0 && requestMonthKey == currentMonthKey)
                         {
                             var curMB = LatestData.UsedMB ?? 0.0;
