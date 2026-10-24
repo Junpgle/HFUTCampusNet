@@ -316,6 +316,9 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             }
             let jxCookieHeader = CourseScheduleService.extractJxglstuCookieHeader(from: cookies)
             let casTgcCookie = HFUTCASLoginSupport.tgcCookieValue(from: cookies)
+            let preferredSemesterId = SettingsManager.shared.courseSemesterIdManuallySelected
+                ? SettingsManager.shared.courseSemesterId
+                : ""
 
             // 优先在当前已登录的 WKWebView 页面上下文内直接执行同源 fetch 获取课表 JSON（100% 复用页面自身有效会话）
             let inPageFetchScript = """
@@ -326,7 +329,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             let bizId = bizMatch ? bizMatch[1] : '23';
             let semSelect = document.getElementById('allSemesters');
             let semMatch = html.match(/'fileInfoAssoc'\\s*:\\s*null\\s*,\\s*'id'\\s*:\\s*(\\d+)/) || html.match(/semesterId\\s*:\\s*(\\d+)/);
-            let semId = (semSelect && semSelect.value) ? semSelect.value : (semMatch ? semMatch[1] : '\(CourseCalendarHelper.inferSemesterId())');
+            let semId = preferredSemesterId || ((semSelect && semSelect.value) ? semSelect.value : (semMatch ? semMatch[1] : '\(CourseCalendarHelper.inferSemesterId())'));
 
             if (!stdId) {
                 const tableResp = await fetch('/eams5-student/for-std/course-table', { credentials: 'include' });
@@ -338,7 +341,7 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
                 const tBiz = tableHtml.match(/bizTypeId\\s*:\\s*(\\d+)/);
                 if (tBiz) bizId = tBiz[1];
                 const tSem = tableHtml.match(/'fileInfoAssoc'\\s*:\\s*null\\s*,\\s*'id'\\s*:\\s*(\\d+)/) || tableHtml.match(/semesterId\\s*:\\s*(\\d+)/);
-                if (tSem) semId = tSem[1];
+                if (tSem && !preferredSemesterId) semId = tSem[1];
             }
             if (!stdId) {
                 throw new Error('Missing stdId');
@@ -363,7 +366,12 @@ public class CourseLoginWebViewController: NSWindowController, WKNavigationDeleg
             return JSON.stringify({ stdId, semId, bizId, datum: datumText });
             """
 
-            self.webView.callAsyncJavaScript(inPageFetchScript, arguments: [:], in: nil, in: .page) { [weak self] jsResult in
+            self.webView.callAsyncJavaScript(
+                inPageFetchScript,
+                arguments: ["preferredSemesterId": preferredSemesterId],
+                in: nil,
+                in: .page
+            ) { [weak self] jsResult in
                 guard let self = self else { return }
                 if case .success(let val) = jsResult,
                    let jsonStr = val as? String,

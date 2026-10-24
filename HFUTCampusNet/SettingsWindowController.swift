@@ -43,6 +43,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private var dormStatusLabel: NSTextField!
     private var initialUsername: String = ""
     private var initialStdId: String = ""
+    private var initialCourseSemesterId: String = ""
     private var initialDormConfig: (campus: String, building: String, room: String, end: String) = ("", "", "", "")
 
     private init() {
@@ -91,8 +92,10 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
             if !SettingsManager.shared.courseStudentId.isEmpty {
                 self.courseStudentIdField?.stringValue = SettingsManager.shared.courseStudentId
             }
-            if !SettingsManager.shared.courseSemesterId.isEmpty {
-                self.courseSemesterIdField?.stringValue = SettingsManager.shared.courseSemesterId
+            if !SettingsManager.shared.courseSemesterIdManuallySelected {
+                let semesterId = SettingsManager.shared.courseSemesterId
+                self.courseSemesterIdField?.stringValue = semesterId
+                self.initialCourseSemesterId = semesterId
             }
             self.updateCourseStatusDisplay()
             self.updateDormStatusDisplay()
@@ -340,7 +343,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
         courseCard.addSubview(makeFieldLabel("学期代码：", frame: NSRect(x: 246, y: 15, width: 68, height: 18)))
         courseSemesterIdField = NSTextField(frame: NSRect(x: 318, y: 12, width: 166, height: 22))
-        courseSemesterIdField.placeholderString = "例如 354"
+        courseSemesterIdField.placeholderString = "留空自动识别"
         courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
         courseSemesterIdField.delegate = self
         courseCard.addSubview(courseSemesterIdField)
@@ -682,6 +685,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func showSettings() {
         initialUsername = SettingsManager.shared.portalUsername
         initialStdId = SettingsManager.shared.courseStudentId
+        initialCourseSemesterId = SettingsManager.shared.courseSemesterId
         initialDormConfig = (
             SettingsManager.shared.dormCampus,
             SettingsManager.shared.dormBuilding,
@@ -693,7 +697,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         casPasswordField.stringValue = SettingsManager.shared.casPassword
         autoLoginCheckbox.state = SettingsManager.shared.autoLoginPortal ? .on : .off
         courseStudentIdField.stringValue = SettingsManager.shared.courseStudentId
-        courseSemesterIdField.stringValue = SettingsManager.shared.courseSemesterId
+        courseSemesterIdField.stringValue = initialCourseSemesterId
         courseTableCheckbox.state = SettingsManager.shared.courseTableEnabled ? .on : .off
 
         let savedCampus = SettingsManager.shared.dormCampus
@@ -1011,6 +1015,16 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         handleExternalAccountSwitch(previousUsername: initialUsername, previousStudentID: initialStdId)
     }
 
+    private func saveCourseSemesterSelectionFromUserEdit() {
+        let selectedSemesterId = courseSemesterIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard selectedSemesterId != initialCourseSemesterId else { return }
+
+        SettingsManager.shared.courseSemesterIdManuallySelected = !selectedSemesterId.isEmpty
+        SettingsManager.shared.courseSemesterId = selectedSemesterId
+        initialCourseSemesterId = selectedSemesterId
+        CourseScheduleService.shared.beginScheduleUpdate()
+    }
+
     private func saveCredentials(checkDormInvalidation: Bool = true, saveUsername: Bool = true) {
         let nextUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let accountChanged = checkDormInvalidation &&
@@ -1035,7 +1049,6 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if checkDormInvalidation {
             handleAccountSwitchIfNeeded()
         }
-        SettingsManager.shared.courseSemesterId = courseSemesterIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let prevCourseEnabled = SettingsManager.shared.courseTableEnabled
         let newCourseEnabled = (courseTableCheckbox.state == .on)
         SettingsManager.shared.courseTableEnabled = newCourseEnabled
@@ -1086,10 +1099,16 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     public func controlTextDidChange(_ obj: Notification) {
         let isUsernameBeingEdited = (obj.object as? NSTextField) === usernameField
+        if (obj.object as? NSTextField) === courseSemesterIdField {
+            saveCourseSemesterSelectionFromUserEdit()
+        }
         saveCredentials(checkDormInvalidation: false, saveUsername: !isUsernameBeingEdited)
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) {
+        if (obj.object as? NSTextField) === courseSemesterIdField {
+            saveCourseSemesterSelectionFromUserEdit()
+        }
         commitPowerValueField(obj.object as? NSTextField)
         saveCredentials(checkDormInvalidation: true)
     }

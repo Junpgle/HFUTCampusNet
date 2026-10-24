@@ -22,6 +22,7 @@ public class SettingsManager {
         static let autoLoginPortal = "campus_auto_login_portal"
         static let courseStudentId = "campus_course_student_id"
         static let courseSemesterId = "campus_course_semester_id"
+        static let courseSemesterIdManuallySelected = "campus_course_semester_id_manual"
         static let courseBizTypeId = "campus_course_biz_type_id"
         static let courseSessionCookie = "campus_course_session_cookie"
         static let courseTableEnabled = "campus_course_table_enabled"
@@ -267,6 +268,11 @@ public class SettingsManager {
                 defaults.set(trimmed, forKey: Keys.courseSemesterId)
             }
         }
+    }
+
+    public var courseSemesterIdManuallySelected: Bool {
+        get { defaults.bool(forKey: Keys.courseSemesterIdManuallySelected) }
+        set { defaults.set(newValue, forKey: Keys.courseSemesterIdManuallySelected) }
     }
 
     public var courseBizTypeId: String {
