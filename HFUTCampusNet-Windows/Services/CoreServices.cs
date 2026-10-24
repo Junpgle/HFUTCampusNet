@@ -464,13 +464,29 @@ public sealed class CampusHistoryManager
                 ? balanceRMB
                 : null;
             var today = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+            var monthPrefix = today[..7];
+            // 网关流量是本月累计值；用同月最近一次采样衔接当天，避免跨日后首次刷新漏算。
+            var previousRecord = FlowRecords
+                .Where(r => string.CompareOrdinal(r.DateString, today) < 0 &&
+                    r.DateString.StartsWith(monthPrefix, StringComparison.Ordinal))
+                .OrderBy(r => r.DateString)
+                .LastOrDefault();
             var record = FlowRecords.FirstOrDefault(r => r.DateString == today);
             if (record == null)
             {
+                var startUsedMB = usedMB;
+                if (previousRecord == null)
+                {
+                    if (today.EndsWith("-01", StringComparison.Ordinal)) startUsedMB = 0.0;
+                }
+                else if (usedMB >= previousRecord.LatestUsedMB)
+                {
+                    startUsedMB = previousRecord.LatestUsedMB;
+                }
                 record = new FlowDailyRecord
                 {
                     DateString = today,
-                    StartUsedMB = usedMB,
+                    StartUsedMB = startUsedMB,
                     LatestUsedMB = usedMB,
                     BalanceRMB = validBalanceRMB,
                     LastUpdated = DateTime.Now
@@ -479,8 +495,16 @@ public sealed class CampusHistoryManager
             }
             else
             {
-                if (usedMB < record.StartUsedMB) record.StartUsedMB = usedMB; // 新月重置
+                if (previousRecord == null && today.EndsWith("-01", StringComparison.Ordinal))
+                    record.StartUsedMB = 0.0;
+                else if (usedMB < record.StartUsedMB)
+                    record.StartUsedMB = usedMB; // 新月重置或累计值回退
                 record.LatestUsedMB = usedMB;
+                if (previousRecord != null && usedMB >= previousRecord.LatestUsedMB &&
+                    record.StartUsedMB > previousRecord.LatestUsedMB)
+                {
+                    record.StartUsedMB = previousRecord.LatestUsedMB;
+                }
                 if (validBalanceRMB.HasValue) record.BalanceRMB = validBalanceRMB;
                 record.LastUpdated = DateTime.Now;
             }
