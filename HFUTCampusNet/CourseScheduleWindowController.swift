@@ -89,6 +89,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
     private var currentWeek: Int = 1
     private var maxWeek: Int = 20
     private var weekPopUp: NSPopUpButton!
+    private var todayWeekBtn: NSButton!
     private var semesterLabel: NSTextField!
     private var statusInfoLabel: NSTextField!
     private var headerBarView: FlippedTimelineView!
@@ -183,7 +184,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         nextWeekBtn.frame = NSRect(x: 495, y: 13, width: 36, height: 28)
         topBar.addSubview(nextWeekBtn)
 
-        let todayWeekBtn = NSButton(title: "本周", target: self, action: #selector(todayWeekAction))
+        todayWeekBtn = NSButton(title: "本周", target: self, action: #selector(todayWeekAction))
         todayWeekBtn.bezelStyle = .rounded
         todayWeekBtn.frame = NSRect(x: 535, y: 13, width: 56, height: 28)
         topBar.addSubview(todayWeekBtn)
@@ -255,6 +256,7 @@ public class CourseScheduleWindowController: NSWindowController, NSWindowDelegat
         headerBar.subviews.forEach { $0.removeFromSuperview() }
 
         let schedule = CourseScheduleService.shared.currentSchedule
+        todayWeekBtn?.isEnabled = schedule?.currentWeek() != nil
         let milestone = SemesterMilestoneInfo.calculate(schedule: schedule)
         let semTitle = schedule?.semesterName ?? milestone.semesterName
         semesterLabel?.stringValue = "\(milestone.campusName) · \(semTitle) · 进度 \(milestone.progressPercentage)% (距\(milestone.vacationName) \(milestone.remainingDays)天)"
@@ -1039,12 +1041,12 @@ public class ClassroomScheduleWindowController: NSWindowController, NSWindowDele
         headerBar.subviews.forEach { $0.removeFromSuperview() }
 
         let isOverviewMode = (viewMode == 1)
+        let schedule = scheduleData
         prevWeekBtn?.isEnabled = !isOverviewMode && !isLoading
         weekPopUp?.isEnabled = !isOverviewMode && !isLoading
         nextWeekBtn?.isEnabled = !isOverviewMode && !isLoading
-        todayWeekBtn?.isEnabled = !isOverviewMode && !isLoading
+        todayWeekBtn?.isEnabled = !isOverviewMode && !isLoading && schedule?.currentWeek() != nil
 
-        let schedule = scheduleData
         let allLessons = schedule?.lessons ?? []
         let distinctCourseCount = Set(allLessons.map { $0.courseName }).count
         let semTitle = EmptyClassroomService.semesterTitle(for: selectedSemesterId)
