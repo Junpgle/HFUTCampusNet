@@ -1734,7 +1734,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         _currentWeekBtn = CreateToolbarButton("本周", (_, _) =>
         {
-            int? currentWeek = _scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek();
+            int? currentWeek = CurrentWeekForSelectedSemester();
             if (!currentWeek.HasValue) return;
             _selectedWeek = currentWeek.Value;
             SwitchViewMode(false);
@@ -1785,8 +1785,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
         _prevWeekBtn.IsEnabled = !_isOverviewMode && _selectedWeek > 1;
         _nextWeekBtn.IsEnabled = !_isOverviewMode && _selectedWeek < 20;
-        _currentWeekBtn.IsEnabled = !_isOverviewMode &&
-            (_scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek()).HasValue;
+        _currentWeekBtn.IsEnabled = !_isOverviewMode && CurrentWeekForSelectedSemester().HasValue;
 
         _suppressSelectionEvents = true;
         try
@@ -1859,12 +1858,48 @@ public sealed class ClassroomSemesterScheduleWindow : Window
         }
     }
 
+    private string? SelectedSemesterId()
+    {
+        if (_semesterCombo?.SelectedItem is ComboBoxItem item && item.Tag is int semesterCode)
+            return semesterCode.ToString(CultureInfo.InvariantCulture);
+        return _scheduleData?.SemesterId;
+    }
+
+    private bool IsSelectedSemester(string? semesterId)
+    {
+        var selectedSemesterId = SelectedSemesterId();
+        return !string.IsNullOrWhiteSpace(semesterId) &&
+            (string.IsNullOrWhiteSpace(selectedSemesterId) ||
+                string.Equals(semesterId, selectedSemesterId, StringComparison.Ordinal));
+    }
+
+    private CourseScheduleData? RoomScheduleForSelectedSemester() =>
+        IsSelectedSemester(_scheduleData?.SemesterId) ? _scheduleData : null;
+
+    private CourseScheduleData? CurrentScheduleForSelectedSemester()
+    {
+        var schedule = CourseScheduleService.Shared.CurrentSchedule;
+        return IsSelectedSemester(schedule?.SemesterId) ? schedule : null;
+    }
+
+    private int? CurrentWeekForSelectedSemester() =>
+        RoomScheduleForSelectedSemester()?.CurrentWeek() ?? CurrentScheduleForSelectedSemester()?.CurrentWeek();
+
+    private bool IsCurrentSemesterSelected() => IsSelectedSemester(
+        CourseCalendarHelper.InferSemesterId().ToString(CultureInfo.InvariantCulture));
+
     private void QuerySchedule(bool forceRefresh = false)
     {
         int semesterCode = 354;
         if (_semesterCombo.SelectedItem is ComboBoxItem sItem && sItem.Tag is int code)
         {
             semesterCode = code;
+        }
+
+        if (!string.Equals(_scheduleData?.SemesterId, semesterCode.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+        {
+            _scheduleData = null;
+            RenderTimetableGrid();
         }
 
         _statusLabel.Text = $"正在拉取 {_room.RoomName} 排课明细...";
@@ -1949,7 +1984,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
         var today = beijingNow.Date;
         int currentWeekday = CourseCalendarHelper.Weekday(beijingNow);
         int currentMinutes = beijingNow.Hour * 60 + beijingNow.Minute;
-        int? currentCalculatedWeek = _scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek();
+        int? currentCalculatedWeek = CurrentWeekForSelectedSemester();
         bool isViewingCurrentWeek = !_isOverviewMode && currentCalculatedWeek.HasValue && _selectedWeek == currentCalculatedWeek.Value;
 
         var weekDates = !_isOverviewMode ? ResolveWeekDates(_selectedWeek) : new List<DateTime?>();
@@ -2277,7 +2312,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
     {
         if (_scheduleData == null || _scheduleData.Lessons.Count == 0)
         {
-            if (_room.Occupations.Count > 0)
+            if (IsCurrentSemesterSelected() && _room.Occupations.Count > 0)
             {
                 _statusLabel.Text = $"已显示当日 ({_room.DateString}) 占用记录";
             }
@@ -2544,7 +2579,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
         }
 
         // 兜底逻辑：若全学期排课 API 尚未获取到，自动将当日 Occupations 映射到周课表
-        if (_room.Occupations.Count > 0)
+        if (IsCurrentSemesterSelected() && _room.Occupations.Count > 0)
         {
             int weekday = 1;
             if (DateTime.TryParse(_room.DateString, out var parsedDate))
@@ -2584,9 +2619,10 @@ public sealed class ClassroomSemesterScheduleWindow : Window
 
     private List<DateTime?> ResolveWeekDates(int week)
     {
-        if (_scheduleData != null)
+        var roomSchedule = RoomScheduleForSelectedSemester();
+        if (roomSchedule != null)
         {
-            var dict = _scheduleData.DatesForWeek(week);
+            var dict = roomSchedule.DatesForWeek(week);
             if (dict.Count == 7)
             {
                 var list = new List<DateTime?>();
@@ -2595,7 +2631,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             }
         }
 
-        var currentSchedule = CourseScheduleService.Shared.CurrentSchedule;
+        var currentSchedule = CurrentScheduleForSelectedSemester();
         if (currentSchedule != null)
         {
             var dates = currentSchedule.DatesForWeek(week);
@@ -2607,7 +2643,7 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             }
         }
 
-        int? currentWeek = _scheduleData?.CurrentWeek() ?? currentSchedule?.CurrentWeek();
+        int? currentWeek = CurrentWeekForSelectedSemester();
         if (!currentWeek.HasValue)
         {
             return Enumerable.Repeat<DateTime?>(null, 7).ToList();
