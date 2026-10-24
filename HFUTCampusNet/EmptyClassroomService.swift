@@ -179,8 +179,9 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         if fileManager.fileExists(atPath: studyRoomsCacheURL.path),
            let data = try? Data(contentsOf: studyRoomsCacheURL),
            let decoded = try? JSONDecoder().decode([String: [EmptyClassroomItem]].self, from: data) {
-            self.studyRoomsByDate = decoded
-            for (key, rooms) in decoded {
+            let uniqueRoomsByDate = decoded.mapValues(Self.uniqueRooms)
+            self.studyRoomsByDate = uniqueRoomsByDate
+            for (key, rooms) in uniqueRoomsByDate {
                 let parts = key.split(separator: "|")
                 guard parts.count >= 2 else { continue }
                 let campusPart = String(parts[0])
@@ -210,6 +211,11 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
             }
             self.lastSyncTime = modDate
         }
+    }
+
+    private static func uniqueRooms(_ rooms: [EmptyClassroomItem]) -> [EmptyClassroomItem] {
+        var seenIds = Set<Int>()
+        return rooms.filter { seenIds.insert($0.id).inserted }
     }
 
     private func saveBuildingsCache(_ buildings: [ClassroomBuilding]) {
@@ -662,7 +668,10 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
         let todayRooms = cachedStudyRooms(campus: c, dateString: todayStr)
         let tomorrowRooms = cachedStudyRooms(campus: c, dateString: tomorrowStr)
-        let todayRoomMap = Dictionary(uniqueKeysWithValues: todayRooms.map { ($0.id, $0) })
+        var todayRoomMap: [Int: EmptyClassroomItem] = [:]
+        for room in todayRooms {
+            todayRoomMap[room.id] = room
+        }
 
         let rawRecord = SettingsManager.shared.currentStudyRoom
         let isSameCampus = (rawRecord?.campusAssoc == c.rawValue)
@@ -1390,7 +1399,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
                     return
                 }
 
-                let sortedRooms = (accumulatedRooms + rooms).sorted { a, b in
+                let sortedRooms = Self.uniqueRooms(accumulatedRooms + rooms).sorted { a, b in
                     if a.buildingPrefix != b.buildingPrefix {
                         return campus.compareBuildingNames(a.buildingPrefix, b.buildingPrefix)
                     }
