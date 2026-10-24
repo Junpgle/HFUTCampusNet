@@ -1345,6 +1345,15 @@ public sealed class CampusCardData
     public ExpenseStructureBreakdownResult ExpenseStructureBreakdown()
     {
         var expenses = Transactions.Where(t => t.IsExpense).ToList();
+        if (expenses.Count == 0)
+        {
+            return new ExpenseStructureBreakdownResult
+            {
+                TopMerchantsText = "常去商户：--",
+                RatioSummaryText = "暂无消费结构"
+            };
+        }
+
         var total = Math.Max(0.01, expenses.Sum(t => t.AmountRMB));
 
         double b = 0, l = 0, d = 0, o = 0;
