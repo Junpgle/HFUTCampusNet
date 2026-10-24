@@ -468,9 +468,10 @@ public class CourseScheduleWindow : Window
         tableGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(timelineHeight) });
 
         var weekDates = GetDatesForWeek(schedule, _selectedWeek);
-        var today = DateTime.Today;
-        int currentWeekday = TodayIsoWeekday();
-        int currentMinutes = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var now = CourseCalendarHelper.BeijingNow;
+        var today = now.Date;
+        int currentWeekday = CourseCalendarHelper.Weekday(now);
+        int currentMinutes = now.Hour * 60 + now.Minute;
         int? currentCalculatedWeek = schedule.CurrentWeek();
         bool isViewingCurrentWeek = currentCalculatedWeek.HasValue && _selectedWeek == currentCalculatedWeek.Value;
 
@@ -1156,12 +1157,6 @@ public class CourseScheduleWindow : Window
             }
         }
         return result;
-    }
-
-    private static int TodayIsoWeekday()
-    {
-        int dow = (int)DateTime.Today.DayOfWeek;
-        return dow == 0 ? 7 : dow;
     }
 
     private static (Color Bg, Color Border, Color Title, Color Sub) GetPaletteForCourse(string courseName)

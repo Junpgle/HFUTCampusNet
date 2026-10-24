@@ -119,12 +119,12 @@ public sealed class EmptyClassroomService
         _timer = null;
     }
 
-    public static string TodayDateString() => DateTime.Now.ToString("yyyy-MM-dd");
-    public static string TomorrowDateString() => DateTime.Now.AddDays(1).ToString("yyyy-MM-dd");
+    public static string TodayDateString() => CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+    public static string TomorrowDateString() => CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow.AddDays(1));
 
     public static int CurrentMinutesOfDay(DateTime? dt = null)
     {
-        var now = dt ?? DateTime.Now;
+        var now = CourseCalendarHelper.ToBeijingTime(dt ?? DateTime.Now);
         return now.Hour * 60 + now.Minute;
     }
 

@@ -241,7 +241,7 @@ public sealed class CourseLesson
 
     public bool IsOngoing(DateTime? date = null)
     {
-        var now = date ?? DateTime.Now;
+        var now = CourseCalendarHelper.ToBeijingTime(date ?? DateTime.Now);
         var s = StartDate;
         var e = EndDate;
         if (!s.HasValue || !e.HasValue) return false;
@@ -250,7 +250,7 @@ public sealed class CourseLesson
 
     public bool IsUpcoming(DateTime? date = null)
     {
-        var now = date ?? DateTime.Now;
+        var now = CourseCalendarHelper.ToBeijingTime(date ?? DateTime.Now);
         var s = StartDate;
         return s.HasValue && s.Value > now;
     }
@@ -526,10 +526,26 @@ public static class CourseCalendarHelper
 {
     private static readonly TimeZoneInfo BeijingZone = GetBeijingTimeZone();
 
+    public static DateTime BeijingNow => ToBeijingTime(DateTime.UtcNow);
+
+    public static DateTime ToBeijingTime(DateTime dateTime)
+    {
+        return dateTime.Kind switch
+        {
+            DateTimeKind.Utc => TimeZoneInfo.ConvertTimeFromUtc(dateTime, BeijingZone),
+            DateTimeKind.Local => TimeZoneInfo.ConvertTime(dateTime, BeijingZone),
+            _ => dateTime
+        };
+    }
+
     private static TimeZoneInfo GetBeijingTimeZone()
     {
         try { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch { return TimeZoneInfo.Local; }
+        catch
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+            catch { return TimeZoneInfo.Local; }
+        }
     }
 
     public static DateTime? ParseDate(string dateStr, string timeStr)
@@ -547,10 +563,11 @@ public static class CourseCalendarHelper
         return null;
     }
 
-    public static string DateString(DateTime date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    public static string DateString(DateTime date) => ToBeijingTime(date).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     public static int Weekday(DateTime date)
     {
+        date = ToBeijingTime(date);
         // Monday = 1 ... Sunday = 7
         return date.DayOfWeek switch
         {
@@ -582,7 +599,7 @@ public static class CourseCalendarHelper
 
     public static int InferSemesterId(DateTime? date = null)
     {
-        var dt = date ?? DateTime.Now;
+        var dt = ToBeijingTime(date ?? DateTime.Now);
         var month = dt.Month;
         var year = dt.Year - (month <= 7 ? 1 : 0);
         var isSpring = month >= 2 && month <= 7;
@@ -628,10 +645,10 @@ public sealed class ExamItem
     public string DateTimeText => DateTimeString;
     public string Room => DisplayLocation;
 
-    public bool IsFinished(DateTime? now = null) => (EndDate ?? DateTime.MinValue) <= (now ?? DateTime.Now);
+    public bool IsFinished(DateTime? now = null) => (EndDate ?? DateTime.MinValue) <= CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now);
     public bool IsOngoing(DateTime? now = null)
     {
-        var dt = now ?? DateTime.Now;
+        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now);
         var s = StartDate;
         var e = EndDate;
         return s.HasValue && e.HasValue && s.Value <= dt && dt < e.Value;
@@ -639,7 +656,7 @@ public sealed class ExamItem
 
     public int DaysRemaining(DateTime? now = null)
     {
-        var dt = (now ?? DateTime.Now).Date;
+        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date;
         if (CourseCalendarHelper.ParseDate(DateString, "00:00") is DateTime examDay)
         {
             return (examDay.Date - dt).Days;
@@ -649,7 +666,7 @@ public sealed class ExamItem
 
     public string CountdownBadgeText(DateTime? now = null)
     {
-        var dt = now ?? DateTime.Now;
+        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now);
         if (IsOngoing(dt)) return "正在考试";
         if (IsFinished(dt)) return "已结束";
         var days = DaysRemaining(dt);
@@ -695,7 +712,7 @@ public static class CourseExamForecastService
     {
         if (schedule?.Lessons == null || schedule.Lessons.Count == 0) return new List<CourseExamForecast>();
 
-        var dt = now ?? DateTime.Now;
+        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now);
         var today = CourseCalendarHelper.ParseDate(CourseCalendarHelper.DateString(dt), "00:00") ?? dt.Date;
         var finalExams = (officialExams ?? Enumerable.Empty<ExamItem>())
             .Where(exam => string.IsNullOrWhiteSpace(exam.ExamType) || !exam.ExamType!.Contains("期中", StringComparison.OrdinalIgnoreCase))
@@ -993,7 +1010,7 @@ public sealed class SemesterMilestoneInfo
 
     public static SemesterMilestoneInfo Calculate(int? semId = null, CourseScheduleData? schedule = null, DateTime? date = null)
     {
-        var now = (date ?? DateTime.Now).Date;
+        var now = CourseCalendarHelper.ToBeijingTime(date ?? DateTime.Now).Date;
         var hasScheduleSemesterId = int.TryParse(
             schedule?.SemesterId,
             NumberStyles.Integer,
@@ -1250,7 +1267,7 @@ public sealed class CampusCardData
     public string CardStatusText { get => StatusText; set => StatusText = value; }
     public string CardStatus => StatusText;
     public double TodaySpentYuan => TodaySpentRMB();
-    public double WeekSpentYuan => Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, DateTime.Now.Date.AddDays(-7).ToString("yyyy-MM-dd")) >= 0 && t.IsExpense).Sum(t => t.AmountRMB);
+    public double WeekSpentYuan => Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, CourseCalendarHelper.BeijingNow.Date.AddDays(-7).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)) >= 0 && t.IsExpense).Sum(t => t.AmountRMB);
     public double MonthSpentYuan => CurrentMonthSpentRMB();
     public string ErrorMessage { get; set; } = string.Empty;
 
@@ -1271,7 +1288,7 @@ public sealed class CampusCardData
 
     public double Past7DaysAverageSpentRMB(DateTime? now = null)
     {
-        var dt = (now ?? DateTime.Now).Date;
+        var dt = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date;
         var cutoff = dt.AddDays(-7).ToString("yyyy-MM-dd");
         var expenses = Transactions.Where(t => string.CompareOrdinal(t.DateOnlyString, cutoff) >= 0 && t.IsExpense).ToList();
         var activeDays = Math.Max(1, expenses.Select(t => t.DateOnlyString).Distinct().Count());
@@ -1280,19 +1297,19 @@ public sealed class CampusCardData
 
     public double CurrentMonthSpentRMB(DateTime? now = null)
     {
-        var prefix = (now ?? DateTime.Now).ToString("yyyy-MM");
+        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
         return Transactions.Where(t => t.MonthPrefixString == prefix && t.IsExpense).Sum(t => t.AmountRMB);
     }
 
     public int CurrentMonthExpenseCount(DateTime? now = null)
     {
-        var prefix = (now ?? DateTime.Now).ToString("yyyy-MM");
+        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
         return Transactions.Count(t => t.MonthPrefixString == prefix && t.IsExpense);
     }
 
     public double CurrentMonthRechargedRMB(DateTime? now = null)
     {
-        var prefix = (now ?? DateTime.Now).ToString("yyyy-MM");
+        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
         return Transactions.Where(t => t.MonthPrefixString == prefix && t.IsRecharge).Sum(t => t.AmountRMB);
     }
 
@@ -1344,7 +1361,7 @@ public sealed class CampusCardData
 
     public List<(string DateString, double SpentRMB)> DailyExpenseSummary(int days = 7, DateTime? now = null)
     {
-        var today = (now ?? DateTime.Now).Date;
+        var today = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date;
         var result = new List<(string, double)>();
         for (int i = days - 1; i >= 0; i--)
         {

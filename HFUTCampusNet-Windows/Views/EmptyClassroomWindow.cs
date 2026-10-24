@@ -182,7 +182,8 @@ public sealed class ClassroomTimelineControl : FrameworkElement
         }
 
         // 4. 当前时间红色指示细线 (仅今天且在 08:00~22:00 时段显示)
-        int currentMin = NowMinutes > 0 ? NowMinutes : (DateTime.Now.Hour * 60 + DateTime.Now.Minute);
+        var beijingNow = CourseCalendarHelper.BeijingNow;
+        int currentMin = NowMinutes > 0 ? NowMinutes : (beijingNow.Hour * 60 + beijingNow.Minute);
         if (IsToday && currentMin >= startMin && currentMin <= endMin)
         {
             double nowX = (currentMin - startMin) / totalMinutes * totalW;
@@ -424,14 +425,15 @@ public sealed class EmptyClassroomWindow : Window
         };
         var dateStack = new StackPanel { Orientation = Orientation.Horizontal };
 
-        _todayTabBtn = CreateCapsuleButton($"今天 ({DateTime.Now:MM-dd})", isSelected: true, () =>
+        var beijingToday = CourseCalendarHelper.BeijingNow;
+        _todayTabBtn = CreateCapsuleButton($"今天 ({beijingToday:MM-dd})", isSelected: true, () =>
         {
             _isViewingTomorrow = false;
             UpdateDateTabs();
             FilterAndRefreshList();
             EnsureSelectedSnapshot();
         });
-        _tomorrowTabBtn = CreateCapsuleButton($"明天 ({DateTime.Now.AddDays(1):MM-dd})", isSelected: false, () =>
+        _tomorrowTabBtn = CreateCapsuleButton($"明天 ({beijingToday.AddDays(1):MM-dd})", isSelected: false, () =>
         {
             _isViewingTomorrow = true;
             UpdateDateTabs();
@@ -695,7 +697,8 @@ public sealed class EmptyClassroomWindow : Window
             {
                 _lastSyncTextBlock.Text = EmptyClassroomService.Shared.FormattedLastSync();
                 UpdateSummaryCard();
-                int minute = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+                var beijingNow = CourseCalendarHelper.BeijingNow;
+                int minute = beijingNow.Hour * 60 + beijingNow.Minute;
                 if (minute != _lastLiveRefreshMinute)
                 {
                     FilterAndRefreshList();
@@ -978,7 +981,8 @@ public sealed class EmptyClassroomWindow : Window
 
     private void UpdateSummaryCard()
     {
-        int nowMin = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var beijingNow = CourseCalendarHelper.BeijingNow;
+        int nowMin = beijingNow.Hour * 60 + beijingNow.Minute;
         string todayStr = EmptyClassroomService.TodayDateString();
 
         var currentRecord = EmptyClassroomService.Shared.CurrentStudyRoomItem();
@@ -1070,7 +1074,8 @@ public sealed class EmptyClassroomWindow : Window
 
         var scopedRooms = query.ToList();
 
-        int nowMin = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var beijingNow = CourseCalendarHelper.BeijingNow;
+        int nowMin = beijingNow.Hour * 60 + beijingNow.Minute;
         _lastLiveRefreshMinute = nowMin;
         var lessonMetrics = CurrentLessonMetrics.Calculate(scopedRooms, nowMin);
 
@@ -1940,9 +1945,10 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             tableGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(hourHeight) });
         }
 
-        var today = DateTime.Today;
-        int currentWeekday = TodayIsoWeekday();
-        int currentMinutes = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
+        var beijingNow = CourseCalendarHelper.BeijingNow;
+        var today = beijingNow.Date;
+        int currentWeekday = CourseCalendarHelper.Weekday(beijingNow);
+        int currentMinutes = beijingNow.Hour * 60 + beijingNow.Minute;
         int? currentCalculatedWeek = _scheduleData?.CurrentWeek() ?? CourseScheduleService.Shared.CurrentSchedule?.CurrentWeek();
         bool isViewingCurrentWeek = !_isOverviewMode && currentCalculatedWeek.HasValue && _selectedWeek == currentCalculatedWeek.Value;
 
@@ -2607,8 +2613,8 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             return Enumerable.Repeat<DateTime?>(null, 7).ToList();
         }
 
-        var today = DateTime.Today;
-        int todayIso = TodayIsoWeekday();
+        var today = CourseCalendarHelper.BeijingNow.Date;
+        int todayIso = CourseCalendarHelper.Weekday(today);
         var monday = today.AddDays(1 - todayIso + (week - currentWeek.Value) * 7);
 
         var fallbackDates = new List<DateTime?>();
@@ -2617,12 +2623,6 @@ public sealed class ClassroomSemesterScheduleWindow : Window
             fallbackDates.Add(monday.AddDays(d));
         }
         return fallbackDates;
-    }
-
-    private static int TodayIsoWeekday()
-    {
-        int day = (int)DateTime.Today.DayOfWeek;
-        return day == 0 ? 7 : day;
     }
 
     private static int ParseTimeToHhMm(string timeStr)

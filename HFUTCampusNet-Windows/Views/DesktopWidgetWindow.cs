@@ -1038,7 +1038,7 @@ public sealed class DesktopWidgetWindow : Window
         if (_courseTitleLabel == null || _courseDetailLabel == null)
             return;
 
-        DateTime now = DateTime.Now;
+        DateTime now = CourseCalendarHelper.BeijingNow;
         int nowMin = EmptyClassroomService.CurrentMinutesOfDay(now);
         var service = EmptyClassroomService.Shared;
 
@@ -1212,7 +1212,7 @@ public sealed class DesktopWidgetWindow : Window
             return;
         }
 
-        DateTime now = DateTime.Now;
+        DateTime now = CourseCalendarHelper.BeijingNow;
         int nowMin = EmptyClassroomService.CurrentMinutesOfDay(now);
         var studyRoom = EmptyClassroomService.Shared.CurrentStudyRoomItem();
         if (studyRoom != null)
@@ -1337,7 +1337,7 @@ public sealed class DesktopWidgetWindow : Window
                 // 槽位 3: 校园一卡通余额与今日消费
                 if (CampusCardService.Shared.LatestData is { } card)
                 {
-                    DateTime now = DateTime.Now;
+                    DateTime now = CourseCalendarHelper.BeijingNow;
                     string warn = card.IsLowBalance ? "余额偏低 · " : "";
                     int todayCount = card.TodayExpenseCount(now);
                     double todaySpent = card.TodaySpentRMB(now);
@@ -1356,7 +1356,7 @@ public sealed class DesktopWidgetWindow : Window
 
             case 4:
                 // 槽位 4: 考试与成绩
-                DateTime nowAc = DateTime.Now;
+                DateTime nowAc = CourseCalendarHelper.BeijingNow;
                 var snap = AcademicService.Shared.LatestData;
                 int unreadCount = AcademicService.Shared.UnreadGradeCount;
                 if (unreadCount > 0)
@@ -1442,7 +1442,7 @@ public sealed class DesktopWidgetWindow : Window
                 HistoryStatsWindow.Shared.ShowWindow(2);
                 break;
             case 4:
-                bool hasUpcoming = (AcademicService.Shared.LatestData?.UpcomingExams(DateTime.Now).Count ?? 0) > 0;
+                bool hasUpcoming = (AcademicService.Shared.LatestData?.UpcomingExams(CourseCalendarHelper.BeijingNow).Count ?? 0) > 0;
                 AcademicWindow.Shared.ShowWindow(hasUpcoming ? 1 : 0);
                 break;
             case 5:
