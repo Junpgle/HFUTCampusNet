@@ -1225,7 +1225,7 @@ public sealed class CampusCardService
                 double balanceRMB = dbBalanceFen / 100.0;
                 double unsettleRMB = unsettleFen / 100.0;
 
-                var (fetchedTransactions, transactionsFetchSucceeded) = await FetchTransactionsAsync(authHeader, 150);
+                var fetchedTransactions = await FetchTransactionsAsync(authHeader, 150);
                 if (!IsCurrentRequest(generation, accountGeneration))
                     return (null, StaleRequestMessage);
 
@@ -1238,9 +1238,7 @@ public sealed class CampusCardService
                         ? LatestData.Transactions?.ToList() ?? new List<CampusCardTransaction>()
                         : new List<CampusCardTransaction>();
                 }
-                var transactions = transactionsFetchSucceeded
-                    ? MergeTransactions(fetchedTransactions)
-                    : previousTransactions;
+                var transactions = MergeTransactions(previousTransactions.Concat(fetchedTransactions));
 
                 var cardData = new CampusCardData
                 {
@@ -1333,85 +1331,80 @@ public sealed class CampusCardService
         return completion.Task;
     }
 
-    private async Task<(List<CampusCardTransaction> Transactions, bool Succeeded)> FetchTransactionsAsync(string authHeader, int size)
+    private async Task<List<CampusCardTransaction>> FetchTransactionsAsync(string authHeader, int size)
     {
-        var list = new List<CampusCardTransaction>();
-        try
+        const int maximumPages = 100;
+        var byId = new Dictionary<string, CampusCardTransaction>(StringComparer.Ordinal);
+
+        for (var page = 1; page <= maximumPages; page++)
         {
-            var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current=1&size={size}&synAccessSource=h5";
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
-            req.Headers.TryAddWithoutValidation("Authorization", authHeader);
-            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
-
-            using var resp = await _httpClient.SendAsync(req);
-            var respText = await resp.Content.ReadAsStringAsync();
-            if (!resp.IsSuccessStatusCode || string.IsNullOrWhiteSpace(respText) ||
-                (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
-            {
-                return (list, false);
-            }
-
-            JsonDocument? doc = null;
             try
             {
-                doc = JsonDocument.Parse(respText);
-            }
-            catch (JsonException)
-            {
-                return (list, false);
-            }
+                var url = $"http://121.251.19.62/berserker-search/search/personal/turnover?current={page}&size={size}&synAccessSource=h5";
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.TryAddWithoutValidation("synjones-auth", authHeader);
+                req.Headers.TryAddWithoutValidation("Authorization", authHeader);
+                req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15");
 
-            using (doc)
-            {
+                using var resp = await _httpClient.SendAsync(req);
+                var respText = await resp.Content.ReadAsStringAsync();
+                if (!resp.IsSuccessStatusCode || string.IsNullOrWhiteSpace(respText) ||
+                    (!respText.TrimStart().StartsWith("{") && !respText.TrimStart().StartsWith("[")))
+                {
+                    break;
+                }
+
+                using var doc = JsonDocument.Parse(respText);
                 if (doc.RootElement.ValueKind != JsonValueKind.Object ||
                     !doc.RootElement.TryGetProperty("data", out var dataElem) ||
                     dataElem.ValueKind != JsonValueKind.Object ||
                     !dataElem.TryGetProperty("records", out var recordsElem) ||
                     recordsElem.ValueKind != JsonValueKind.Array)
                 {
-                    return (list, false);
+                    break;
                 }
 
-            int idx = 0;
-            foreach (var rec in recordsElem.EnumerateArray())
+                foreach (var rec in recordsElem.EnumerateArray())
+                {
+                    var resume = GetJsonString(rec, "resume") ?? "校园卡交易";
+                    var turnoverType = GetJsonString(rec, "turnoverType") ?? "消费";
+                    var jnTimeStr = GetJsonString(rec, "jndatetimeStr")
+                        ?? GetJsonString(rec, "effectdateStr")
+                        ?? string.Empty;
+                    int tranAmtFen = GetJsonInt(rec, "tranamt") ?? 0;
+                    int? cardBalFen = GetJsonInt(rec, "cardBalance");
+                    var orderId = GetJsonString(rec, "orderId");
+                    if (string.IsNullOrWhiteSpace(orderId))
+                    {
+                        orderId = $"tx-{jnTimeStr}|{resume}|{turnoverType}|{tranAmtFen}|{cardBalFen?.ToString(CultureInfo.InvariantCulture) ?? "-1"}";
+                    }
+
+                    byId[orderId] = new CampusCardTransaction
+                    {
+                        Id = orderId,
+                        MerchantName = resume,
+                        AmountRMB = Math.Abs(tranAmtFen) / 100.0,
+                        BalanceAfterRMB = cardBalFen.HasValue ? cardBalFen.Value / 100.0 : null,
+                        TurnoverType = turnoverType,
+                        DateTimeString = jnTimeStr
+                    };
+                }
+
+                int? total = GetJsonInt(dataElem, "total");
+                int? totalPages = GetJsonInt(dataElem, "pages");
+                bool reachedEnd = recordsElem.GetArrayLength() == 0 || recordsElem.GetArrayLength() < size ||
+                    (total.HasValue && byId.Count >= total.Value) ||
+                    (totalPages.HasValue && page >= totalPages.Value);
+                if (reachedEnd) break;
+            }
+            catch
             {
-                var resume = GetJsonString(rec, "resume") ?? "校园卡交易";
-                var turnoverType = GetJsonString(rec, "turnoverType") ?? "消费";
-                var jnTimeStr = GetJsonString(rec, "jndatetimeStr")
-                    ?? GetJsonString(rec, "effectdateStr")
-                    ?? string.Empty;
-                int tranAmtFen = GetJsonInt(rec, "tranamt") ?? 0;
-                int? cardBalFen = GetJsonInt(rec, "cardBalance");
-                var orderId = GetJsonString(rec, "orderId");
-                if (string.IsNullOrWhiteSpace(orderId))
-                {
-                    orderId = $"tx-{jnTimeStr}|{resume}|{turnoverType}|{tranAmtFen}|{cardBalFen?.ToString(CultureInfo.InvariantCulture) ?? "-1"}";
-                }
-
-                double amountRMB = Math.Abs(tranAmtFen) / 100.0;
-                double? balAfterRMB = cardBalFen.HasValue ? cardBalFen.Value / 100.0 : null;
-
-                list.Add(new CampusCardTransaction
-                {
-                    Id = orderId,
-                    MerchantName = resume,
-                    AmountRMB = amountRMB,
-                    BalanceAfterRMB = balAfterRMB,
-                    TurnoverType = turnoverType,
-                    DateTimeString = jnTimeStr
-                });
-                idx++;
-            }
+                // Keep already fetched pages; the caller merges them with same-card cached history.
+                break;
             }
         }
-        catch
-        {
-            // Ignore transaction fetch errors so card balance still succeeds
-            return (list, false);
-        }
 
-        return (list, true);
+        return MergeTransactions(byId.Values);
     }
 
     private void CheckLowBalanceAndBudgetWarning(CampusCardData data)
