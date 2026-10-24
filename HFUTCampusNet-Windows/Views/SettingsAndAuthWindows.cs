@@ -313,8 +313,7 @@ public class SettingsWindow : Window
                     {
                         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                         {
-                            SettingsManager.Shared.HuixinAuthToken = token;
-                            SettingsManager.Shared.Save();
+                            SettingsManager.Shared.SetHuixinAuthTokenAndSave(token);
                         })) return;
                         ElectricityService.Shared.FetchData();
                         CampusCardService.Shared.FetchData();

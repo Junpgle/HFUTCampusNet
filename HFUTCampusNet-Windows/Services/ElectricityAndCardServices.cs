@@ -383,7 +383,7 @@ public sealed class ElectricityService
                             else
                             {
                                 if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                                    SettingsManager.Shared.HuixinAuthToken = accessToken))
+                                    SettingsManager.Shared.SetHuixinAuthTokenAndSave(accessToken)))
                                     return (null, "授权结果已过期，请重新操作");
                             }
                         }
@@ -626,7 +626,7 @@ public sealed class ElectricityService
             AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
                 if (string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
-                    SettingsManager.Shared.HuixinAuthToken = null;
+                    SettingsManager.Shared.SetHuixinAuthTokenAndSave(null);
             });
         }
     }
@@ -639,7 +639,7 @@ public sealed class ElectricityService
                 return false;
 
             return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                SettingsManager.Shared.HuixinAuthToken = token);
+                SettingsManager.Shared.SetHuixinAuthTokenAndSave(token));
         }
     }
 
@@ -906,7 +906,7 @@ public sealed class ElectricityService
                 return false;
 
             return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                SettingsManager.Shared.HuixinAuthToken = token);
+                SettingsManager.Shared.SetHuixinAuthTokenAndSave(token));
         }
     }
 
@@ -929,7 +929,7 @@ public sealed class ElectricityService
             if (string.Equals(retryToken, expiredToken, StringComparison.Ordinal))
             {
                 if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                    SettingsManager.Shared.HuixinAuthToken = null))
+                    SettingsManager.Shared.SetHuixinAuthTokenAndSave(null)))
                 {
                     retryToken = null;
                     return false;
@@ -1346,7 +1346,7 @@ public sealed class CampusCardService
             AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
                 if (string.Equals(SettingsManager.Shared.HuixinAuthToken, token, StringComparison.Ordinal))
-                    SettingsManager.Shared.HuixinAuthToken = null;
+                    SettingsManager.Shared.SetHuixinAuthTokenAndSave(null);
             });
         }
     }
@@ -1360,7 +1360,7 @@ public sealed class CampusCardService
                 return false;
 
             return AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
-                SettingsManager.Shared.HuixinAuthToken = token);
+                SettingsManager.Shared.SetHuixinAuthTokenAndSave(token));
         }
     }
 

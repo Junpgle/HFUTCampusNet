@@ -193,6 +193,12 @@ public sealed class SettingsManager
         }
     }
 
+    internal void SetHuixinAuthTokenAndSave(string? token)
+    {
+        HuixinAuthToken = token;
+        Save();
+    }
+
     private static SettingsManager Load()
     {
         if (!File.Exists(SettingsFile)) return new SettingsManager();
