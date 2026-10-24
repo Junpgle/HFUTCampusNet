@@ -868,23 +868,28 @@ public struct CampusCardData: Codable, Equatable {
 
     /// 本月累计消费总额（元）
     public func currentMonthSpentRMB(at now: Date = Date()) -> Double {
-        let monthPrefix = String(CourseCalendarHelper.dateString(from: now).prefix(7))
+        let today = CourseCalendarHelper.dateString(from: now)
+        let monthPrefix = String(today.prefix(7))
         return transactions
-            .filter { $0.monthPrefixString == monthPrefix && $0.isExpense }
+            .filter { $0.monthPrefixString == monthPrefix && $0.dateOnlyString <= today && $0.isExpense }
             .reduce(0.0) { $0 + $1.amountRMB }
     }
 
     /// 本月累计消费笔数
     public func currentMonthExpenseCount(at now: Date = Date()) -> Int {
-        let monthPrefix = String(CourseCalendarHelper.dateString(from: now).prefix(7))
-        return transactions.filter { $0.monthPrefixString == monthPrefix && $0.isExpense }.count
+        let today = CourseCalendarHelper.dateString(from: now)
+        let monthPrefix = String(today.prefix(7))
+        return transactions.filter {
+            $0.monthPrefixString == monthPrefix && $0.dateOnlyString <= today && $0.isExpense
+        }.count
     }
 
     /// 本月累计充值金额（元）
     public func currentMonthRechargedRMB(at now: Date = Date()) -> Double {
-        let monthPrefix = String(CourseCalendarHelper.dateString(from: now).prefix(7))
+        let today = CourseCalendarHelper.dateString(from: now)
+        let monthPrefix = String(today.prefix(7))
         return transactions
-            .filter { $0.monthPrefixString == monthPrefix && $0.isRecharge }
+            .filter { $0.monthPrefixString == monthPrefix && $0.dateOnlyString <= today && $0.isRecharge }
             .reduce(0.0) { $0 + $1.amountRMB }
     }
 
@@ -969,11 +974,17 @@ public struct CampusCardData: Codable, Equatable {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "yyyy-MM"
+        let todayString = CourseCalendarHelper.dateString(from: now)
+        let currentMonth = String(todayString.prefix(7))
 
         return stride(from: months - 1, through: 0, by: -1).compactMap { offset in
             guard let date = calendar.date(byAdding: .month, value: -offset, to: now) else { return nil }
             let month = formatter.string(from: date)
-            let expenses = transactions.filter { $0.monthPrefixString == month && $0.isExpense }
+            let expenses = transactions.filter {
+                $0.monthPrefixString == month &&
+                (month != currentMonth || $0.dateOnlyString <= todayString) &&
+                $0.isExpense
+            }
             let total = expenses.reduce(0.0) { $0 + $1.amountRMB }
             return (month, (total * 100).rounded() / 100.0, expenses.count)
         }

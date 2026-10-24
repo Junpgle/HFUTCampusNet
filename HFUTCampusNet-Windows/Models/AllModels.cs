@@ -1310,20 +1310,23 @@ public sealed class CampusCardData
 
     public double CurrentMonthSpentRMB(DateTime? now = null)
     {
-        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
-        return Transactions.Where(t => t.MonthPrefixString == prefix && t.IsExpense).Sum(t => t.AmountRMB);
+        var today = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var prefix = today.Substring(0, 7);
+        return Transactions.Where(t => t.MonthPrefixString == prefix && string.CompareOrdinal(t.DateOnlyString, today) <= 0 && t.IsExpense).Sum(t => t.AmountRMB);
     }
 
     public int CurrentMonthExpenseCount(DateTime? now = null)
     {
-        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
-        return Transactions.Count(t => t.MonthPrefixString == prefix && t.IsExpense);
+        var today = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var prefix = today.Substring(0, 7);
+        return Transactions.Count(t => t.MonthPrefixString == prefix && string.CompareOrdinal(t.DateOnlyString, today) <= 0 && t.IsExpense);
     }
 
     public double CurrentMonthRechargedRMB(DateTime? now = null)
     {
-        var prefix = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).ToString("yyyy-MM", CultureInfo.InvariantCulture);
-        return Transactions.Where(t => t.MonthPrefixString == prefix && t.IsRecharge).Sum(t => t.AmountRMB);
+        var today = CourseCalendarHelper.ToBeijingTime(now ?? DateTime.Now).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var prefix = today.Substring(0, 7);
+        return Transactions.Where(t => t.MonthPrefixString == prefix && string.CompareOrdinal(t.DateOnlyString, today) <= 0 && t.IsRecharge).Sum(t => t.AmountRMB);
     }
 
     public ExpenseStructureBreakdownResult ExpenseStructureBreakdown()
