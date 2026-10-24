@@ -156,11 +156,29 @@ public class AcademicService: NSObject, URLSessionDelegate {
         self.latestData = snapshot
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let cache = AccountScopedAcademicCache(accountKey: Self.cacheAccountKey(for: username), snapshot: snapshot)
-        if let encoded = try? JSONEncoder().encode(cache) {
+        if preserveLegacyCacheBackup(), let encoded = try? JSONEncoder().encode(cache) {
             try? encoded.write(to: cacheFileURL, options: .atomic)
         }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .academicDataDidUpdate, object: snapshot)
+        }
+    }
+
+    private func preserveLegacyCacheBackup() -> Bool {
+        guard fileManager.fileExists(atPath: cacheFileURL.path) else { return true }
+        if let data = try? Data(contentsOf: cacheFileURL),
+           (try? JSONDecoder().decode(AccountScopedAcademicCache.self, from: data)) != nil {
+            return true
+        }
+
+        let backupURL = cacheFileURL.appendingPathExtension("pre-account-scope-v1.bak")
+        guard !fileManager.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try fileManager.copyItem(at: cacheFileURL, to: backupURL)
+            return true
+        } catch {
+            print("教务缓存账号标记迁移备份失败: \(error.localizedDescription)")
+            return false
         }
     }
 

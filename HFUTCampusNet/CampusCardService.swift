@@ -43,10 +43,28 @@ public class CampusCardService {
         latestData = data
         let username = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let cache = AccountScopedCampusCardCache(accountKey: Self.cacheAccountKey(for: username), data: data)
-        if let encoded = try? JSONEncoder().encode(cache) {
+        if preserveLegacyCacheBackup(), let encoded = try? JSONEncoder().encode(cache) {
             try? encoded.write(to: cacheURL, options: .atomic)
         }
         return true
+    }
+
+    private func preserveLegacyCacheBackup() -> Bool {
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else { return true }
+        if let data = try? Data(contentsOf: cacheURL),
+           (try? JSONDecoder().decode(AccountScopedCampusCardCache.self, from: data)) != nil {
+            return true
+        }
+
+        let backupURL = cacheURL.appendingPathExtension("pre-account-scope-v1.bak")
+        guard !FileManager.default.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try FileManager.default.copyItem(at: cacheURL, to: backupURL)
+            return true
+        } catch {
+            print("校园卡缓存账号标记迁移备份失败: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private static func cacheAccountKey(for username: String) -> String {
