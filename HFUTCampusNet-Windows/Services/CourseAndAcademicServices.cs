@@ -843,7 +843,20 @@ public sealed class CourseScheduleService
             if (File.Exists(_cacheFile))
             {
                 var json = File.ReadAllText(_cacheFile, Encoding.UTF8);
-                CurrentSchedule = JsonSerializer.Deserialize<CourseScheduleData>(json);
+                var cachedSchedule = JsonSerializer.Deserialize<CourseScheduleData>(json);
+                if (cachedSchedule == null) return;
+
+                var currentStudentId = (SettingsManager.Shared.CourseStudentId ?? string.Empty).Trim();
+                var cachedStudentId = (cachedSchedule.StudentId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(currentStudentId) ||
+                    string.IsNullOrWhiteSpace(cachedStudentId) ||
+                    !string.Equals(cachedStudentId, currentStudentId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.WriteLine("Ignoring course schedule cache because it belongs to a different or unknown student.");
+                    return;
+                }
+
+                CurrentSchedule = cachedSchedule;
                 if (CurrentSchedule?.Lessons != null && CurrentSchedule.Lessons.Count > 0)
                 {
                     CourseLesson.EnrichLessons(CurrentSchedule.Lessons);

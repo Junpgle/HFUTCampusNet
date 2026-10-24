@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -977,6 +978,12 @@ public sealed class ElectricityService
 
 public sealed class CampusCardService
 {
+    private sealed class AccountScopedCampusCardCache
+    {
+        public string AccountKey { get; set; } = string.Empty;
+        public CampusCardData? Data { get; set; }
+    }
+
     public static CampusCardService Shared { get; } = new CampusCardService();
 
     public CampusCardData? LatestData { get; private set; }
@@ -1019,15 +1026,15 @@ public sealed class CampusCardService
     {
         try
         {
-            if (!File.Exists(_cacheFilePath))
+            var username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(username) || !File.Exists(_cacheFilePath))
                 return;
 
             var json = File.ReadAllText(_cacheFilePath, Encoding.UTF8);
-            var cached = JsonSerializer.Deserialize<CampusCardData>(json, JsonOptions);
-            if (cached != null)
-            {
-                LatestData = cached;
-            }
+            var cached = JsonSerializer.Deserialize<AccountScopedCampusCardCache>(json, JsonOptions);
+            if (cached?.Data != null &&
+                string.Equals(cached.AccountKey, CacheAccountKey(username), StringComparison.Ordinal))
+                LatestData = cached.Data;
         }
         catch
         {
@@ -1038,10 +1045,17 @@ public sealed class CampusCardService
     private void SaveCachedData(CampusCardData data)
     {
         LatestData = data;
+        var username = (SettingsManager.Shared.PortalUsername ?? string.Empty).Trim();
+        var cache = new AccountScopedCampusCardCache
+        {
+            AccountKey = CacheAccountKey(username),
+            Data = data
+        };
         var temporaryFile = _cacheFilePath + ".tmp";
         try
         {
-            var json = JsonSerializer.Serialize(data, JsonOptions);
+            if (!PreserveLegacyCacheBackup()) return;
+            var json = JsonSerializer.Serialize(cache, JsonOptions);
             File.WriteAllText(temporaryFile, json, Encoding.UTF8);
             File.Move(temporaryFile, _cacheFilePath, overwrite: true);
         }
@@ -1054,6 +1068,39 @@ public sealed class CampusCardService
             }
             catch { }
         }
+    }
+
+    private bool PreserveLegacyCacheBackup()
+    {
+        if (!File.Exists(_cacheFilePath)) return true;
+        try
+        {
+            var existingJson = File.ReadAllText(_cacheFilePath, Encoding.UTF8);
+            if (JsonSerializer.Deserialize<AccountScopedCampusCardCache>(existingJson, JsonOptions) != null)
+                return true;
+        }
+        catch { }
+
+        var backupPath = _cacheFilePath + ".pre-account-scope-v1.bak";
+        if (File.Exists(backupPath)) return true;
+        try
+        {
+            File.Copy(_cacheFilePath, backupPath, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Campus card cache migration backup failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static string CacheAccountKey(string username)
+    {
+        var normalizedUsername = username.Trim().ToUpperInvariant();
+        var identity = string.IsNullOrEmpty(normalizedUsername) ? "UNCONFIGURED" : normalizedUsername;
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"portal-username:{identity}"));
+        return Convert.ToHexString(digest).ToLowerInvariant();
     }
 
     public void ClearCache()
@@ -1221,6 +1268,7 @@ public sealed class CampusCardService
                         }
                     }
                 }
+
                 if (!hasCards || cardArrElem.ValueKind != JsonValueKind.Array || cardArrElem.GetArrayLength() == 0)
                 {
                     if (!useLegacyEndpoint)
