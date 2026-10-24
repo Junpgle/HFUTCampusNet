@@ -241,6 +241,7 @@ public sealed class CampusHistoryManager
     public static CampusHistoryManager Shared { get; } = new();
     private const int FlowAccountingVersion = 2;
     private const int FlowHistoryPartitionVersion = 1;
+    private const int FlowHistoryContinuityVersion = 1;
 
     private readonly string _historyFile;
     private readonly object _lock = new();
@@ -252,6 +253,7 @@ public sealed class CampusHistoryManager
     private bool _electricityPartitionBackupRequired;
     private bool _flowAccountPartitionBackupRequired;
     private bool _flowAccountingMigrationBackupRequired;
+    private bool _flowContinuityMigrationBackupRequired;
 
     public List<FlowDailyRecord> FlowRecords { get; private set; } = new();
     public List<ElectricityDailyRecord> ElectricityRecords { get; private set; } = new();
@@ -516,6 +518,7 @@ public sealed class CampusHistoryManager
                 if (validBalanceRMB.HasValue) record.BalanceRMB = validBalanceRMB;
                 record.LastUpdated = DateTime.Now;
             }
+            ReconcileFlowContinuity(FlowRecords);
             Save();
         }
         AppEvents.RaiseHistoryStatsUpdated();
@@ -631,6 +634,8 @@ public sealed class CampusHistoryManager
         _flowAccountPartitionBackupRequired = false;
         if (_electricityPartitionBackupRequired && !BackupHistoryBeforeElectricityPartitionMigration()) return;
         _electricityPartitionBackupRequired = false;
+        if (_flowContinuityMigrationBackupRequired && !BackupHistoryBeforeFlowContinuityMigration()) return;
+        _flowContinuityMigrationBackupRequired = false;
         if (!CompleteFlowAccountingMigrationIfNeeded()) return;
 
         var temporaryFile = _historyFile + ".tmp";
@@ -644,6 +649,7 @@ public sealed class CampusHistoryManager
             {
                 FlowAccountingVersion,
                 FlowHistoryPartitionVersion,
+                FlowHistoryContinuityVersion,
                 FlowRecordsByAccount = flowRecordsByAccount,
                 ElectricityDormKey = _activeElectricityDormKey,
                 ArchivedElectricityRecords = _archivedElectricityRecords,
@@ -774,6 +780,17 @@ public sealed class CampusHistoryManager
                 CompleteFlowAccountingMigrationIfNeeded();
                 needsSave = true;
             }
+
+            int continuityVersion = root.TryGetProperty("FlowHistoryContinuityVersion", out var continuityVersionProp) &&
+                continuityVersionProp.TryGetInt32(out var parsedContinuityVersion) ? parsedContinuityVersion : 0;
+            if (continuityVersion < FlowHistoryContinuityVersion)
+            {
+                _flowContinuityMigrationBackupRequired = true;
+                ReconcileFlowContinuity(FlowRecords);
+                foreach (var records in _archivedFlowRecords.Values)
+                    ReconcileFlowContinuity(records);
+                needsSave = true;
+            }
             if (needsSave) Save();
         }
         catch (Exception ex)
@@ -874,6 +891,99 @@ public sealed class CampusHistoryManager
             Debug.WriteLine($"Flow history migration backup failed: {ex.Message}");
             return false;
         }
+    }
+
+    private bool BackupHistoryBeforeFlowContinuityMigration()
+    {
+        if (!File.Exists(_historyFile)) return true;
+        var backupFile = _historyFile + ".pre-flow-continuity-v1.bak";
+        if (File.Exists(backupFile)) return true;
+        try
+        {
+            File.Copy(_historyFile, backupFile, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Flow continuity migration backup failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool ReconcileFlowContinuity(List<FlowDailyRecord> records)
+    {
+        if (records.Count < 2) return false;
+
+        records.Sort((left, right) => string.CompareOrdinal(left.DateString, right.DateString));
+        var expanded = new List<FlowDailyRecord>(records.Count);
+        expanded.Add(records[0]);
+        bool modified = false;
+
+        for (int i = 1; i < records.Count; i++)
+        {
+            var previous = expanded[^1];
+            var current = records[i];
+            if (DateTime.TryParseExact(previous.DateString, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var previousDate) &&
+                DateTime.TryParseExact(current.DateString, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var currentDate) &&
+                previousDate.Year == currentDate.Year && previousDate.Month == currentDate.Month &&
+                current.LatestUsedMB >= previous.LatestUsedMB)
+            {
+                int gap = (currentDate.Date - previousDate.Date).Days;
+                if (gap > 1 && gap <= 30)
+                {
+                    double targetEndOfPreviousDay;
+                    if (current.StartUsedMB > previous.LatestUsedMB + 0.01 &&
+                        current.StartUsedMB <= current.LatestUsedMB)
+                    {
+                        targetEndOfPreviousDay = current.StartUsedMB;
+                    }
+                    else
+                    {
+                        var stepMB = (current.LatestUsedMB - previous.LatestUsedMB) / gap;
+                        targetEndOfPreviousDay = previous.LatestUsedMB + stepMB * (gap - 1);
+                    }
+
+                    var offlineDailyMB = Math.Max(0.0,
+                        (targetEndOfPreviousDay - previous.LatestUsedMB) / (gap - 1));
+                    for (int step = 1; step < gap; step++)
+                    {
+                        var missingDate = previousDate.AddDays(step).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                        var startMB = previous.LatestUsedMB + offlineDailyMB * (step - 1);
+                        var endMB = previous.LatestUsedMB + offlineDailyMB * step;
+                        expanded.Add(new FlowDailyRecord
+                        {
+                            DateString = missingDate,
+                            StartUsedMB = startMB,
+                            LatestUsedMB = endMB,
+                            BalanceRMB = previous.BalanceRMB,
+                            LastUpdated = current.LastUpdated
+                        });
+                    }
+
+                    current.StartUsedMB = targetEndOfPreviousDay;
+                    modified = true;
+                }
+                else if (gap == 1 && Math.Abs(current.StartUsedMB - previous.LatestUsedMB) > 0.01)
+                {
+                    current.StartUsedMB = previous.LatestUsedMB;
+                    modified = true;
+                }
+            }
+
+            expanded.Add(current);
+        }
+
+        if (modified)
+            ReplaceRecords(records, expanded);
+        return modified;
+    }
+
+    private static void ReplaceRecords(List<FlowDailyRecord> target, List<FlowDailyRecord> replacement)
+    {
+        target.Clear();
+        target.AddRange(replacement);
     }
 
     private bool CompleteFlowAccountingMigrationIfNeeded()
