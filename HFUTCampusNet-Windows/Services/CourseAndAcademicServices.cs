@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -2038,6 +2039,18 @@ public sealed class AcademicService
                 var json = File.ReadAllText(_cacheFile, Encoding.UTF8);
                 var cached = JsonSerializer.Deserialize<AcademicDataSnapshot>(json);
                 if (cached == null) return;
+
+                var settings = SettingsManager.Shared;
+                var currentStudentId = string.IsNullOrWhiteSpace(settings.CourseStudentId)
+                    ? settings.PortalUsername?.Trim()
+                    : settings.CourseStudentId.Trim();
+                if (string.IsNullOrWhiteSpace(currentStudentId) ||
+                    string.IsNullOrWhiteSpace(cached.StudentId) ||
+                    !string.Equals(cached.StudentId.Trim(), currentStudentId, StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.WriteLine("Ignoring academic cache because it belongs to a different or unknown student.");
+                    return;
+                }
 
                 var cachedExams = cached.Exams ?? new List<ExamItem>();
                 var validExams = cachedExams.Where(exam => exam != null && IsValidExamSchedule(exam)).ToList();
