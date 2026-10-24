@@ -1437,6 +1437,7 @@ public sealed class CampusNetworkClient
     private readonly object _selfServiceLoginLock = new();
     private readonly AsyncLocal<long?> _fetchGenerationContext = new();
     private long _fetchGeneration;
+    private long _onlineDevicesGeneration;
     private long _selfServiceLoginSequence;
     private long _selfServiceLoginOwner;
     private int _lastPortalFlowMonthKey;
@@ -1471,6 +1472,7 @@ public sealed class CampusNetworkClient
         lock (_accountStateLock)
         {
             _fetchGeneration++;
+            _onlineDevicesGeneration++;
             LatestData = new CampusNetworkData();
             _lastPortalFlowMonthKey = 0;
         }
@@ -1510,6 +1512,71 @@ public sealed class CampusNetworkClient
             if (expectedFetchGeneration.HasValue && expectedFetchGeneration.Value != _fetchGeneration)
                 return false;
             return AccountSessionManager.TryRunForGeneration(accountGeneration, update);
+        }
+    }
+
+    private bool TryBeginOnlineDevicesRequest(long accountGeneration, out long requestGeneration)
+    {
+        lock (_accountStateLock)
+        {
+            var expectedFetchGeneration = _fetchGenerationContext.Value;
+            if (expectedFetchGeneration.HasValue && expectedFetchGeneration.Value != _fetchGeneration)
+            {
+                requestGeneration = 0;
+                return false;
+            }
+
+            bool accountIsCurrent = false;
+            if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () => accountIsCurrent = true) ||
+                !accountIsCurrent)
+            {
+                requestGeneration = 0;
+                return false;
+            }
+
+            requestGeneration = ++_onlineDevicesGeneration;
+            return true;
+        }
+    }
+
+    private bool IsCurrentOnlineDevicesRequest(long accountGeneration, long requestGeneration)
+    {
+        lock (_accountStateLock)
+        {
+            var expectedFetchGeneration = _fetchGenerationContext.Value;
+            if (requestGeneration != _onlineDevicesGeneration ||
+                (expectedFetchGeneration.HasValue && expectedFetchGeneration.Value != _fetchGeneration))
+                return false;
+
+            bool accountIsCurrent = false;
+            return AccountSessionManager.TryRunForGeneration(accountGeneration, () => accountIsCurrent = true) &&
+                accountIsCurrent;
+        }
+    }
+
+    private bool TryUpdateOnlineDevicesForRequest(
+        long accountGeneration,
+        long requestGeneration,
+        string expectedCookie,
+        Action update)
+    {
+        lock (_accountStateLock)
+        {
+            var expectedFetchGeneration = _fetchGenerationContext.Value;
+            if (requestGeneration != _onlineDevicesGeneration ||
+                (expectedFetchGeneration.HasValue && expectedFetchGeneration.Value != _fetchGeneration))
+                return false;
+
+            bool updated = false;
+            bool accountIsCurrent = AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            {
+                if (!string.Equals(SettingsManager.Shared.SessionCookie?.Trim(), expectedCookie, StringComparison.Ordinal))
+                    return;
+
+                update();
+                updated = true;
+            });
+            return accountIsCurrent && updated;
         }
     }
 
@@ -1769,6 +1836,8 @@ public sealed class CampusNetworkClient
         try
         {
             if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
+            if (!TryBeginOnlineDevicesRequest(accountGeneration, out var requestGeneration))
+                return (false, "设备列表请求已过期", new());
             string? cookie = null;
             string? username = null;
             string? password = null;
@@ -1783,7 +1852,8 @@ public sealed class CampusNetworkClient
                 if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
                 {
                     var (loginOk, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
-                    if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
+                    if (!IsCurrentOnlineDevicesRequest(accountGeneration, requestGeneration))
+                        return (false, "设备列表请求已过期", new());
                     if (loginOk)
                     {
                         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
@@ -1805,26 +1875,30 @@ public sealed class CampusNetworkClient
             req.Headers.TryAddWithoutValidation("Cookie", cleanCookie);
 
             using var resp = await _selfServiceClient.SendAsync(req);
-            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
+            if (!IsCurrentOnlineDevicesRequest(accountGeneration, requestGeneration))
+                return (false, "设备列表请求已过期", new());
             if ((int)resp.StatusCode == 301 || (int)resp.StatusCode == 302)
             {
-                TryUpdateForAccount(accountGeneration, () =>
+                bool cookieCleared = TryUpdateOnlineDevicesForRequest(accountGeneration, requestGeneration, cookie, () =>
                 {
                     SettingsManager.Shared.SessionCookie = null;
                     SettingsManager.Shared.Save();
                 });
+                if (!cookieCleared) return (false, "设备列表请求已过期", new());
                 return (false, "自服务会话已失效", new());
             }
 
             var text = await resp.Content.ReadAsStringAsync();
-            if (!IsCurrentAccount(accountGeneration)) return (false, "账号已切换", new());
+            if (!IsCurrentOnlineDevicesRequest(accountGeneration, requestGeneration))
+                return (false, "设备列表请求已过期", new());
             if (string.IsNullOrWhiteSpace(text) || text.Contains("欢迎登录用户自助服务系统") || text.TrimStart().StartsWith("<"))
             {
-                TryUpdateForAccount(accountGeneration, () =>
+                bool cookieCleared = TryUpdateOnlineDevicesForRequest(accountGeneration, requestGeneration, cookie, () =>
                 {
                     SettingsManager.Shared.SessionCookie = null;
                     SettingsManager.Shared.Save();
                 });
+                if (!cookieCleared) return (false, "设备列表请求已过期", new());
                 return (false, "自服务会话已失效", new());
             }
 
@@ -1884,8 +1958,12 @@ public sealed class CampusNetworkClient
                 }
             }
 
-            if (!TryUpdateForAccount(accountGeneration, () => LatestData.OnlineDevices = list))
-                return (false, "账号已切换", new());
+            if (!TryUpdateOnlineDevicesForRequest(
+                accountGeneration,
+                requestGeneration,
+                cookie,
+                () => LatestData.OnlineDevices = list))
+                return (false, "设备列表请求已过期", new());
             AppEvents.RaiseNetworkDataUpdated();
             return (true, $"已获取 {list.Count} 台在线终端设备", list);
         }
@@ -2127,6 +2205,7 @@ public sealed class CampusNetworkClient
                     if (!TryUpdateForAccount(accountGeneration, () =>
                     {
                         LatestData.OnlineDevices.RemoveAll(d => d.SessionId == session.SessionId);
+                        _onlineDevicesGeneration++;
                     }))
                     {
                         callback(false, "账号已切换");
@@ -2209,6 +2288,8 @@ public sealed class CampusNetworkClient
 
             if (!hasRealData) return;
 
+            // A newer dashboard snapshot supersedes device-list requests already in flight.
+            _onlineDevicesGeneration++;
             LatestData.IsLoggedIn = true;
             LatestData.LastUpdated = DateTime.Now;
             LatestData.ErrorMessage = null;
