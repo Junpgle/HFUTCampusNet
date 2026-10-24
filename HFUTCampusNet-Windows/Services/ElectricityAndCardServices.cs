@@ -1297,9 +1297,17 @@ public sealed class CampusCardService
 
                 var firstCard = cardArrElem[0];
                 var account = GetJsonString(firstCard, "account") ?? string.Empty;
+                var dbBalanceFenValue = GetJsonInt(firstCard, "db_balance");
+                if (string.IsNullOrWhiteSpace(account) || !dbBalanceFenValue.HasValue)
+                {
+                    if (!useLegacyEndpoint)
+                        return await ExecuteCardQueryAsync(token, generation, accountGeneration, allowRetry: false, useLegacyEndpoint: true);
+                    return (null, "校园卡响应缺少账户或余额信息");
+                }
+
                 var holderName = (GetJsonString(firstCard, "name") ?? string.Empty).Trim();
                 var deptName = GetJsonString(firstCard, "department_name")?.Trim();
-                int dbBalanceFen = GetJsonInt(firstCard, "db_balance") ?? 0;
+                int dbBalanceFen = dbBalanceFenValue.Value;
                 int unsettleFen = GetJsonInt(firstCard, "unsettle_amount") ?? 0;
                 int lostFlag = GetJsonInt(firstCard, "lostflag") ?? 0;
                 int freezeFlag = GetJsonInt(firstCard, "freezeflag") ?? 0;

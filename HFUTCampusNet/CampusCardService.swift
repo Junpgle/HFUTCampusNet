@@ -204,6 +204,16 @@ public class CampusCardService {
                 return
             }
 
+            guard (200..<300).contains(httpStatus) else {
+                if !useLegacyEndpoint {
+                    self.executeCardQuery(token: token, allowRetry: false, useLegacyEndpoint: true, generation: generation, completion: completion)
+                    return
+                }
+                let err = NSError(domain: "cn.edu.hfut.card", code: httpStatus, userInfo: [NSLocalizedDescriptionKey: "校园卡服务请求失败 (HTTP \(httpStatus))"])
+                DispatchQueue.main.async { completion?(.failure(err)) }
+                return
+            }
+
             let dataObject = json?["data"] as? [String: Any]
             let cards = (dataObject?["card"] as? [[String: Any]])
                 ?? (dataObject?["cards"] as? [[String: Any]])
@@ -220,9 +230,19 @@ public class CampusCardService {
             }
 
             let account = (firstCard["account"] as? String) ?? ""
+            guard !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let dbBalanceFen = Self.integerValue(firstCard["db_balance"]) else {
+                if !useLegacyEndpoint {
+                    self.executeCardQuery(token: token, allowRetry: false, useLegacyEndpoint: true, generation: generation, completion: completion)
+                    return
+                }
+                let err = NSError(domain: "cn.edu.hfut.card", code: -3, userInfo: [NSLocalizedDescriptionKey: "校园卡响应缺少账户或余额信息"])
+                DispatchQueue.main.async { completion?(.failure(err)) }
+                return
+            }
+
             let holderName = (firstCard["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let deptName = (firstCard["department_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let dbBalanceFen = (firstCard["db_balance"] as? Int) ?? Int((firstCard["db_balance"] as? Double) ?? 0)
             let unsettleFen = (firstCard["unsettle_amount"] as? Int) ?? Int((firstCard["unsettle_amount"] as? Double) ?? 0)
             let lostFlag = (firstCard["lostflag"] as? Int) ?? 0
             let freezeFlag = (firstCard["freezeflag"] as? Int) ?? 0
