@@ -467,12 +467,16 @@ public sealed class CampusHistoryManager
 
         lock (_lock)
         {
+            var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
+            var today = CourseCalendarHelper.DateString(sampleTime);
+            var currentDay = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+            if (!today.StartsWith(currentDay[..7], StringComparison.Ordinal)) return;
+
             if (!CompleteFlowAccountingMigrationIfNeeded()) return;
             var validBalanceRMB = balanceRMB.HasValue &&
                 double.IsFinite(balanceRMB.Value) && balanceRMB.Value >= 0
                 ? balanceRMB
                 : null;
-            var today = CourseCalendarHelper.DateString(observedAt ?? CourseCalendarHelper.BeijingNow);
             var monthPrefix = today[..7];
             // 网关流量是本月累计值；用同月最近一次采样衔接当天，避免跨日后首次刷新漏算。
             var previousRecord = FlowRecords
@@ -1530,19 +1534,25 @@ public sealed class CampusNetworkClient
                         // Fallback 慧新易校
                         try
                         {
+                            var hxObservedAt = CourseCalendarHelper.BeijingNow;
                             var (hxFlow, hxBalance) = await ElectricityService.Shared.FetchSchoolNetInfoFromHuiXinAsync(
                                 accountGeneration);
                             if (!IsCurrentAccount(accountGeneration)) return;
+                            var hxRequestMonth = hxObservedAt.Year * 100 + hxObservedAt.Month;
+                            var hxResponseAt = CourseCalendarHelper.BeijingNow;
+                            var hxResponseMonthStillCurrent = hxRequestMonth == hxResponseAt.Year * 100 + hxResponseAt.Month;
                             if (!string.IsNullOrEmpty(hxFlow) || !string.IsNullOrEmpty(hxBalance))
                             {
-                                var actualHxFlow = CampusNetworkData.ActualTrafficFlow(hxFlow) ?? hxFlow;
+                                var actualHxFlow = hxResponseMonthStillCurrent
+                                    ? CampusNetworkData.ActualTrafficFlow(hxFlow) ?? hxFlow
+                                    : null;
                                 if (!TryUpdateForAccount(accountGeneration, () =>
                                 {
                                     LatestData.IsLoggedIn = false;
-                                    if (!string.IsNullOrEmpty(hxFlow) &&
+                                    if (hxResponseMonthStillCurrent && !string.IsNullOrEmpty(hxFlow) &&
                                         (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
                                     {
-                                        LatestData.UsedFlow = actualHxFlow;
+                                        LatestData.UsedFlow = actualHxFlow ?? hxFlow;
                                     }
                                     if (!string.IsNullOrEmpty(hxBalance) &&
                                         (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
@@ -1560,7 +1570,8 @@ public sealed class CampusNetworkClient
                                             if (actualHxFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) parsedMB *= 1024.0;
                                             CampusHistoryManager.Shared.RecordFlow(
                                                 parsedMB,
-                                                CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
+                                                CampusNetworkData.ParseBalanceRMB(LatestData.Balance),
+                                                hxObservedAt);
                                         }
                                     }
                                 })) return;
@@ -1757,9 +1768,11 @@ public sealed class CampusNetworkClient
     /// 静默后台登录校园网自服务系统 (xywzz.hfut.edu.cn:8443) 并抓取流量
     /// </summary>
     public async Task<(bool Success, string Message)> SilentLoginSelfServiceAndFetchAsync(
-        long? expectedAccountGeneration = null)
+        long? expectedAccountGeneration = null,
+        DateTime? observedAt = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
         string? username = null;
         string? password = null;
         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
@@ -1860,7 +1873,7 @@ public sealed class CampusNetworkClient
 
             if (step3Html.Contains("可用流量") || step3Html.Contains("已用流量"))
             {
-                ApplyParsedDashboardHTML(step3Html, accountGeneration);
+                ApplyParsedDashboardHTML(step3Html, accountGeneration, sampleTime);
                 return (true, "自服务系统登录成功");
             }
 
@@ -1886,13 +1899,14 @@ public sealed class CampusNetworkClient
     public async Task<bool> FetchDashboardDataAsync(long? expectedAccountGeneration = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var sampleTime = CourseCalendarHelper.BeijingNow;
         if (!IsCurrentAccount(accountGeneration)) return false;
         string? cookie = null;
         if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             cookie = SettingsManager.Shared.SessionCookie?.Trim())) return false;
         if (string.IsNullOrEmpty(cookie))
         {
-            var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+            var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration, sampleTime);
             return IsCurrentAccount(accountGeneration) && ok;
         }
 
@@ -1913,7 +1927,7 @@ public sealed class CampusNetworkClient
                     SettingsManager.Shared.SessionCookie = null;
                     SettingsManager.Shared.Save();
                 })) return false;
-                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration, sampleTime);
                 return IsCurrentAccount(accountGeneration) && ok;
             }
 
@@ -1926,11 +1940,11 @@ public sealed class CampusNetworkClient
                     SettingsManager.Shared.SessionCookie = null;
                     SettingsManager.Shared.Save();
                 })) return false;
-                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration);
+                var (ok, _) = await SilentLoginSelfServiceAndFetchAsync(accountGeneration, sampleTime);
                 return IsCurrentAccount(accountGeneration) && ok;
             }
 
-            return ApplyParsedDashboardHTML(html, accountGeneration);
+            return ApplyParsedDashboardHTML(html, accountGeneration, sampleTime);
         }
         catch
         {
@@ -2024,21 +2038,26 @@ public sealed class CampusNetworkClient
         _syncTimer?.Change(intervalMs, intervalMs);
     }
 
-    public bool ApplyParsedDashboardHTML(string html, long? expectedAccountGeneration = null)
+    public bool ApplyParsedDashboardHTML(
+        string html,
+        long? expectedAccountGeneration = null,
+        DateTime? observedAt = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
+        bool flowSampleIsCurrentMonth = IsFlowSampleInCurrentMonth(sampleTime);
         var parsed = ParseDashboardHTML(html);
         if (parsed == null) return false;
 
         bool hasRealData = false;
         if (!TryUpdateForAccount(accountGeneration, () =>
         {
-            if (!string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
+            if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.UsedFlow) && parsed.UsedFlow != "-- M")
             {
                 LatestData.UsedFlow = parsed.UsedFlow;
                 hasRealData = true;
             }
-            if (!string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
+            if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.AvailableFlow) && parsed.AvailableFlow != "-- M")
             {
                 LatestData.AvailableFlow = parsed.AvailableFlow;
                 hasRealData = true;
@@ -2060,7 +2079,7 @@ public sealed class CampusNetworkClient
             LatestData.ErrorMessage = null;
 
             // 记录历史流量
-            if (!string.IsNullOrEmpty(parsed.UsedFlow))
+            if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(parsed.UsedFlow))
             {
                 var m = Regex.Match(parsed.UsedFlow, @"[0-9]+(?:\.[0-9]+)?");
                 if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
@@ -2068,7 +2087,8 @@ public sealed class CampusNetworkClient
                     if (parsed.UsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
                     CampusHistoryManager.Shared.RecordFlow(
                         flowVal,
-                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
+                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance),
+                        sampleTime);
                 }
             }
         })) return false;
@@ -2086,20 +2106,23 @@ public sealed class CampusNetworkClient
         string? availFlow,
         string? balance,
         string? protection,
-        long? expectedAccountGeneration = null)
+        long? expectedAccountGeneration = null,
+        DateTime? observedAt = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
+        var sampleTime = observedAt ?? CourseCalendarHelper.BeijingNow;
+        bool flowSampleIsCurrentMonth = IsFlowSampleInCurrentMonth(sampleTime);
         var actualUsedFlow = CampusNetworkData.ActualTrafficFlow(usedFlow) ?? usedFlow;
         var actualAvailableFlow = CampusNetworkData.ActualTrafficFlow(availFlow) ?? availFlow;
         bool hasRealData = false;
         if (!TryUpdateForAccount(accountGeneration, () =>
         {
-            if (!string.IsNullOrWhiteSpace(actualUsedFlow) && actualUsedFlow != "-- M")
+            if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualUsedFlow) && actualUsedFlow != "-- M")
             {
                 LatestData.UsedFlow = actualUsedFlow;
                 hasRealData = true;
             }
-            if (!string.IsNullOrWhiteSpace(actualAvailableFlow) && actualAvailableFlow != "-- M")
+            if (flowSampleIsCurrentMonth && !string.IsNullOrWhiteSpace(actualAvailableFlow) && actualAvailableFlow != "-- M")
             {
                 LatestData.AvailableFlow = actualAvailableFlow;
                 hasRealData = true;
@@ -2120,7 +2143,7 @@ public sealed class CampusNetworkClient
             LatestData.LastUpdated = DateTime.Now;
             LatestData.ErrorMessage = null;
 
-            if (!string.IsNullOrEmpty(actualUsedFlow))
+            if (flowSampleIsCurrentMonth && !string.IsNullOrEmpty(actualUsedFlow))
             {
                 var m = Regex.Match(actualUsedFlow, @"[0-9]+(?:\.[0-9]+)?");
                 if (m.Success && double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double flowVal))
@@ -2128,7 +2151,8 @@ public sealed class CampusNetworkClient
                     if (actualUsedFlow.Contains("G", StringComparison.OrdinalIgnoreCase)) flowVal *= 1024.0;
                     CampusHistoryManager.Shared.RecordFlow(
                         flowVal,
-                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance));
+                        CampusNetworkData.ParseBalanceRMB(LatestData.Balance),
+                        sampleTime);
                 }
             }
         })) return false;
@@ -2139,6 +2163,13 @@ public sealed class CampusNetworkClient
         // 提取在线设备
         Task.Run(async () => { try { await FetchOnlineDevicesAsync(accountGeneration); } catch { } });
         return true;
+    }
+
+    private static bool IsFlowSampleInCurrentMonth(DateTime observedAt)
+    {
+        var sampleDate = CourseCalendarHelper.DateString(observedAt);
+        var currentDate = CourseCalendarHelper.DateString(CourseCalendarHelper.BeijingNow);
+        return sampleDate.StartsWith(currentDate[..7], StringComparison.Ordinal);
     }
 
     public static CampusNetworkData? ParseDashboardHTML(string html)
