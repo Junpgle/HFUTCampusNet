@@ -1060,13 +1060,16 @@ public sealed class AcademicService
 
                 var (uniGrades, uniExams) = await uniAppTask;
                 var (webGrades, webExams, webProgram, webBooks, webSurveys) = await eamsWebTask;
+                var hasFreshGrades = uniGrades != null || webGrades != null;
+                var hasFreshExams = uniExams != null || webExams != null;
+                var hasFreshData = hasFreshGrades || hasFreshExams || webProgram != null ||
+                    webBooks != null || webSurveys != null;
 
                 // 双源合并成绩与考试
-                var mergedGrades = MergeGrades(uniGrades, webGrades);
-                var mergedExams = MergeExams(uniExams, webExams);
+                var mergedGrades = MergeGrades(uniGrades ?? new(), webGrades ?? new());
+                var mergedExams = MergeExams(uniExams ?? new(), webExams ?? new());
 
-                if (mergedGrades.Count == 0 && mergedExams.Count == 0 && webProgram == null &&
-                    webBooks.Count == 0 && webSurveys.Count == 0)
+                if (!hasFreshData)
                 {
                     bool staleEmptyResult = false;
                     lock (_stateLock)
@@ -1104,13 +1107,13 @@ public sealed class AcademicService
                         var newSnapshot = new AcademicDataSnapshot
                         {
                             StudentId = studentId,
-                            AllGrades = mergedGrades.Count > 0 ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
-                            Exams = mergedExams.Count > 0 ? mergedExams : (prevSnapshot?.Exams ?? new()),
+                            AllGrades = hasFreshGrades ? mergedGrades : (prevSnapshot?.AllGrades ?? new()),
+                            Exams = hasFreshExams ? mergedExams : (prevSnapshot?.Exams ?? new()),
                             ProgramCompletion = webProgram ?? prevSnapshot?.ProgramCompletion,
-                            Textbooks = webBooks.Count > 0 ? webBooks : (prevSnapshot?.Textbooks ?? new()),
-                            Surveys = webSurveys.Count > 0 ? webSurveys : (prevSnapshot?.Surveys ?? new()),
-                            LastGradesSyncTime = mergedGrades.Count > 0 ? DateTime.Now : prevSnapshot?.LastGradesSyncTime,
-                            LastExamsSyncTime = mergedExams.Count > 0 ? DateTime.Now : prevSnapshot?.LastExamsSyncTime
+                            Textbooks = webBooks ?? prevSnapshot?.Textbooks ?? new(),
+                            Surveys = webSurveys ?? prevSnapshot?.Surveys ?? new(),
+                            LastGradesSyncTime = hasFreshGrades ? DateTime.Now : prevSnapshot?.LastGradesSyncTime,
+                            LastExamsSyncTime = hasFreshExams ? DateTime.Now : prevSnapshot?.LastExamsSyncTime
                         };
 
                         // 出分静默通知检测
@@ -1169,14 +1172,14 @@ public sealed class AcademicService
 
     // MARK: - 通道 1：UniApp 移动端数据拉取
 
-    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams)> FetchFromUniAppAsync(long accountGeneration)
+    private async Task<(List<GradeItem>? Grades, List<ExamItem>? Exams)> FetchFromUniAppAsync(long accountGeneration)
     {
         var token = await EmptyClassroomService.Shared.EnsureValidTokenAsync(
             forceRelogin: false,
             expectedAccountGeneration: accountGeneration);
         if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(token))
         {
-            return (new(), new());
+            return (null, null);
         }
 
         var (grades, exams, needRetry) = await RequestUniAppDataAsync(token);
@@ -1195,10 +1198,10 @@ public sealed class AcademicService
         return (grades, exams);
     }
 
-    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams, bool NeedRetry)> RequestUniAppDataAsync(string token)
+    private async Task<(List<GradeItem>? Grades, List<ExamItem>? Exams, bool NeedRetry)> RequestUniAppDataAsync(string token)
     {
-        var grades = new List<GradeItem>();
-        var exams = new List<ExamItem>();
+        List<GradeItem>? grades = null;
+        List<ExamItem>? exams = null;
         bool needRetry = false;
 
         // 1. 请求成绩单
@@ -1219,6 +1222,7 @@ public sealed class AcademicService
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("data", out var dataArr) && dataArr.ValueKind == JsonValueKind.Array)
                 {
+                    var parsedGrades = new List<GradeItem>();
                     foreach (var item in dataArr.EnumerateArray())
                     {
                         var cName = item.TryGetProperty("courseNameZh", out var cn) ? cn.GetString() ?? "" : "";
@@ -1243,7 +1247,7 @@ public sealed class AcademicService
                             if (semObj.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number) semId = idProp.GetInt32();
                         }
 
-                        grades.Add(new GradeItem
+                        parsedGrades.Add(new GradeItem
                         {
                             Id = $"{semId}_{cCode}_{cName}",
                             TermName = termName,
@@ -1257,6 +1261,8 @@ public sealed class AcademicService
                             ScoreText = finalGrade
                         });
                     }
+                    if (dataArr.GetArrayLength() == 0 || parsedGrades.Count > 0)
+                        grades = parsedGrades;
                 }
             }
         }
@@ -1280,6 +1286,7 @@ public sealed class AcademicService
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("data", out var dataArr) && dataArr.ValueKind == JsonValueKind.Array)
                 {
+                    var parsedExams = new List<ExamItem>();
                     foreach (var item in dataArr.EnumerateArray())
                     {
                         var cName = item.TryGetProperty("courseNameZh", out var cn) ? cn.GetString()?.Trim() ?? "" : "";
@@ -1306,7 +1313,7 @@ public sealed class AcademicService
                             if (typeObj.TryGetProperty("nameZh", out var tn)) examType = tn.GetString() ?? examType;
                         }
 
-                        exams.Add(new ExamItem
+                        parsedExams.Add(new ExamItem
                         {
                             Id = $"{cName}_{dtStr}",
                             CourseName = cName,
@@ -1319,6 +1326,8 @@ public sealed class AcademicService
                             ExamType = examType
                         });
                     }
+                    if (dataArr.GetArrayLength() == 0 || parsedExams.Count > 0)
+                        exams = parsedExams;
                 }
             }
         }
@@ -1329,7 +1338,7 @@ public sealed class AcademicService
 
     // MARK: - 通道 2：树维 EAMS 网页端数据拉取
 
-    private async Task<(List<GradeItem> Grades, List<ExamItem> Exams, ProgramCompletionSummary? Program, List<CourseTextbookItem> Books, List<LessonSurveyItem> Surveys)> FetchFromEamsWebAsync(long accountGeneration)
+    private async Task<(List<GradeItem>? Grades, List<ExamItem>? Exams, ProgramCompletionSummary? Program, List<CourseTextbookItem>? Books, List<LessonSurveyItem>? Surveys)> FetchFromEamsWebAsync(long accountGeneration)
     {
         try
         {
@@ -1337,7 +1346,7 @@ public sealed class AcademicService
                 expectedAccountGeneration: accountGeneration);
             if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrEmpty(cookie))
             {
-                return (new(), new(), null, new(), new());
+                return (null, null, null, null, null);
             }
 
             string stdId = string.Empty;
@@ -1348,12 +1357,12 @@ public sealed class AcademicService
                 stdId = SettingsManager.Shared.CourseStudentId;
                 semId = SettingsManager.Shared.CourseSemesterId;
                 bizId = SettingsManager.Shared.CourseBizTypeId;
-            })) return (new(), new(), null, new(), new());
+            })) return (null, null, null, null, null);
             if (string.IsNullOrEmpty(stdId) || stdId == "178506")
             {
                 var discoveredStudentId = await CourseScheduleService.Shared.DiscoverStudentIdAsync(cookie, accountGeneration);
                 if (!AccountSessionManager.IsGenerationCurrent(accountGeneration) || string.IsNullOrWhiteSpace(discoveredStudentId))
-                    return (new(), new(), null, new(), new());
+                    return (null, null, null, null, null);
                 stdId = discoveredStudentId;
             }
 
@@ -1370,7 +1379,7 @@ public sealed class AcademicService
         }
         catch
         {
-            return (new(), new(), null, new(), new());
+            return (null, null, null, null, null);
         }
     }
 
@@ -1829,7 +1838,7 @@ public sealed class AcademicService
     private static bool IsValidExamSchedule(ExamItem exam) =>
         TryParseExamDateTime(exam.DateString, exam.StartTimeString, exam.EndTimeString, out _, out _);
 
-    private async Task<List<GradeItem>> FetchGradesHtmlAsync(string cookie, string stdId)
+    private async Task<List<GradeItem>?> FetchGradesHtmlAsync(string cookie, string stdId)
     {
         try
         {
@@ -1841,14 +1850,18 @@ public sealed class AcademicService
             if (res.IsSuccessStatusCode)
             {
                 var html = await res.Content.ReadAsStringAsync();
-                return ParseGradesHtml(html);
+                if (html.Contains("/login", StringComparison.OrdinalIgnoreCase) &&
+                    html.Contains("password", StringComparison.OrdinalIgnoreCase)) return null;
+                var parsed = ParseGradesHtml(html);
+                if (parsed.Count > 0 || Regex.IsMatch(html, @"<table\b[^>]*\bstudent-grade-table\b", RegexOptions.IgnoreCase))
+                    return parsed;
             }
         }
         catch { }
-        return new List<GradeItem>();
+        return null;
     }
 
-    private async Task<List<ExamItem>> FetchExamsHtmlAsync(string cookie, string stdId)
+    private async Task<List<ExamItem>?> FetchExamsHtmlAsync(string cookie, string stdId)
     {
         try
         {
@@ -1860,11 +1873,15 @@ public sealed class AcademicService
             if (res.IsSuccessStatusCode)
             {
                 var html = await res.Content.ReadAsStringAsync();
-                return ParseExamsHtml(html);
+                if (html.Contains("/login", StringComparison.OrdinalIgnoreCase) &&
+                    html.Contains("password", StringComparison.OrdinalIgnoreCase)) return null;
+                var parsed = ParseExamsHtml(html);
+                if (parsed.Count > 0 || Regex.IsMatch(html, @"<table\b[^>]*\bid=[""']exams[""']", RegexOptions.IgnoreCase))
+                    return parsed;
             }
         }
         catch { }
-        return new List<ExamItem>();
+        return null;
     }
 
     private async Task<ProgramCompletionSummary?> FetchProgramCompletionAsync(string cookie, string stdId)
@@ -1872,9 +1889,11 @@ public sealed class AcademicService
         try
         {
             var url = $"http://jxglstu.hfut.edu.cn/eams5-student/for-std/program-completion-preview/json/{stdId}";
-            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Add("Cookie", cookie);
-            var json = await (await _client.SendAsync(req)).Content.ReadAsStringAsync();
+            using var res = await _client.SendAsync(req);
+            if (!res.IsSuccessStatusCode) return null;
+            var json = await res.Content.ReadAsStringAsync();
 
             using var doc = CourseScheduleService.SafeParseJson(json);
             if (doc == null) return null;
@@ -1945,77 +1964,81 @@ public sealed class AcademicService
         }
     }
 
-    private async Task<List<CourseTextbookItem>> FetchTextbooksAsync(string cookie, string semId, string bizId, string stdId)
+    private async Task<List<CourseTextbookItem>?> FetchTextbooksAsync(string cookie, string semId, string bizId, string stdId)
     {
-        var list = new List<CourseTextbookItem>();
         try
         {
             var url = $"http://jxglstu.hfut.edu.cn/eams5-student/for-std/lesson-textbook/get-data?bizTypeId={bizId}&semesterId={semId}&dataId={stdId}";
-            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Add("Cookie", cookie);
-            var json = await (await _client.SendAsync(req)).Content.ReadAsStringAsync();
+            using var res = await _client.SendAsync(req);
+            if (!res.IsSuccessStatusCode) return null;
+            var json = await res.Content.ReadAsStringAsync();
 
             using var doc = CourseScheduleService.SafeParseJson(json);
-            if (doc != null && doc.RootElement.TryGetProperty("lessons", out var lessons))
-            {
-                foreach (var l in lessons.EnumerateArray())
-                {
-                    var cName = l.TryGetProperty("courseName", out var cn) ? cn.GetString() ?? "" : "";
-                    var cCode = l.TryGetProperty("courseCode", out var cc) ? cc.GetString() ?? "" : "";
-                    var lCode = l.TryGetProperty("lessonCode", out var lc) ? lc.GetString() ?? "" : "";
-                    double cred = l.TryGetProperty("credits", out var cr) ? cr.GetDouble() : 0;
-                    var type = l.TryGetProperty("courseType", out var ct) ? ct.GetString() ?? "" : "";
-                    var exam = l.TryGetProperty("examMode", out var em) ? em.GetString() ?? "考试" : "考试";
-                    var dept = l.TryGetProperty("department", out var dp) ? dp.GetString() ?? "" : "";
-                    var book = l.TryGetProperty("textbook", out var tb) ? tb.GetString() ?? "" : "";
+            if (doc == null || !doc.RootElement.TryGetProperty("lessons", out var lessons) ||
+                lessons.ValueKind != JsonValueKind.Array) return null;
 
-                    list.Add(new CourseTextbookItem
-                    {
-                        Id = $"{cCode}-{lCode}",
-                        CourseName = cName,
-                        CourseCode = cCode,
-                        LessonCode = lCode,
-                        Credits = cred,
-                        CourseType = type,
-                        ExamMode = exam,
-                        Department = dept,
-                        TextbookName = book
-                    });
-                }
+            var list = new List<CourseTextbookItem>();
+            foreach (var l in lessons.EnumerateArray())
+            {
+                var cName = l.TryGetProperty("courseName", out var cn) ? cn.GetString() ?? "" : "";
+                var cCode = l.TryGetProperty("courseCode", out var cc) ? cc.GetString() ?? "" : "";
+                var lCode = l.TryGetProperty("lessonCode", out var lc) ? lc.GetString() ?? "" : "";
+                double cred = l.TryGetProperty("credits", out var cr) ? cr.GetDouble() : 0;
+                var type = l.TryGetProperty("courseType", out var ct) ? ct.GetString() ?? "" : "";
+                var exam = l.TryGetProperty("examMode", out var em) ? em.GetString() ?? "考试" : "考试";
+                var dept = l.TryGetProperty("department", out var dp) ? dp.GetString() ?? "" : "";
+                var book = l.TryGetProperty("textbook", out var tb) ? tb.GetString() ?? "" : "";
+
+                list.Add(new CourseTextbookItem
+                {
+                    Id = $"{cCode}-{lCode}",
+                    CourseName = cName,
+                    CourseCode = cCode,
+                    LessonCode = lCode,
+                    Credits = cred,
+                    CourseType = type,
+                    ExamMode = exam,
+                    Department = dept,
+                    TextbookName = book
+                });
             }
+            return lessons.GetArrayLength() == 0 || list.Count > 0 ? list : null;
         }
-        catch { }
-        return list;
+        catch { return null; }
     }
 
-    private async Task<List<LessonSurveyItem>> FetchSurveysAsync(string cookie, string semId, string stdId)
+    private async Task<List<LessonSurveyItem>?> FetchSurveysAsync(string cookie, string semId, string stdId)
     {
-        var list = new List<LessonSurveyItem>();
         try
         {
             var url = $"http://jxglstu.hfut.edu.cn/eams5-student/for-std/lesson-survey/{semId}/search/{stdId}";
-            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Add("Cookie", cookie);
-            var json = await (await _client.SendAsync(req)).Content.ReadAsStringAsync();
+            using var res = await _client.SendAsync(req);
+            if (!res.IsSuccessStatusCode) return null;
+            var json = await res.Content.ReadAsStringAsync();
 
             using var doc = CourseScheduleService.SafeParseJson(json);
-            if (doc != null && doc.RootElement.TryGetProperty("forStdLessonSurveySearchVms", out var vms))
+            if (doc == null || !doc.RootElement.TryGetProperty("forStdLessonSurveySearchVms", out var vms) ||
+                vms.ValueKind != JsonValueKind.Array) return null;
+
+            var list = new List<LessonSurveyItem>();
+            foreach (var vm in vms.EnumerateArray())
             {
-                foreach (var vm in vms.EnumerateArray())
+                var cName = vm.TryGetProperty("courseName", out var cn) ? cn.GetString() ?? "" : "";
+                var lCode = vm.TryGetProperty("lessonCode", out var lc) ? lc.GetString() ?? "" : "";
+                list.Add(new LessonSurveyItem
                 {
-                    var cName = vm.TryGetProperty("courseName", out var cn) ? cn.GetString() ?? "" : "";
-                    var lCode = vm.TryGetProperty("lessonCode", out var lc) ? lc.GetString() ?? "" : "";
-                    list.Add(new LessonSurveyItem
-                    {
-                        Id = lCode,
-                        LessonCode = lCode,
-                        CourseName = cName
-                    });
-                }
+                    Id = lCode,
+                    LessonCode = lCode,
+                    CourseName = cName
+                });
             }
+            return vms.GetArrayLength() == 0 || list.Count > 0 ? list : null;
         }
-        catch { }
-        return list;
+        catch { return null; }
     }
 
     private static string CleanHtml(string html)
