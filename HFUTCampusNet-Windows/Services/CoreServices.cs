@@ -595,27 +595,33 @@ public sealed class CampusHistoryManager
             bool needsSave = false;
             int flowPartitionVersion = root.TryGetProperty("FlowHistoryPartitionVersion", out var flowPartitionVersionProp) &&
                 flowPartitionVersionProp.TryGetInt32(out var parsedPartitionVersion) ? parsedPartitionVersion : 0;
-            if (flowPartitionVersion >= FlowHistoryPartitionVersion && root.TryGetProperty("FlowRecordsByAccount", out var flowPartitionsProp))
+            bool loadedFlowPartitions = false;
+            if (flowPartitionVersion >= FlowHistoryPartitionVersion &&
+                root.TryGetProperty("FlowRecordsByAccount", out var flowPartitionsProp))
             {
-                var flowPartitions = JsonSerializer.Deserialize<Dictionary<string, List<FlowDailyRecord>>>(flowPartitionsProp.GetRawText());
-                if (flowPartitions != null)
+                try
                 {
-                    _archivedFlowRecords = new Dictionary<string, List<FlowDailyRecord>>(flowPartitions, StringComparer.Ordinal);
-                    if (_archivedFlowRecords.Remove(_activeFlowAccountKey, out var accountRecords))
-                        FlowRecords = accountRecords ?? new();
-                    else
-                        FlowRecords = new();
+                    var flowPartitions = JsonSerializer.Deserialize<Dictionary<string, List<FlowDailyRecord>>>(flowPartitionsProp.GetRawText());
+                    if (flowPartitions != null &&
+                        flowPartitions.Values.All(records => records != null && records.All(record => record != null)))
+                    {
+                        _archivedFlowRecords = new Dictionary<string, List<FlowDailyRecord>>(flowPartitions, StringComparer.Ordinal);
+                        if (_archivedFlowRecords.Remove(_activeFlowAccountKey, out var accountRecords))
+                            FlowRecords = accountRecords ?? new();
+                        else
+                            FlowRecords = new();
+                        loadedFlowPartitions = true;
+                    }
                 }
-                else
+                catch (JsonException ex)
                 {
-                    LoadLegacyFlowRecords(root);
-                    if (!BackupHistoryBeforeFlowAccountPartitionMigration())
-                        _flowAccountPartitionBackupRequired = true;
-                    needsSave = true;
+                    Debug.WriteLine($"Flow account partitions are invalid; recovering legacy flow history: {ex.Message}");
                 }
             }
-            else
+
+            if (!loadedFlowPartitions)
             {
+                // Keep the readable legacy snapshot when a newer partition field is malformed.
                 LoadLegacyFlowRecords(root);
                 if (!BackupHistoryBeforeFlowAccountPartitionMigration())
                     _flowAccountPartitionBackupRequired = true;
