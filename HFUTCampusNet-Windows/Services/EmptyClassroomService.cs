@@ -1043,7 +1043,7 @@ public sealed class EmptyClassroomService
 
             // 若首次失败，强制重新登录刷新 Token 再试一次（对齐 macOS 逻辑）
             var refreshedToken = await EnsureValidTokenAsync(forceRelogin: true);
-            if (!string.IsNullOrEmpty(refreshedToken) && refreshedToken != token)
+            if (!string.IsNullOrEmpty(refreshedToken))
             {
                 result = await RequestClassroomSemesterScheduleWithTokenAsync(refreshedToken, roomId, semesterId, roomName);
                 if (result != null)
