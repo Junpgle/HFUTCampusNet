@@ -17,6 +17,16 @@ namespace HFUTCampusNet;
 
 public sealed class EmptyClassroomService
 {
+    private sealed class EmptyClassroomCacheEnvelope
+    {
+        public EmptyClassroomCacheEnvelope() { }
+
+        public int Version { get; set; } = 1;
+        public List<ClassroomOccupationItem> Rooms { get; set; } = new();
+        public Dictionary<string, bool> SnapshotCompleteness { get; set; } = new();
+        public DateTime? LastSyncTime { get; set; }
+    }
+
     public static EmptyClassroomService Shared { get; } = new();
 
     private const string UniAppBaseUrl = "https://jwglapp.hfut.edu.cn";
@@ -31,6 +41,7 @@ public sealed class EmptyClassroomService
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly ConcurrentDictionary<string, bool> _campusSnapshotCompleteness = new();
     private List<CampusBuildingOption> _buildingCatalog = new();
+    private bool _cacheFormatSupported = true;
 
     public List<ClassroomOccupationItem> CachedRooms { get; private set; } = new();
     public bool IsSyncing { get; private set; }
@@ -1327,7 +1338,15 @@ public sealed class EmptyClassroomService
         var temporaryFile = _cacheFile + ".tmp";
         try
         {
-            var json = JsonSerializer.Serialize(CachedRooms, new JsonSerializerOptions { WriteIndented = true });
+            if (!_cacheFormatSupported) return;
+            if (!PreserveLegacyCacheBackup()) return;
+            var snapshot = new EmptyClassroomCacheEnvelope
+            {
+                Rooms = CachedRooms,
+                SnapshotCompleteness = _campusSnapshotCompleteness.ToDictionary(entry => entry.Key, entry => entry.Value),
+                LastSyncTime = LastSyncTime
+            };
+            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(temporaryFile, json, Encoding.UTF8);
             File.Move(temporaryFile, _cacheFile, overwrite: true);
         }
@@ -1348,7 +1367,31 @@ public sealed class EmptyClassroomService
             if (File.Exists(_cacheFile))
             {
                 var json = File.ReadAllText(_cacheFile, Encoding.UTF8);
-                CachedRooms = JsonSerializer.Deserialize<List<ClassroomOccupationItem>>(json) ?? new();
+                try
+                {
+                    var snapshot = JsonSerializer.Deserialize<EmptyClassroomCacheEnvelope>(json);
+                    if (snapshot != null && snapshot.Version == 1)
+                    {
+                        CachedRooms = snapshot.Rooms ?? new();
+                        LastSyncTime = snapshot.LastSyncTime;
+                        foreach (var entry in snapshot.SnapshotCompleteness ?? new())
+                            _campusSnapshotCompleteness[entry.Key] = entry.Value;
+                    }
+                    else if (snapshot != null)
+                    {
+                        _cacheFormatSupported = false;
+                    }
+                    else
+                    {
+                        CachedRooms = new();
+                    }
+                }
+                catch (JsonException)
+                {
+                    // The previous cache format was a bare room array. Its snapshot completeness
+                    // was never persisted, so keep those rooms but treat completeness as unknown.
+                    CachedRooms = JsonSerializer.Deserialize<List<ClassroomOccupationItem>>(json) ?? new();
+                }
                 foreach (var r in CachedRooms)
                 {
                     r.Floor = r.InferredFloor;
@@ -1357,5 +1400,30 @@ public sealed class EmptyClassroomService
             }
         }
         catch { }
+    }
+
+    private bool PreserveLegacyCacheBackup()
+    {
+        if (!File.Exists(_cacheFile)) return true;
+        try
+        {
+            var existingJson = File.ReadAllText(_cacheFile, Encoding.UTF8);
+            var existingSnapshot = JsonSerializer.Deserialize<EmptyClassroomCacheEnvelope>(existingJson);
+            if (existingSnapshot?.Version == 1) return true;
+        }
+        catch { }
+
+        var backupPath = _cacheFile + ".pre-snapshot-metadata-v1.bak";
+        if (File.Exists(backupPath)) return true;
+        try
+        {
+            File.Copy(_cacheFile, backupPath, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Empty classroom cache migration backup failed: {ex.Message}");
+            return false;
+        }
     }
 }
