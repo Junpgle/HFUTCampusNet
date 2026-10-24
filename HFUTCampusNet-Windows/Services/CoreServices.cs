@@ -1554,11 +1554,16 @@ public sealed class CampusNetworkClient
                                 if (!TryUpdateForAccount(accountGeneration, () =>
                                 {
                                     LatestData.IsLoggedIn = false;
+                                    if (hxResponseMonthStillCurrent && _lastPortalFlowMonthKey != hxRequestMonth)
+                                    {
+                                        LatestData.UsedFlow = "-- M";
+                                        LatestData.AvailableFlow = "-- M";
+                                        _lastPortalFlowMonthKey = hxRequestMonth;
+                                    }
                                     if (hxResponseMonthStillCurrent && !string.IsNullOrEmpty(hxFlow) &&
                                         (string.IsNullOrWhiteSpace(LatestData.UsedFlow) || LatestData.UsedFlow == "-- M"))
                                     {
                                         LatestData.UsedFlow = actualHxFlow ?? hxFlow;
-                                        _lastPortalFlowMonthKey = hxRequestMonth;
                                     }
                                     if (!string.IsNullOrEmpty(hxBalance) &&
                                         (string.IsNullOrWhiteSpace(LatestData.Balance) || LatestData.Balance == "-- 元"))
