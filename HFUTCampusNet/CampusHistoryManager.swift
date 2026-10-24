@@ -128,6 +128,7 @@ public class CampusHistoryManager {
     private var historyBackupRequired = false
     private var flowAccountPartitionBackupRequired = false
     private var flowAccountingMigrationBackupRequired = false
+    private var flowHistoryContinuityBackupRequired = false
     private var activeFlowAccountKey = ""
 
     private let storeURL: URL = {
@@ -229,10 +230,16 @@ public class CampusHistoryManager {
                 return true
             }
 
+            flowHistoryContinuityBackupRequired = true
+            if backupHistoryBeforeFlowContinuityAdjustment() {
+                flowHistoryContinuityBackupRequired = false
+            }
+
             partitions[activeFlowAccountKey] = store.flowRecords
             store.flowRecords = partitions.removeValue(forKey: targetAccountKey) ?? []
             store.flowRecordsByAccount = partitions
             activeFlowAccountKey = targetAccountKey
+            reconcileContinuity()
             saveStore()
             return true
         }
@@ -253,6 +260,19 @@ public class CampusHistoryManager {
             return true
         } catch {
             print("流量历史迁移前备份失败: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func backupHistoryBeforeFlowContinuityAdjustment() -> Bool {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return true }
+        let backupURL = storeURL.appendingPathExtension("pre-flow-continuity-v1.bak")
+        guard !FileManager.default.fileExists(atPath: backupURL.path) else { return true }
+        do {
+            try FileManager.default.copyItem(at: storeURL, to: backupURL)
+            return true
+        } catch {
+            print("流量连续性校准前备份失败: \(error.localizedDescription)")
             return false
         }
     }
@@ -480,6 +500,10 @@ public class CampusHistoryManager {
             flowAccountPartitionBackupRequired = false
         }
         guard completeFlowAccountingMigrationIfNeeded() else { return }
+        if flowHistoryContinuityBackupRequired {
+            guard backupHistoryBeforeFlowContinuityAdjustment() else { return }
+            flowHistoryContinuityBackupRequired = false
+        }
         var partitions = store.flowRecordsByAccount ?? [:]
         partitions[activeFlowAccountKey] = store.flowRecords
         store.flowRecordsByAccount = partitions
