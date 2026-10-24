@@ -1355,19 +1355,30 @@ public sealed class AcademicService
 
     private static List<GradeItem> MergeGrades(List<GradeItem> primary, List<GradeItem> secondary)
     {
-        if (primary.Count == 0) return secondary;
-        if (secondary.Count == 0) return primary;
+        if (primary.Count == 0) return secondary.Select(CloneGrade).ToList();
+        if (secondary.Count == 0) return primary.Select(CloneGrade).ToList();
 
-        var result = new List<GradeItem>(primary);
-        var existingKeys = new HashSet<string>(primary.Select(GradeMergeKey), StringComparer.OrdinalIgnoreCase);
+        var result = primary.Select(CloneGrade).ToList();
+        var gradesByKey = new Dictionary<string, GradeItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var grade in result)
+        {
+            var key = GradeMergeKey(grade);
+            if (!gradesByKey.ContainsKey(key))
+                gradesByKey[key] = grade;
+        }
 
         foreach (var sec in secondary)
         {
             var key = GradeMergeKey(sec);
-            if (!existingKeys.Contains(key))
+            if (gradesByKey.TryGetValue(key, out var existing))
             {
-                result.Add(sec);
-                existingKeys.Add(key);
+                MergeGradeDetails(existing, sec);
+            }
+            else
+            {
+                var copy = CloneGrade(sec);
+                result.Add(copy);
+                gradesByKey[key] = copy;
             }
         }
 
@@ -1375,6 +1386,50 @@ public sealed class AcademicService
         return result.OrderByDescending(g => g.SemesterId ?? 0)
                      .ThenByDescending(g => g.TermName)
                      .ToList();
+    }
+
+    private static GradeItem CloneGrade(GradeItem grade) => new()
+    {
+        Id = grade.Id,
+        TermName = grade.TermName,
+        SemesterId = grade.SemesterId,
+        CourseName = grade.CourseName,
+        CourseCode = grade.CourseCode,
+        LessonCode = grade.LessonCode,
+        Credits = grade.Credits,
+        Gpa = grade.Gpa,
+        ScoreText = grade.ScoreText,
+        PassedOverride = grade.PassedOverride
+    };
+
+    private static void MergeGradeDetails(GradeItem primary, GradeItem secondary)
+    {
+        if (!GradeHasPublishedScore(primary) && GradeHasPublishedScore(secondary))
+        {
+            primary.ScoreText = secondary.ScoreText;
+            primary.Gpa = secondary.Gpa ?? primary.Gpa;
+            primary.PassedOverride = secondary.PassedOverride ?? primary.PassedOverride;
+        }
+        else
+        {
+            primary.Gpa ??= secondary.Gpa;
+            primary.PassedOverride ??= secondary.PassedOverride;
+        }
+
+        if (string.IsNullOrWhiteSpace(primary.TermName)) primary.TermName = secondary.TermName;
+        if (!primary.SemesterId.HasValue) primary.SemesterId = secondary.SemesterId;
+        if (string.IsNullOrWhiteSpace(primary.CourseName)) primary.CourseName = secondary.CourseName;
+        if (string.IsNullOrWhiteSpace(primary.CourseCode)) primary.CourseCode = secondary.CourseCode;
+        if (string.IsNullOrWhiteSpace(primary.LessonCode)) primary.LessonCode = secondary.LessonCode;
+        if (primary.Credits <= 0 && secondary.Credits > 0) primary.Credits = secondary.Credits;
+    }
+
+    private static bool GradeHasPublishedScore(GradeItem grade)
+    {
+        var score = grade.ScoreText?.Trim();
+        if (string.IsNullOrEmpty(score)) return false;
+        return !new[] { "--", "-", "—", "未出分", "未录入", "待录入", "暂未公布", "尚未发布", "暂无成绩" }
+            .Contains(score, StringComparer.OrdinalIgnoreCase);
     }
 
     private static string GradeMergeKey(GradeItem grade)
@@ -1443,17 +1498,17 @@ public sealed class AcademicService
         var notified = SettingsManager.Shared.NotifiedGradeIds;
         var unread = SettingsManager.Shared.UnreadGradeIds;
         var newOnes = new List<GradeItem>();
-        var previousIdsByMergeKey = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var previousGradesByMergeKey = new Dictionary<string, List<GradeItem>>(StringComparer.OrdinalIgnoreCase);
         foreach (var previous in previousGrades ?? new List<GradeItem>())
         {
             if (previous == null || string.IsNullOrWhiteSpace(previous.Id)) continue;
             var key = GradeMergeKey(previous);
-            if (!previousIdsByMergeKey.TryGetValue(key, out var ids))
+            if (!previousGradesByMergeKey.TryGetValue(key, out var matchingGrades))
             {
-                ids = new HashSet<string>(StringComparer.Ordinal);
-                previousIdsByMergeKey[key] = ids;
+                matchingGrades = new List<GradeItem>();
+                previousGradesByMergeKey[key] = matchingGrades;
             }
-            ids.Add(previous.Id);
+            matchingGrades.Add(previous);
         }
         bool notificationStateChanged = false;
 
@@ -1478,11 +1533,15 @@ public sealed class AcademicService
             if (string.IsNullOrWhiteSpace(g.Id)) continue;
 
             bool alreadyKnown = notified.Contains(g.Id) || unread.Contains(g.Id);
-            if (previousIdsByMergeKey.TryGetValue(GradeMergeKey(g), out var previousIds))
+            bool newlyPublished = GradeHasPublishedScore(g) &&
+                previousGradesByMergeKey.TryGetValue(GradeMergeKey(g), out var previousMatchingGrades) &&
+                previousMatchingGrades.Any(previous => !GradeHasPublishedScore(previous));
+            if (previousGradesByMergeKey.TryGetValue(GradeMergeKey(g), out var previousGradesForKey))
             {
                 alreadyKnown = true;
-                foreach (var previousId in previousIds)
+                foreach (var previousGrade in previousGradesForKey)
                 {
+                    var previousId = previousGrade.Id;
                     if (string.Equals(previousId, g.Id, StringComparison.Ordinal)) continue;
                     if (notified.Remove(previousId)) notificationStateChanged = true;
                     if (unread.Remove(previousId))
@@ -1491,6 +1550,15 @@ public sealed class AcademicService
                         notificationStateChanged = true;
                     }
                 }
+            }
+
+            if (newlyPublished)
+            {
+                notified.Add(g.Id);
+                unread.Add(g.Id);
+                newOnes.Add(g);
+                notificationStateChanged = true;
+                continue;
             }
 
             if (alreadyKnown)
