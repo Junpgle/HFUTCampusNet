@@ -854,16 +854,15 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
         // 1. 当天刚打开时（且尚未设置今日自习室）：每天首次同步成功后推送一次「今日全天空闲教室推荐」
         if SettingsManager.shared.lastNotifiedStudyMorningDate != todayStr {
             let todayAllFree = recommendedTodayAllDayFreeRooms(limit: 5)
-            if !todayAllFree.isEmpty {
+            if !todayAllFree.isEmpty,
+               SettingsManager.shared.currentStudyRoom?.dateString != todayStr {
                 SettingsManager.shared.lastNotifiedStudyMorningDate = todayStr
-                if SettingsManager.shared.currentStudyRoom == nil {
-                    let names = todayAllFree.prefix(4).map { $0.nameZh }.joined(separator: "、")
-                    NotificationHelper.showNotification(
-                        title: "☀️ 今日自习全天空闲教室推荐",
-                        subtitle: "一坐一整天无需换座（共 \(todayAllFree.count)+ 间全空）",
-                        body: "推荐前往：\(names)。可在状态栏「🏫 自习空教室」中一键设为当前自习室！"
-                    )
-                }
+                let names = todayAllFree.prefix(4).map { $0.nameZh }.joined(separator: "、")
+                NotificationHelper.showNotification(
+                    title: "☀️ 今日自习全天空闲教室推荐",
+                    subtitle: "一坐一整天无需换座（共 \(todayAllFree.count)+ 间全空）",
+                    body: "推荐前往：\(names)。可在状态栏「🏫 自习空教室」中一键设为当前自习室！"
+                )
             }
         }
 
