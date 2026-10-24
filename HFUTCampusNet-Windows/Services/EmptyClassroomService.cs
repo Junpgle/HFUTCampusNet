@@ -869,7 +869,7 @@ public sealed class EmptyClassroomService
     {
         var cached = CachedRooms.Where(room => room.CampusId == campusId && room.DateString == dateString).ToList();
         bool isComplete = IsCampusSnapshotComplete(campusId, dateString);
-        if (isComplete || cached.Count == 0)
+        if (isComplete || (cached.Count == 0 && !cachedSnapshotWasComplete))
         {
             destination.AddRange(fetched);
             return isComplete || fetched.Count > 0;
