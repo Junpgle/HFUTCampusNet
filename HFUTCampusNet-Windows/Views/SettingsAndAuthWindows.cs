@@ -2622,6 +2622,7 @@ public class CourseLoginWebWindow : Window
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
         if (_webView.CoreWebView2 == null) return;
         if (_extractingSessionId == loginWindowSessionId) return;
+        var scheduleGeneration = CourseScheduleService.Shared.CurrentScheduleGeneration;
         _extractingSessionId = loginWindowSessionId;
         _statusText.Text = "⏳ 正在通过页面上下文提取课表、考试与成绩数据...";
 
@@ -3052,7 +3053,7 @@ public class CourseLoginWebWindow : Window
                         string bizId = resElem.TryGetProperty("bizId", out var bElem) ? bElem.GetString() ?? "" : "";
 
                         schedule = CourseScheduleService.Shared.ApplyDatumJSONString(
-                            datum, stdId, semId, bizId, accountGeneration);
+                            datum, stdId, semId, bizId, accountGeneration, scheduleGeneration);
                     }
                     else if (engine == "dom" && resElem.TryGetProperty("lessons", out var lesArr) && lesArr.ValueKind == JsonValueKind.Array)
                     {
@@ -3136,7 +3137,13 @@ public class CourseLoginWebWindow : Window
                                 LastSyncTime = DateTime.Now,
                                 Lessons = allParsedLessons
                             };
-                            CourseScheduleService.Shared.ApplyCustomSchedule(schedule, accountGeneration);
+                            if (!CourseScheduleService.Shared.ApplyCustomSchedule(
+                                schedule,
+                                accountGeneration,
+                                scheduleGeneration))
+                            {
+                                schedule = null;
+                            }
                         }
                     }
 
@@ -3150,10 +3157,13 @@ public class CourseLoginWebWindow : Window
                         AcademicService.Shared.ApplyWebGradeAndExamHtml(gradeHtml, examHtml, accountGeneration);
                     }
 
-                    if (schedule != null && schedule.Lessons.Count > 0)
+                    if (schedule != null)
                     {
                         AppEvents.RaiseAuthStatusUpdated();
-                        _statusText.Text = $"🎉 成功同步 {schedule.Lessons.Count} 节课程！正在同步期末考试、成绩单与空教室...";
+                        var lessonSummary = schedule.Lessons.Count > 0
+                            ? $"成功同步 {schedule.Lessons.Count} 节课程"
+                            : "当前学期课表为空";
+                        _statusText.Text = $"🎉 {lessonSummary}！正在同步期末考试、成绩单与空教室...";
 
                         _ = Task.Run(async () =>
                         {
@@ -3169,7 +3179,7 @@ public class CourseLoginWebWindow : Window
                             catch { }
                         });
 
-                        TrayMenuController.Shared.ShowNotification("🎉 教务数据全量同步成功", $"已成功同步本学期 {schedule.Lessons.Count} 节课、期末排考及全学期成绩！");
+                        TrayMenuController.Shared.ShowNotification("🎉 教务数据全量同步成功", $"{lessonSummary}、期末排考及全学期成绩已同步！");
                         await Task.Delay(1400);
                         AppEvents.InvokeOnUI(() =>
                         {
@@ -3200,6 +3210,11 @@ public class CourseLoginWebWindow : Window
 
         // 3. 兜底回退：若页内双引擎未完成，尝试通过后台 HttpClient 提取
         if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;
+        if (CourseScheduleService.Shared.CurrentScheduleGeneration != scheduleGeneration)
+        {
+            _statusText.Text = "⚠️ 学期或课表已更新，已忽略旧的页面提取结果。";
+            return;
+        }
         CourseScheduleService.Shared.SyncSchedule(ok =>
         {
             if (!IsLoginWindowSessionCurrent(loginWindowSessionId, accountGeneration)) return;

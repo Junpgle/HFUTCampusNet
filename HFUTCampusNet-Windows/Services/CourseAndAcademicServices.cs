@@ -21,6 +21,17 @@ public sealed class CourseScheduleService
 
     public CourseScheduleData? CurrentSchedule { get; private set; }
 
+    public int CurrentScheduleGeneration
+    {
+        get
+        {
+            lock (_scheduleStateLock)
+            {
+                return _scheduleGeneration;
+            }
+        }
+    }
+
     private readonly string _cacheFile;
     private readonly HttpClient _client;
     private readonly object _scheduleStateLock = new();
@@ -274,22 +285,30 @@ public sealed class CourseScheduleService
         SyncSchedule(callback);
     }
 
-    public void ApplyCustomSchedule(CourseScheduleData schedule, long? expectedAccountGeneration = null)
+    public bool ApplyCustomSchedule(
+        CourseScheduleData schedule,
+        long? expectedAccountGeneration = null,
+        int? expectedScheduleGeneration = null)
     {
         var accountGeneration = expectedAccountGeneration ?? AccountSessionManager.Generation;
         EnsureSemesterOptions(schedule);
         CourseLesson.EnrichLessons(schedule.Lessons);
+        bool applied = false;
         lock (_scheduleStateLock)
         {
-            AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
+            if (expectedScheduleGeneration.HasValue && expectedScheduleGeneration.Value != _scheduleGeneration)
+                return false;
+
+            applied = AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
             {
                 _scheduleGeneration++;
                 CurrentSchedule = schedule;
                 SaveCache();
             });
         }
-        if (AccountSessionManager.IsGenerationCurrent(accountGeneration))
+        if (applied && AccountSessionManager.IsGenerationCurrent(accountGeneration))
             AppEvents.RaiseCourseScheduleUpdated();
+        return applied;
     }
 
     public CourseScheduleData? ApplyDatumJSONString(
@@ -297,7 +316,8 @@ public sealed class CourseScheduleService
         string studentId,
         string semesterId,
         string bizTypeId,
-        long? expectedAccountGeneration = null)
+        long? expectedAccountGeneration = null,
+        int? expectedScheduleGeneration = null)
     {
         try
         {
@@ -310,6 +330,9 @@ public sealed class CourseScheduleService
             CourseScheduleData? schedule = null;
             lock (_scheduleStateLock)
             {
+                if (expectedScheduleGeneration.HasValue && expectedScheduleGeneration.Value != _scheduleGeneration)
+                    return null;
+
                 if (!AccountSessionManager.TryRunForGeneration(accountGeneration, () =>
                 {
                     _scheduleGeneration++;
