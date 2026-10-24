@@ -338,7 +338,7 @@ public sealed class CampusHistoryManager
                     string.CompareOrdinal(r.DateString, cutoff) >= 0 &&
                     string.CompareOrdinal(r.DateString, today) <= 0 &&
                     r.CostRMB > 0).ToList();
-                return records.Count > 0 ? records.Average(r => r.CostRMB) : 1.20;
+                return records.Count > 0 ? records.Average(r => r.CostRMB) : 0.0;
             }
         }
     }
@@ -409,7 +409,8 @@ public sealed class CampusHistoryManager
                     .OrderByDescending(r => r.DateString)
                     .FirstOrDefault();
                 if (latest == null || latest.LatestBalanceRMB <= 0) return null;
-                var avg = Math.Max(0.5, Past7DaysElectricityDailyAverageRMB);
+                var avg = Past7DaysElectricityDailyAverageRMB;
+                if (avg <= 0.001) return null;
                 return (int)Math.Max(1, Math.Floor(latest.LatestBalanceRMB / avg));
             }
         }
