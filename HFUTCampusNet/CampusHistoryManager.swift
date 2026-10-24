@@ -530,7 +530,11 @@ public class CampusHistoryManager {
         currentSpeedMBs: Double? = nil,
         observedAt: Date = Date()
     ) {
+        // Bind the sample to the account that produced it before crossing onto the
+        // history queue. A delayed callback must not land in a newly active account.
+        let targetAccountKey = Self.flowAccountKey(for: SettingsManager.shared.portalUsername)
         queue.async {
+            guard self.activeFlowAccountKey == targetAccountKey else { return }
             let today = CourseCalendarHelper.dateString(from: observedAt)
             let currentDay = self.todayString()
             // 网关月累计值在请求过程中遇到月初重置时可能已经过期；不要把上月值写入本月历史。
