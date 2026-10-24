@@ -43,6 +43,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     private var dormStatusLabel: NSTextField!
     private var initialUsername: String = ""
     private var initialStdId: String = ""
+    private var courseStudentIDAtManualEditStart: String?
     private var initialCourseSemesterId: String = ""
     private var initialDormConfig: (campus: String, building: String, room: String, end: String) = ("", "", "", "")
 
@@ -685,6 +686,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func showSettings() {
         initialUsername = SettingsManager.shared.portalUsername
         initialStdId = SettingsManager.shared.courseStudentId
+        courseStudentIDAtManualEditStart = nil
         initialCourseSemesterId = SettingsManager.shared.courseSemesterId
         initialDormConfig = (
             SettingsManager.shared.dormCampus,
@@ -949,7 +951,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     private static func invalidateAccountScopedData(
         previousUsername: String,
-        previousStudentID: String,
+        preserveCourseStudentID: Bool = false,
         preserveUnifiedLoginSession: Bool = false
     ) {
         let previousUser = previousUsername.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -972,7 +974,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         StudentPortraitEatService.shared.clearCache()
         SettingsManager.shared.uniAppJwt = nil
         SettingsManager.shared.jxglstuDefaultPasswordCache = nil
-        if SettingsManager.shared.courseStudentId == previousStudentID {
+        if !preserveCourseStudentID {
             SettingsManager.shared.courseStudentId = ""
         }
         CampusCardService.shared.clearCache()
@@ -984,13 +986,14 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
     public func handleExternalAccountSwitch(
         previousUsername: String,
         previousStudentID: String,
+        preserveCourseStudentID: Bool = false,
         preserveUnifiedLoginSession: Bool = false,
         preservePortalPassword: Bool = false,
         preserveCasPassword: Bool = false
     ) {
         Self.invalidateAccountScopedData(
             previousUsername: previousUsername,
-            previousStudentID: previousStudentID,
+            preserveCourseStudentID: preserveCourseStudentID,
             preserveUnifiedLoginSession: preserveUnifiedLoginSession
         )
         if !preservePortalPassword {
@@ -1002,6 +1005,7 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         initialUsername = SettingsManager.shared.portalUsername
         let currentStdId = SettingsManager.shared.courseStudentId
         initialStdId = currentStdId
+        courseStudentIDAtManualEditStart = nil
         usernameField?.stringValue = initialUsername
         passwordField?.stringValue = SettingsManager.shared.portalPassword
         casPasswordField?.stringValue = SettingsManager.shared.casPassword
@@ -1009,10 +1013,30 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         updateCourseStatusDisplay()
     }
 
-    private func handleAccountSwitchIfNeeded() {
+    private func handleAccountSwitchIfNeeded(preserveCourseStudentID: Bool = false) {
         let currentUsername = SettingsManager.shared.portalUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentUsername != initialUsername.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-        handleExternalAccountSwitch(previousUsername: initialUsername, previousStudentID: initialStdId)
+        handleExternalAccountSwitch(
+            previousUsername: initialUsername,
+            previousStudentID: initialStdId,
+            preserveCourseStudentID: preserveCourseStudentID
+        )
+    }
+
+    private func handleCourseStudentIdChangeIfNeeded() {
+        let currentStudentID = SettingsManager.shared.courseStudentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousStudentID = (courseStudentIDAtManualEditStart ?? initialStdId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentStudentID != previousStudentID else {
+            initialStdId = currentStudentID
+            courseStudentIDAtManualEditStart = nil
+            return
+        }
+
+        CourseScheduleService.shared.clearSchedule()
+        AcademicService.shared.clearCache()
+        initialStdId = currentStudentID
+        courseStudentIDAtManualEditStart = nil
     }
 
     private func saveCourseSemesterSelectionFromUserEdit() {
@@ -1025,8 +1049,16 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         CourseScheduleService.shared.beginScheduleUpdate()
     }
 
-    private func saveCredentials(checkDormInvalidation: Bool = true, saveUsername: Bool = true) {
+    private func saveCredentials(
+        checkDormInvalidation: Bool = true,
+        saveUsername: Bool = true,
+        saveCourseStudentID: Bool = false
+    ) {
         let nextUsername = usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextCourseStudentID = courseStudentIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let courseStudentIDBaseline = (courseStudentIDAtManualEditStart ?? initialStdId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let courseStudentIDWasEdited = nextCourseStudentID != courseStudentIDBaseline
         let accountChanged = checkDormInvalidation &&
             nextUsername != initialUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         if accountChanged {
@@ -1045,9 +1077,14 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
         if !prevAutoLogin && newAutoLogin {
             CampusNetworkClient.shared.clearManualLogout()
         }
-        SettingsManager.shared.courseStudentId = courseStudentIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if saveCourseStudentID || (checkDormInvalidation && courseStudentIDWasEdited) {
+            SettingsManager.shared.courseStudentId = nextCourseStudentID
+        }
         if checkDormInvalidation {
-            handleAccountSwitchIfNeeded()
+            handleAccountSwitchIfNeeded(preserveCourseStudentID: courseStudentIDWasEdited)
+            if courseStudentIDWasEdited || courseStudentIDAtManualEditStart != nil {
+                handleCourseStudentIdChangeIfNeeded()
+            }
         }
         let prevCourseEnabled = SettingsManager.shared.courseTableEnabled
         let newCourseEnabled = (courseTableCheckbox.state == .on)
@@ -1099,10 +1136,18 @@ public class SettingsWindowController: NSWindowController, NSWindowDelegate, NST
 
     public func controlTextDidChange(_ obj: Notification) {
         let isUsernameBeingEdited = (obj.object as? NSTextField) === usernameField
+        let isCourseStudentIdBeingEdited = (obj.object as? NSTextField) === courseStudentIdField
+        if isCourseStudentIdBeingEdited, courseStudentIDAtManualEditStart == nil {
+            courseStudentIDAtManualEditStart = SettingsManager.shared.courseStudentId
+        }
         if (obj.object as? NSTextField) === courseSemesterIdField {
             saveCourseSemesterSelectionFromUserEdit()
         }
-        saveCredentials(checkDormInvalidation: false, saveUsername: !isUsernameBeingEdited)
+        saveCredentials(
+            checkDormInvalidation: false,
+            saveUsername: !isUsernameBeingEdited,
+            saveCourseStudentID: isCourseStudentIdBeingEdited
+        )
     }
 
     public func controlTextDidEndEditing(_ obj: Notification) {
