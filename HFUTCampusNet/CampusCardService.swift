@@ -327,7 +327,10 @@ public class CampusCardService {
                 completion(accumulated)
                 return
             }
-            guard let data = data,
+            let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
+            guard error == nil,
+                  (200..<300).contains(httpStatus),
+                  let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let dataObj = json["data"] as? [String: Any],
                   let records = dataObj["records"] as? [[String: Any]] else {
