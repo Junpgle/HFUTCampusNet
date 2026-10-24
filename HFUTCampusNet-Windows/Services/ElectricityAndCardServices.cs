@@ -823,6 +823,9 @@ public sealed class ElectricityService
                     return (null, null);
                 }
 
+                if (!resp.IsSuccessStatusCode)
+                    return (null, null);
+
                 if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
                 {
                     return (null, null);
