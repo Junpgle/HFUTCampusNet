@@ -919,8 +919,9 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         thinkingModePopup.isEnabled = false
         historyButton.isEnabled = false
         let attachmentNames = attachments.map(\.originalFileName).joined(separator: "、")
-        let attachmentSuffix = attachmentNames.isEmpty ? "" : "\n附件：\(attachmentNames)"
-        appendText("\n你：\(question)\(attachmentSuffix)\n\nAI：")
+        let userBlock = CampusAITranscriptStyle.userBlock(question: question, attachments: attachmentNames)
+        transcriptView.textStorage?.append(userBlock)
+        transcriptView.scrollToEndOfDocument(nil)
         statusLabel.stringValue = "检查当前学校 AI 登录会话…"
 
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] all in
@@ -1724,60 +1725,57 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
     private func beginThinkingSection() {
         guard activeThinkingStart == nil else { return }
         finishAssistantSection()
-        appendMarkdownBlock("\n\n**思考过程**\n\n")
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.thinkingHeader())
         activeThinkingMarkdown = ""
         activeThinkingStart = transcriptView.textStorage?.length
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func appendThinkingMarkdown(_ chunk: String) {
         if activeThinkingStart == nil { beginThinkingSection() }
         activeThinkingMarkdown += chunk
-        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart)
+        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart, isThinking: true)
     }
 
     private func finishThinkingSection() {
         guard activeThinkingStart != nil else { return }
-        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart)
+        renderMarkdown(activeThinkingMarkdown, startingAt: activeThinkingStart, isThinking: true)
         activeThinkingStart = nil
         activeThinkingMarkdown = ""
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.thinkingFooter())
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func beginFinalAnswerSection() {
         finishThinkingSection()
         guard !hasStartedFinalAnswer else { return }
-        appendMarkdownBlock("\n\n**正式回复**\n\n")
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.assistantHeader())
         activeAssistantStart = transcriptView.textStorage?.length
         activeAssistantMarkdown = ""
         hasStartedFinalAnswer = true
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func appendAssistantMarkdown(_ chunk: String) {
         beginFinalAnswerSection()
         activeAssistantMarkdown += chunk
-        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart)
+        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart, isThinking: false)
     }
 
     private func finishAssistantSection() {
         guard activeAssistantStart != nil else { return }
-        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart)
+        renderMarkdown(activeAssistantMarkdown, startingAt: activeAssistantStart, isThinking: false)
         activeAssistantMarkdown = ""
         activeAssistantStart = nil
         hasStartedFinalAnswer = false
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func appendToolCallBlock(result: Bool?) {
         finishThinkingSection()
         finishAssistantSection()
-        let block: String
-        switch result {
-        case .none:
-            block = "\n\n> **工具调用**\n>\n> 正在调用智能体工具…\n\n"
-        case .some(true):
-            block = "\n\n> **工具调用完成**\n\n"
-        case .some(false):
-            block = "\n\n> **工具调用未完成**\n\n"
-        }
-        appendMarkdownBlock(block)
+        transcriptView.textStorage?.append(CampusAITranscriptStyle.toolCallStatus(result: result))
+        transcriptView.scrollToEndOfDocument(nil)
     }
 
     private func appendMarkdownBlock(_ markdown: String) {
@@ -1787,12 +1785,12 @@ public final class CampusAIAssistantWindowController: NSWindowController, WKNavi
         transcriptView.scrollToEndOfDocument(nil)
     }
 
-    private func renderMarkdown(_ markdown: String, startingAt start: Int?) {
+    private func renderMarkdown(_ markdown: String, startingAt start: Int?, isThinking: Bool = false) {
         guard let storage = transcriptView.textStorage,
               let start = start, start <= storage.length else { return }
         let currentRange = NSRange(location: start, length: storage.length - start)
         let rendered = CampusAITranscriptStyle.markdownAttributedString(
-            markdown, font: transcriptView.font ?? .systemFont(ofSize: 13)
+            markdown, font: transcriptView.font ?? .systemFont(ofSize: 13), isThinking: isThinking
         )
         storage.replaceCharacters(in: currentRange, with: rendered)
         transcriptView.scrollToEndOfDocument(nil)

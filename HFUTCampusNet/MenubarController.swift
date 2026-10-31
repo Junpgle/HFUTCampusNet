@@ -300,7 +300,7 @@ public class MenubarController: NSObject, NSMenuDelegate, NetworkSpeedMonitorDel
         historyStatsItem.target = self
         menu.addItem(historyStatsItem)
 
-        let aiAssistantItem = NSMenuItem(title: "校园 AI 助手...", action: #selector(openAIAssistantAction), keyEquivalent: "")
+        let aiAssistantItem = NSMenuItem(title: "校园 AI 助手...（Beta）", action: #selector(openAIAssistantAction), keyEquivalent: "")
         aiAssistantItem.image = symbolImage("bubble.left.and.text.bubble.right")
         aiAssistantItem.target = self
         menu.addItem(aiAssistantItem)

@@ -364,9 +364,9 @@ struct CampusAIFlowSupportTests {
                "the current official CAS login page should be recognized")
         expect(HFUTCASLoginSupport.isCASHost(URL(string: "https://cas.hfut.edu.cn/cas/oauth2.0/authorize")),
                "all official CAS routes should be excluded from legacy page autofill")
-        expect(HFUTCASLoginSupport.isOfficialHTTPSPage(URL(string: "https://jxglstu.hfut.edu.cn/eams5-student/login")),
-               "legacy credential automation may remain available on official HTTPS campus pages")
-        expect(!HFUTCASLoginSupport.isOfficialHTTPSPage(URL(string: "https://evil-hfut.edu.cn/login")),
+        expect(HFUTCASLoginSupport.isEamsLoginPage(URL(string: "https://jxglstu.hfut.edu.cn/eams5-student/neusoft-sso/login")),
+               "legacy credential automation may remain available on official EAMS SSO login page")
+        expect(!HFUTCASLoginSupport.isEamsLoginPage(URL(string: "https://evil-hfut.edu.cn/eams5-student/neusoft-sso/login")),
                "legacy credential automation must reject lookalike campus hosts")
         expect(!HFUTCASLoginSupport.isLoginPage(URL(string: "http://cas.hfut.edu.cn/cas/login")),
                "CAS native controls must require HTTPS")
@@ -478,6 +478,28 @@ struct CampusAIFlowSupportTests {
         let boldRange = (rendered.string as NSString).range(of: "bold")
         expect(boldRange.location != NSNotFound && rendered.attribute(.font, at: boldRange.location, effectiveRange: nil) != nil,
                "Markdown emphasis should produce styled attributed text")
+
+        // 验证列表换行保留与项目符号渲染
+        let listMarkdown = "专业课类\n- 计算机网络\n- 操作系统"
+        let renderedList = CampusAITranscriptStyle.markdownAttributedString(listMarkdown, font: .systemFont(ofSize: 13))
+        expect(renderedList.string.contains("• 计算机网络\n• 操作系统"),
+               "Markdown list items must preserve separate lines with bullet symbols")
+
+        // 验证系统噪音与标签残片清洗
+        let noisyThinking = "nk</thi nk>Let me check<timestamp>Saturday, Oct 31, 2026</timestamp> @@@CurrentTime courses"
+        let sanitized = CampusAITranscriptStyle.sanitize(noisyThinking)
+        expect(!sanitized.contains("nk</thi nk>")
+               && !sanitized.contains("timestamp")
+               && !sanitized.contains("CurrentTime")
+               && sanitized.contains("Let me check")
+               && sanitized.contains("courses"),
+               "Sanitizer must remove broken think tags, timestamp blocks, and placeholder tokens")
+
+        // 验证思考过程与正式回复样式区分
+        let thinkingAttributed = CampusAITranscriptStyle.markdownAttributedString("thinking content", font: .systemFont(ofSize: 13), isThinking: true)
+        let thinkingColor = thinkingAttributed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        expect(thinkingColor == NSColor.secondaryLabelColor,
+               "Thinking text should use secondaryLabelColor for visual hierarchy")
     }
 
     private static func testAutomaticEntryNavigation() {

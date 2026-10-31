@@ -1472,7 +1472,7 @@ public class EmptyClassroomService: NSObject, URLSessionDelegate {
 
                 let sortedRooms = Self.sortedUniqueRooms(accumulatedRooms + rooms, campus: campus)
                 let syncIsCurrent = syncToken.map {
-                    activeSyncTokenByCampus[campus.rawValue] == $0
+                    self.activeSyncTokenByCampus[campus.rawValue] == $0
                 } ?? true
                 if cacheResult && syncIsCurrent {
                     self.roomsCache[cacheKey] = sortedRooms

@@ -146,7 +146,7 @@ public class ElectricityService {
                         completion?(.failure(firstErr))
                         return
                     }
-                    self?.loginHuiXinAndRetry(generation: generation, completion: completion)
+                    self.loginHuiXinAndRetry(generation: generation, completion: completion)
                 }
             }
         } else {

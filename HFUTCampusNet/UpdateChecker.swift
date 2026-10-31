@@ -38,7 +38,7 @@ public class UpdateChecker {
         if let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, !ver.isEmpty {
             return ver
         }
-        return "2.2.0"
+        return "2.3.0"
     }
 
     /// 检查 GitHub Releases 最新版本
