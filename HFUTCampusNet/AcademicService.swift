@@ -12,6 +12,12 @@ public class AcademicService: NSObject, URLSessionDelegate {
 
     private static let uniAppBaseURL = "https://jwglapp.hfut.edu.cn"
     private static let eamsBaseURL = "http://jxglstu.hfut.edu.cn/eams5-student"
+    private static let oneformBaseURL = "https://oneform.hfut.edu.cn"
+    private static let oneformRedirectURL = "https://oneform.hfut.edu.cn/studentform/TablePortal/DynamicReport"
+    private static let oneformReferer = "https://oneform.hfut.edu.cn/studentform/TablePortal/DynamicReport?groupCode=studentformgrcg&reportId=65b4ff7cad144a25936f85a21dfb0a77&collegeType=generalform-stu"
+    private static let casAuthorizeURL = "https://cas.hfut.edu.cn/cas/oauth2.0/authorize"
+    private static let oneformClientId = "BsHfutEduForm"
+    private static let oneformUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     public private(set) var latestData: AcademicDataSnapshot?
     public private(set) var isSyncing: Bool = false
@@ -21,6 +27,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
     private var pendingSyncCompletions: [(Result<AcademicDataSnapshot, Error>) -> Void] = []
     private var isMonitoring = false
     private var isPausedForSleep = false
+    private var isShowingNewExamAlert = false
     private var monitorGeneration = 0
     private var syncGeneration = 0
     private let fileManager = FileManager.default
@@ -142,6 +149,14 @@ public class AcademicService: NSObject, URLSessionDelegate {
             }
             SettingsManager.shared.notifiedGradeIds = notified
         }
+        // 确保已缓存过的考试已记录在 notifiedExamIds 中，避免升级/重启后把旧考试当新考试弹窗
+        var notifiedExams = SettingsManager.shared.notifiedExamIds
+        if notifiedExams.isEmpty && !decoded.exams.isEmpty {
+            for exam in decoded.exams {
+                notifiedExams.insert(exam.id)
+            }
+            SettingsManager.shared.notifiedExamIds = notifiedExams
+        }
     }
 
     private func saveCachedData(_ snapshot: AcademicDataSnapshot) {
@@ -200,6 +215,8 @@ public class AcademicService: NSObject, URLSessionDelegate {
         try? fileManager.removeItem(at: cacheFileURL)
         SettingsManager.shared.notifiedGradeIds = []
         SettingsManager.shared.unreadGradeIds = []
+        SettingsManager.shared.notifiedExamIds = []
+        SettingsManager.shared.oneformAuthToken = nil
         lastErrorMessage = nil
         let completions = pendingSyncCompletions
         pendingSyncCompletions.removeAll(keepingCapacity: false)
@@ -292,6 +309,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
         var eamsProgram: ProgramCompletionSummary?
         var eamsTextbooks: [CourseTextbookItem]?
         var eamsSurveys: [LessonSurveyItem]?
+        var oneFormRanks: OneFormRankPayload?
         var lastErr: Error?
 
         // 通道 1：合工大教务移动端 (UniApp JWT)
@@ -337,6 +355,17 @@ public class AcademicService: NSObject, URLSessionDelegate {
             group.leave()
         }
 
+        // 通道 3：学生一张表 - 个人成果 (oneform.hfut.edu.cn：补充课程专业排名与学年绩点排名)
+        group.enter()
+        fetchFromOneForm { payload in
+            resultQueue.sync {
+                if let payload {
+                    oneFormRanks = payload
+                }
+            }
+            group.leave()
+        }
+
         group.notify(queue: .main) { [weak self] in
             guard let self = self, self.syncGeneration == generation else { return }
             let collected = resultQueue.sync {
@@ -348,6 +377,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
                     eamsProgram: eamsProgram,
                     eamsTextbooks: eamsTextbooks,
                     eamsSurveys: eamsSurveys,
+                    oneFormRanks: oneFormRanks,
                     lastError: lastErr
                 )
             }
@@ -361,7 +391,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
             )
             let hasFreshResponse = collected.uniAppGrades != nil || collected.eamsGrades != nil ||
                 collected.uniAppExams != nil || collected.eamsExams != nil || collected.eamsProgram != nil ||
-                collected.eamsTextbooks != nil || collected.eamsSurveys != nil
+                collected.eamsTextbooks != nil || collected.eamsSurveys != nil || collected.oneFormRanks != nil
 
             if !hasFreshResponse,
                let prev = self.latestData, !prev.allGrades.isEmpty {
@@ -388,7 +418,13 @@ public class AcademicService: NSObject, URLSessionDelegate {
             let hasFreshExams = collected.uniAppExams != nil || collected.eamsExams != nil
             let hasFreshGrades = collected.uniAppGrades != nil || collected.eamsGrades != nil
             let finalExams = hasFreshExams ? mergedExams : (oldSnapshot?.exams ?? [])
-            let finalGroups = hasFreshGrades ? mergedTermGroups : (oldSnapshot?.termGroups ?? [])
+            let baseGroups = hasFreshGrades ? mergedTermGroups : (oldSnapshot?.termGroups ?? [])
+            let finalGroups = self.applyOneFormRanks(
+                collected.oneFormRanks,
+                to: baseGroups,
+                previousGroups: oldSnapshot?.termGroups
+            )
+            let finalYearRanks = collected.oneFormRanks?.yearRanks ?? oldSnapshot?.yearGpaRanks ?? []
             let finalProgram = collected.eamsProgram ?? oldSnapshot?.programCompletion
             let finalTextbooks = collected.eamsTextbooks ?? oldSnapshot?.textbooks ?? []
             let finalSurveys = collected.eamsSurveys ?? oldSnapshot?.surveys ?? []
@@ -396,6 +432,7 @@ public class AcademicService: NSObject, URLSessionDelegate {
             let newSnapshot = AcademicDataSnapshot(
                 exams: finalExams,
                 termGroups: finalGroups,
+                yearGpaRanks: finalYearRanks,
                 programCompletion: finalProgram,
                 textbooks: finalTextbooks,
                 surveys: finalSurveys,
@@ -404,6 +441,8 @@ public class AcademicService: NSObject, URLSessionDelegate {
 
             // 检测是否有新出分的科目并推送通知
             self.detectAndNotifyNewGrades(oldSnapshot: oldSnapshot, newSnapshot: newSnapshot)
+            // 检测是否有新的考试安排并弹窗提醒
+            self.detectAndNotifyNewExams(oldSnapshot: oldSnapshot, newSnapshot: newSnapshot)
 
             self.saveCachedData(newSnapshot)
             finishSync(.success(newSnapshot))
@@ -476,6 +515,92 @@ public class AcademicService: NSObject, URLSessionDelegate {
                 subtitle: gpaChangeText,
                 body: "可在「考试与成绩」面板查看全部最新成绩与加权分。"
             )
+        }
+    }
+
+    // MARK: - 新考试安排检测与弹窗提醒
+
+    private func detectAndNotifyNewExams(oldSnapshot: AcademicDataSnapshot?, newSnapshot: AcademicDataSnapshot) {
+        let allNewExams = newSnapshot.exams
+        guard !allNewExams.isEmpty else { return }
+
+        var notifiedIds = SettingsManager.shared.notifiedExamIds
+        // 首次全量同步（尚无本地快照且未记录任何已通知考试）时，将当前考试标记为已知，避免首次安装或切换账号后立即弹窗打扰
+        if notifiedIds.isEmpty && oldSnapshot == nil {
+            for exam in allNewExams {
+                notifiedIds.insert(exam.id)
+            }
+            SettingsManager.shared.notifiedExamIds = notifiedIds
+            return
+        }
+
+        let newlyPublished = allNewExams.filter { !notifiedIds.contains($0.id) }
+        guard !newlyPublished.isEmpty else { return }
+
+        for exam in newlyPublished {
+            notifiedIds.insert(exam.id)
+        }
+        SettingsManager.shared.notifiedExamIds = notifiedIds
+
+        let now = Date()
+        let upcomingNewExams = newlyPublished
+            .filter { !$0.isFinished(at: now) }
+            .sorted { $0.dateTimeString < $1.dateTimeString }
+        guard !upcomingNewExams.isEmpty else { return }
+
+        if upcomingNewExams.count == 1, let exam = upcomingNewExams.first {
+            NotificationHelper.showNotification(
+                title: "📅 发现新的考试安排 · 《\(exam.courseName)》",
+                subtitle: "\(exam.dateTimeString) · \(exam.countdownBadgeText(at: now))",
+                body: "考场：\(exam.displayLocation)"
+            )
+        } else {
+            let previewNames = upcomingNewExams.prefix(3)
+                .map { "《\($0.courseName)》\($0.countdownBadgeText(at: now))" }
+                .joined(separator: "、")
+            NotificationHelper.showNotification(
+                title: "📅 发现 \(upcomingNewExams.count) 门新的考试安排",
+                subtitle: previewNames,
+                body: "点击状态栏「考试与成绩」即可查看全部考试时间与考场地点。"
+            )
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showNewExamsAlert(upcomingNewExams, now: now)
+        }
+    }
+
+    private func showNewExamsAlert(_ exams: [ExamItem], now: Date) {
+        guard !exams.isEmpty, !isShowingNewExamAlert else { return }
+        isShowingNewExamAlert = true
+        defer { isShowingNewExamAlert = false }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+
+        if exams.count == 1, let exam = exams.first {
+            alert.messageText = "发现新的考试安排：\(exam.courseName)"
+        } else {
+            alert.messageText = "发现 \(exams.count) 门新的考试安排"
+        }
+
+        let lines = exams.prefix(5).map { exam -> String in
+            let typeText = exam.examType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let typeSuffix = (typeText?.isEmpty == false) ? "（\(typeText!)）" : ""
+            return "• 《\(exam.courseName)》\(typeSuffix)\n  时间：\(exam.dateTimeString)（\(exam.countdownBadgeText(at: now))）\n  考场：\(exam.displayLocation)"
+        }
+        var body = lines.joined(separator: "\n\n")
+        if exams.count > 5 {
+            body += "\n\n……等共 \(exams.count) 场新考试安排"
+        }
+        alert.informativeText = body
+
+        alert.addButton(withTitle: "查看考试安排")
+        alert.addButton(withTitle: "知道了")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            AcademicWindowController.shared.showWindow(mode: 1)
         }
     }
 
@@ -1384,5 +1509,357 @@ public class AcademicService: NSObject, URLSessionDelegate {
             .filter { !$0.isEmpty }
         return lines.joined(separator: " ")
             .trimmingCharacters(in: CharacterSet(charactersIn: " ·"))
+    }
+
+    // MARK: - 通道 3：学生一张表 - 个人成果 (oneform.hfut.edu.cn 专业排名与学年绩点排名)
+
+    public struct OneFormCourseRank: Equatable {
+        public let termName: String
+        public let courseName: String
+        public let academicYear: String
+        public let majorRank: Int
+    }
+
+    public struct OneFormRankPayload: Equatable {
+        public let courseRanks: [OneFormCourseRank]
+        public let yearRanks: [AcademicYearGpaRank]
+    }
+
+    private func fetchFromOneForm(completion: @escaping (OneFormRankPayload?) -> Void) {
+        if let cachedToken = SettingsManager.shared.oneformAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cachedToken.isEmpty {
+            requestOneFormData(token: cachedToken, allowRetry: true, completion: completion)
+            return
+        }
+        obtainOneFormToken { [weak self] token in
+            guard let self, let token, !token.isEmpty else {
+                completion(nil)
+                return
+            }
+            SettingsManager.shared.oneformAuthToken = token
+            self.requestOneFormData(token: token, allowRetry: false, completion: completion)
+        }
+    }
+
+    private func requestOneFormData(
+        token: String,
+        allowRetry: Bool,
+        completion: @escaping (OneFormRankPayload?) -> Void
+    ) {
+        guard let url = URL(string: "\(Self.oneformBaseURL)/api/generalform-stu/grcg/cgml/getStucgml?cgType=&type=2&startNd=&endNd=") else {
+            completion(nil)
+            return
+        }
+        let rawToken = token.hasPrefix("Bearer ") ? String(token.dropFirst(7)) : token
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
+        req.httpMethod = "GET"
+        req.httpShouldHandleCookies = false
+        req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(rawToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("TOKEN=\(rawToken)", forHTTPHeaderField: "Cookie")
+        req.setValue(Self.oneformReferer, forHTTPHeaderField: "Referer")
+        req.setValue(Self.oneformUserAgent, forHTTPHeaderField: "User-Agent")
+
+        session.dataTask(with: req) { [weak self] data, response, err in
+            guard let self else {
+                completion(nil)
+                return
+            }
+            if err != nil {
+                completion(nil)
+                return
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 || code == 403 {
+                if allowRetry {
+                    SettingsManager.shared.oneformAuthToken = nil
+                    self.obtainOneFormToken { newToken in
+                        guard let newToken, !newToken.isEmpty else {
+                            completion(nil)
+                            return
+                        }
+                        SettingsManager.shared.oneformAuthToken = newToken
+                        self.requestOneFormData(token: newToken, allowRetry: false, completion: completion)
+                    }
+                } else {
+                    completion(nil)
+                }
+                return
+            }
+            guard code == 200, let data else {
+                completion(nil)
+                return
+            }
+            if let payload = self.parseOneFormRankJSON(data) {
+                completion(payload)
+            } else if allowRetry {
+                SettingsManager.shared.oneformAuthToken = nil
+                self.obtainOneFormToken { newToken in
+                    guard let newToken, !newToken.isEmpty else {
+                        completion(nil)
+                        return
+                    }
+                    SettingsManager.shared.oneformAuthToken = newToken
+                    self.requestOneFormData(token: newToken, allowRetry: false, completion: completion)
+                }
+            } else {
+                completion(nil)
+            }
+        }.resume()
+    }
+
+    private func obtainOneFormToken(completion: @escaping (String?) -> Void) {
+        guard let tgc = SettingsManager.shared.casTgcCookie?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !tgc.isEmpty else {
+            completion(nil)
+            return
+        }
+        guard var authComponents = URLComponents(string: Self.casAuthorizeURL) else {
+            completion(nil)
+            return
+        }
+        authComponents.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: Self.oneformClientId),
+            URLQueryItem(name: "redirect_uri", value: Self.oneformRedirectURL)
+        ]
+        guard let authURL = authComponents.url else {
+            completion(nil)
+            return
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.httpShouldSetCookies = true
+        if let castgc = HTTPCookie(properties: [
+            .domain: "cas.hfut.edu.cn", .path: "/", .name: "CASTGC", .value: tgc
+        ]) {
+            configuration.httpCookieStorage?.setCookie(castgc)
+        }
+        if let tgcCookie = HTTPCookie(properties: [
+            .domain: "cas.hfut.edu.cn", .path: "/cas", .name: "TGC", .value: tgc
+        ]) {
+            configuration.httpCookieStorage?.setCookie(tgcCookie)
+        }
+        let oauthSession = URLSession(configuration: configuration)
+        var request = URLRequest(url: authURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
+        request.setValue(Self.oneformUserAgent, forHTTPHeaderField: "User-Agent")
+
+        func extractCode(from url: URL?) -> String? {
+            guard let url else { return nil }
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            return components?.queryItems?.first(where: { $0.name == "code" })?.value
+        }
+
+        oauthSession.dataTask(with: request) { [weak self] _, response, requestError in
+            guard let self else {
+                oauthSession.finishTasksAndInvalidate()
+                completion(nil)
+                return
+            }
+            if requestError != nil {
+                oauthSession.finishTasksAndInvalidate()
+                completion(nil)
+                return
+            }
+            let callbackURL = (response as? HTTPURLResponse)?.url
+            if let code = extractCode(from: callbackURL), !code.isEmpty {
+                self.exchangeOneFormCode(code: code, redirect: Self.oneformRedirectURL, session: oauthSession, completion: completion)
+                return
+            }
+            if callbackURL?.path.contains("/login") == true {
+                oauthSession.finishTasksAndInvalidate()
+                completion(nil)
+                return
+            }
+
+            // CAS OAuth 2.0 首次授权确认页：同一 session 再次请求即可完成确认并拿到 code
+            var confirmRequest = URLRequest(url: authURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
+            confirmRequest.setValue(Self.oneformUserAgent, forHTTPHeaderField: "User-Agent")
+            oauthSession.dataTask(with: confirmRequest) { [weak self] _, secondResponse, secondError in
+                guard let self, secondError == nil else {
+                    oauthSession.finishTasksAndInvalidate()
+                    completion(nil)
+                    return
+                }
+                let secondURL = (secondResponse as? HTTPURLResponse)?.url
+                if let code = extractCode(from: secondURL), !code.isEmpty {
+                    self.exchangeOneFormCode(code: code, redirect: Self.oneformRedirectURL, session: oauthSession, completion: completion)
+                } else {
+                    oauthSession.finishTasksAndInvalidate()
+                    completion(nil)
+                }
+            }.resume()
+        }.resume()
+    }
+
+    private func exchangeOneFormCode(
+        code: String,
+        redirect: String,
+        session oauthSession: URLSession,
+        completion: @escaping (String?) -> Void
+    ) {
+        guard var components = URLComponents(string: "\(Self.oneformBaseURL)/api/auth/oauth/getToken") else {
+            oauthSession.finishTasksAndInvalidate()
+            completion(nil)
+            return
+        }
+        components.queryItems = [
+            URLQueryItem(name: "type", value: "form"),
+            URLQueryItem(name: "redirect", value: redirect),
+            URLQueryItem(name: "code", value: code)
+        ]
+        guard let url = components.url else {
+            oauthSession.finishTasksAndInvalidate()
+            completion(nil)
+            return
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
+        request.setValue(Self.oneformUserAgent, forHTTPHeaderField: "User-Agent")
+        oauthSession.dataTask(with: request) { data, response, requestError in
+            oauthSession.finishTasksAndInvalidate()
+            guard requestError == nil,
+                  let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status),
+                  let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (json["code"] as? Int) == 1,
+                  let tokenData = json["data"] as? [String: Any],
+                  let token = (tokenData["access_token"] as? String) ?? (tokenData["token"] as? String),
+                  !token.isEmpty else {
+                completion(nil)
+                return
+            }
+            completion(token)
+        }.resume()
+    }
+
+    public func parseOneFormRankJSON(_ data: Data) -> OneFormRankPayload? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["code"] as? Int) == 1,
+              let dataDict = root["data"] as? [String: Any] else {
+            return nil
+        }
+
+        func parseRankInt(_ value: Any?) -> Int? {
+            if let num = value as? Int, num > 0 {
+                return num
+            }
+            if let str = value as? String {
+                let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let num = Int(trimmed), num > 0 {
+                    return num
+                }
+            }
+            return nil
+        }
+
+        var courseRanks: [OneFormCourseRank] = []
+        if let kccjList = dataDict["kccjList"] as? [[String: Any]] {
+            for item in kccjList {
+                guard let rawCourse = item["KCMC"] as? String,
+                      let rawTerm = item["XQ"] as? String,
+                      let rank = parseRankInt(item["ZYPM"]) else {
+                    continue
+                }
+                let courseName = rawCourse.trimmingCharacters(in: .whitespacesAndNewlines)
+                let termName = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+                let academicYear = (item["XN"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !courseName.isEmpty, !termName.isEmpty else { continue }
+                courseRanks.append(OneFormCourseRank(
+                    termName: termName,
+                    courseName: courseName,
+                    academicYear: academicYear,
+                    majorRank: rank
+                ))
+            }
+        }
+
+        var yearRanks: [AcademicYearGpaRank] = []
+        if let jdpmList = dataDict["jdpmList"] as? [[String: Any]] {
+            for item in jdpmList {
+                guard let rawYear = item["XN"] as? String,
+                      let rank = parseRankInt(item["ZYPM"]) else {
+                    continue
+                }
+                let year = rawYear.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !year.isEmpty else { continue }
+                let zjdStr: String
+                if let s = item["ZJD"] as? String {
+                    zjdStr = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if let d = item["ZJD"] as? Double {
+                    zjdStr = String(format: "%.1f", d)
+                } else if let i = item["ZJD"] as? Int {
+                    zjdStr = "\(i)"
+                } else {
+                    zjdStr = "--"
+                }
+                yearRanks.append(AcademicYearGpaRank(
+                    academicYear: year,
+                    totalGpaPoints: zjdStr,
+                    majorRank: rank
+                ))
+            }
+        }
+        yearRanks.sort { $0.academicYear > $1.academicYear }
+
+        return OneFormRankPayload(courseRanks: courseRanks, yearRanks: yearRanks)
+    }
+
+    public func applyOneFormRanks(
+        _ payload: OneFormRankPayload?,
+        to groups: [TermGradeGroup],
+        previousGroups: [TermGradeGroup]? = nil
+    ) -> [TermGradeGroup] {
+        guard !groups.isEmpty else { return groups }
+
+        func normalizeCourse(_ name: String) -> String {
+            return name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "（", with: "(")
+                .replacingOccurrences(of: "）", with: ")")
+                .replacingOccurrences(of: " ", with: "")
+                .uppercased()
+        }
+
+        var prevById: [String: Int] = [:]
+        var prevByTermAndCourse: [String: Int] = [:]
+        if let previousGroups {
+            for pg in previousGroups {
+                for item in pg.grades {
+                    if let r = item.majorRank {
+                        prevById[item.id] = r
+                        prevByTermAndCourse["\(item.termName)|\(normalizeCourse(item.courseName))"] = r
+                    }
+                }
+            }
+        }
+
+        var rankByTermAndCourse: [String: Int] = [:]
+        var rankCandidatesByCourse: [String: [Int]] = [:]
+        if let payload {
+            for cr in payload.courseRanks {
+                let norm = normalizeCourse(cr.courseName)
+                rankByTermAndCourse["\(cr.termName)|\(norm)"] = cr.majorRank
+                rankCandidatesByCourse[norm, default: []].append(cr.majorRank)
+            }
+        }
+
+        return groups.map { group in
+            var updatedGroup = group
+            updatedGroup.grades = group.grades.map { grade in
+                var updatedGrade = grade
+                let norm = normalizeCourse(grade.courseName)
+                let key = "\(grade.termName)|\(norm)"
+                if let rank = rankByTermAndCourse[key] {
+                    updatedGrade.majorRank = rank
+                } else if let candidates = rankCandidatesByCourse[norm], candidates.count == 1, let onlyRank = candidates.first {
+                    updatedGrade.majorRank = onlyRank
+                } else if updatedGrade.majorRank == nil {
+                    updatedGrade.majorRank = prevById[grade.id] ?? prevByTermAndCourse[key]
+                }
+                return updatedGrade
+            }
+            return updatedGroup
+        }
     }
 }

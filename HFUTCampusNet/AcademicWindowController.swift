@@ -254,7 +254,7 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
 
         let tableBottom: CGFloat = 20
         let tableHeight = max(120, titleY - 8 - tableBottom)
-        let showsForecasts = currentMode == 1
+        let showsForecasts = currentMode == 1 && !currentExamForecasts.isEmpty
         forecastSectionTitleLabel?.isHidden = !showsForecasts
         forecastScrollTableView?.isHidden = !showsForecasts
 
@@ -397,25 +397,54 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
 
             if isAllTerms, let snap = snapshot {
                 currentGrades = snap.allGrades
-                sectionTitleLabel.stringValue = "全部学期成绩单（共 \(currentGrades.count) 门课程）"
+                let yearRankSummary = snap.yearGpaRanks
+                    .sorted { $0.academicYear > $1.academicYear }
+                    .map { "\($0.academicYear) 第\($0.majorRank)名" }
+                    .joined(separator: " / ")
+                let rankScopeNote = "注：单科排名仅含85分/良及以上"
+                if yearRankSummary.isEmpty {
+                    sectionTitleLabel.stringValue = "全部学期成绩单（共 \(currentGrades.count) 门课程 · \(rankScopeNote)）"
+                } else {
+                    sectionTitleLabel.stringValue = "全部学期成绩单（共 \(currentGrades.count) 门 · 学年专业排名：\(yearRankSummary) · \(rankScopeNote)）"
+                }
 
                 let gpaStr = snap.overallWeightedGPA.map { String(format: "%.2f / 4.3", $0) } ?? "--"
                 let scoreStr = snap.overallWeightedScore.map { String(format: "%.2f 分", $0) } ?? "--"
                 let creditsStr = String(format: "%.1f 学分", snap.totalEarnedCredits)
                 let passCount = currentGrades.filter { $0.passed }.count
+                let gpaSub: String
+                if let latestRank = snap.yearGpaRanks.sorted(by: { $0.academicYear > $1.academicYear }).first {
+                    gpaSub = "\(latestRank.academicYear) 专业第 \(latestRank.majorRank) 名（总绩点 \(latestRank.totalGpaPoints)）"
+                } else {
+                    gpaSub = "全部已修读计点课程加权"
+                }
 
-                setCard(index: 0, title: "全学程加权 GPA", value: gpaStr, sub: "全部已修读计点课程加权", color: .systemBlue)
+                setCard(index: 0, title: "全学程加权 GPA", value: gpaStr, sub: gpaSub, color: .systemBlue)
                 setCard(index: 1, title: "全学程加权平均分", value: scoreStr, sub: "按课程学分加权折算", color: .systemIndigo)
                 setCard(index: 2, title: "累计获得学分", value: creditsStr, sub: "共 \(groups.count) 个学期", color: .systemTeal)
                 setCard(index: 3, title: "已出分科目数", value: "\(passCount) / \(currentGrades.count) 门", sub: "通过率 \(currentGrades.isEmpty ? 100 : Int(round(Double(passCount) / Double(currentGrades.count) * 100)))%", color: .systemGreen)
             } else if let group = activeGroup {
                 currentGrades = group.grades
-                sectionTitleLabel.stringValue = "\(group.termName) 成绩明细（共 \(currentGrades.count) 门）"
+                let matchedYearRank = snapshot?.yearGpaRanks.first {
+                    group.termName.hasPrefix($0.academicYear)
+                }
+                let rankScopeNote = "注：单科排名仅含85分/良及以上"
+                if let yr = matchedYearRank {
+                    sectionTitleLabel.stringValue = "\(group.termName) 成绩明细（共 \(currentGrades.count) 门 · \(yr.academicYear) 学年专业第 \(yr.majorRank) 名，总绩点 \(yr.totalGpaPoints) · \(rankScopeNote)）"
+                } else {
+                    sectionTitleLabel.stringValue = "\(group.termName) 成绩明细（共 \(currentGrades.count) 门 · \(rankScopeNote)）"
+                }
 
                 let termGPAStr = group.weightedGPA.map { String(format: "%.2f", $0) } ?? "--"
                 let termScoreStr = group.weightedScore.map { String(format: "%.2f 分", $0) } ?? "--"
                 let overallGPAStr = snapshot?.overallWeightedGPA.map { String(format: "%.2f", $0) } ?? "--"
-                let totalCredStr = snapshot.map { String(format: "总修 %.1f 学分", $0.totalEarnedCredits) } ?? "--"
+                let baseTotalCredStr = snapshot.map { String(format: "总修 %.1f 学分", $0.totalEarnedCredits) } ?? "--"
+                let totalCredStr: String
+                if let yr = matchedYearRank {
+                    totalCredStr = "\(baseTotalCredStr) · 学年专业第 \(yr.majorRank) 名"
+                } else {
+                    totalCredStr = baseTotalCredStr
+                }
 
                 setCard(index: 0, title: "本学期加权 GPA", value: termGPAStr, sub: group.termName, color: .systemBlue)
                 setCard(index: 1, title: "本学期加权平均分", value: termScoreStr, sub: "本学期共 \(currentGrades.count) 门已出分", color: .systemIndigo)
@@ -616,17 +645,21 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
 
         if currentMode == 0 {
             let cols: [(String, String, CGFloat)] = [
-                ("course", "课程名称", 220),
-                ("term", "学期", 150),
-                ("credits", "学分", 65),
-                ("gpa", "绩点", 65),
-                ("score", "总评成绩", 80),
-                ("detail", "平时/期末分项成绩明细", 330)
+                ("course", "课程名称", 205),
+                ("term", "学期", 145),
+                ("credits", "学分", 55),
+                ("gpa", "绩点", 55),
+                ("score", "总评成绩", 75),
+                ("rank", "专业排名", 75),
+                ("detail", "平时/期末分项成绩明细", 300)
             ]
             for (cid, ctitle, w) in cols {
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
+                if cid == "rank" {
+                    col.headerToolTip = "注：仅展示课程成绩在85分及以上或“良”及以上的专业排名"
+                }
                 tv.addTableColumn(col)
             }
         } else if currentMode == 1 {
@@ -641,6 +674,9 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
+                if cid == "rank" {
+                    col.headerToolTip = "注：仅展示课程成绩在85分及以上或“良”及以上的专业排名"
+                }
                 tv.addTableColumn(col)
             }
         } else if currentMode == 2 {
@@ -656,6 +692,9 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
+                if cid == "rank" {
+                    col.headerToolTip = "注：仅展示课程成绩在85分及以上或“良”及以上的专业排名"
+                }
                 tv.addTableColumn(col)
             }
         } else {
@@ -670,6 +709,9 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(cid))
                 col.title = ctitle
                 col.width = w
+                if cid == "rank" {
+                    col.headerToolTip = "注：仅展示课程成绩在85分及以上或“良”及以上的专业排名"
+                }
                 tv.addTableColumn(col)
             }
         }
@@ -787,6 +829,22 @@ public class AcademicWindowController: NSWindowController, NSWindowDelegate, NST
                 } else {
                     cell.textColor = .systemBlue
                 }
+            case "rank":
+                if let rank = g.majorRank {
+                    cell.stringValue = "第 \(rank) 名"
+                    cell.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: rank <= 10 ? .semibold : .regular)
+                    if rank == 1 {
+                        cell.textColor = .systemOrange
+                    } else if rank <= 10 {
+                        cell.textColor = .systemGreen
+                    } else {
+                        cell.textColor = .labelColor
+                    }
+                } else {
+                    cell.stringValue = "--"
+                    cell.textColor = .tertiaryLabelColor
+                }
+                cell.toolTip = "注：仅展示课程成绩在85分及以上或“良”及以上的专业排名"
             case "detail":
                 cell.stringValue = g.detailText.isEmpty ? "无分项明细" : g.detailText
                 cell.textColor = .secondaryLabelColor

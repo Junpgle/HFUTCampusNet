@@ -29,6 +29,7 @@ public class SettingsManager {
         static let courseShowOnWidget = "campus_course_show_on_widget"
         static let huixinAuthToken = "campus_huixin_auth_token"
         static let ehallAuthToken = "campus_ehall_auth_token"
+        static let oneformAuthToken = "campus_oneform_auth_token"
         static let casTgcCookie = "campus_cas_tgc_cookie"
         static let libraryToken = "campus_library_auth_token"
         static let libraryUserName = "campus_library_user_name"
@@ -56,6 +57,7 @@ public class SettingsManager {
         static let hideScoreInNotification = "campus_hide_score_in_notification"
         static let notifiedGradeIdsData = "campus_notified_grade_ids_data"
         static let unreadGradeIdsData = "campus_unread_grade_ids_data"
+        static let notifiedExamIdsData = "campus_notified_exam_ids_data"
         static let widgetPinToDesktop = "campus_widget_pin_to_desktop"
         // 应用内省电措施（默认仅电池生效，可选择插电同样生效）
         static let powerSaverEnabled = "campus_power_saver_enabled"                    // 总开关
@@ -311,6 +313,12 @@ public class SettingsManager {
         set { defaults.set(newValue, forKey: Keys.ehallAuthToken) }
     }
 
+    /// 学生一张表 (oneform.hfut.edu.cn) 独立 OAuth Token。
+    public var oneformAuthToken: String? {
+        get { defaults.string(forKey: Keys.oneformAuthToken) }
+        set { defaults.set(newValue, forKey: Keys.oneformAuthToken) }
+    }
+
     public var casTgcCookie: String? {
         get { defaults.string(forKey: Keys.casTgcCookie) }
         set { defaults.set(newValue, forKey: Keys.casTgcCookie) }
@@ -477,34 +485,33 @@ public class SettingsManager {
         set { defaults.set(newValue, forKey: Keys.hideScoreInNotification) }
     }
 
-    public var notifiedGradeIds: Set<String> {
-        get {
-            guard let data = defaults.data(forKey: Keys.notifiedGradeIdsData),
-                  let arr = try? JSONDecoder().decode([String].self, from: data) else {
-                return []
-            }
-            return Set(arr)
+    private func stringSet(forKey key: String) -> Set<String> {
+        guard let data = defaults.data(forKey: key),
+              let arr = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
         }
-        set {
-            if let data = try? JSONEncoder().encode(Array(newValue)) {
-                defaults.set(data, forKey: Keys.notifiedGradeIdsData)
-            }
+        return Set(arr)
+    }
+
+    private func setStringSet(_ value: Set<String>, forKey key: String) {
+        if let data = try? JSONEncoder().encode(Array(value)) {
+            defaults.set(data, forKey: key)
         }
     }
 
+    public var notifiedGradeIds: Set<String> {
+        get { stringSet(forKey: Keys.notifiedGradeIdsData) }
+        set { setStringSet(newValue, forKey: Keys.notifiedGradeIdsData) }
+    }
+
     public var unreadGradeIds: Set<String> {
-        get {
-            guard let data = defaults.data(forKey: Keys.unreadGradeIdsData),
-                  let arr = try? JSONDecoder().decode([String].self, from: data) else {
-                return []
-            }
-            return Set(arr)
-        }
-        set {
-            if let data = try? JSONEncoder().encode(Array(newValue)) {
-                defaults.set(data, forKey: Keys.unreadGradeIdsData)
-            }
-        }
+        get { stringSet(forKey: Keys.unreadGradeIdsData) }
+        set { setStringSet(newValue, forKey: Keys.unreadGradeIdsData) }
+    }
+
+    public var notifiedExamIds: Set<String> {
+        get { stringSet(forKey: Keys.notifiedExamIdsData) }
+        set { setStringSet(newValue, forKey: Keys.notifiedExamIdsData) }
     }
 
     public var hideSpeedOnBattery: Bool {

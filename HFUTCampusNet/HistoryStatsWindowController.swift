@@ -25,6 +25,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
     private var currentEhallSubIndex: Int = 0 // 当前分类下的子项索引
     private var ehallDomainSegment: NSSegmentedControl!
     private var ehallSubSegment: NSSegmentedControl!
+    private var exportBillBtn: NSButton!
 
     private var currentEhallSubMode: Int {
         switch currentEhallDomain {
@@ -295,6 +296,14 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         ehallSubSegment.isHidden = true
         contentView.addSubview(ehallSubSegment)
 
+        exportBillBtn = NSButton(title: "导出账单...", target: self, action: #selector(onExportCardBill))
+        exportBillBtn.bezelStyle = .rounded
+        exportBillBtn.controlSize = .small
+        exportBillBtn.font = NSFont.systemFont(ofSize: 11.5)
+        exportBillBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        exportBillBtn.isHidden = true
+        contentView.addSubview(exportBillBtn)
+
         scrollTableView = NSScrollView(frame: NSRect(x: 20, y: 20, width: 840, height: chartY - 34 - 20))
         scrollTableView.autoresizingMask = [.width, .height]
         scrollTableView.hasVerticalScroller = true
@@ -352,6 +361,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         if currentMode == 3 {
             ehallDomainSegment?.isHidden = false
             ehallSubSegment?.isHidden = false
+            exportBillBtn?.isHidden = true
             let domainW: CGFloat = 260
             ehallDomainSegment?.frame = NSRect(x: sidePad, y: titleY - 5, width: domainW, height: 26)
 
@@ -362,9 +372,17 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
             let labelX = sidePad + domainW + 15
             let labelW = max(100, totalW - sidePad - subW - 10 - labelX)
             tableTitleLabel?.frame = NSRect(x: labelX, y: titleY, width: labelW, height: 18)
+        } else if currentMode == 2 {
+            ehallDomainSegment?.isHidden = true
+            ehallSubSegment?.isHidden = true
+            exportBillBtn?.isHidden = false
+            let btnW: CGFloat = 104
+            exportBillBtn?.frame = NSRect(x: totalW - sidePad - btnW, y: titleY - 4, width: btnW, height: 24)
+            tableTitleLabel?.frame = NSRect(x: sidePad, y: titleY, width: max(100, contentW - btnW - 10), height: 18)
         } else {
             ehallDomainSegment?.isHidden = true
             ehallSubSegment?.isHidden = true
+            exportBillBtn?.isHidden = true
             tableTitleLabel?.frame = NSRect(x: sidePad, y: titleY, width: contentW, height: 18)
         }
 
@@ -496,6 +514,14 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
         LibraryWindowController.shared.showWindow(nil)
     }
 
+    @objc private func onExportCardBill() {
+        CampusCardExportDialog.present(
+            from: self.window,
+            transactions: currentCardTransactions,
+            cardData: CampusCardService.shared.latestData
+        )
+    }
+
     @objc private func onOpenSettings() {
         if currentMode == 2 {
             promptCampusCardBudgetSettings()
@@ -581,6 +607,7 @@ public class HistoryStatsWindowController: NSWindowController, NSWindowDelegate,
                 self.tableTitleLabel?.stringValue = "宿舍每日用电历史记录"
             } else if self.currentMode == 2 {
                 self.settingsBtn?.title = "一卡通预算..."
+                self.exportBillBtn?.isEnabled = !self.currentCardTransactions.isEmpty
                 if let card = CampusCardService.shared.latestData {
                     let breakdown = card.expenseStructureBreakdown()
                     self.tableTitleLabel?.stringValue = String(

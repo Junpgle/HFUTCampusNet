@@ -25,8 +25,8 @@ APP_RELEASE_TAG="${APP_RELEASE_TAG#V}"
 if [[ "$APP_RELEASE_TAG" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-+][0-9A-Za-z.-]+)?$ ]]; then
     APP_MARKETING_VERSION="${BASH_REMATCH[1]}"
 else
-    APP_RELEASE_TAG="2.3.0"
-    APP_MARKETING_VERSION="2.3.0"
+    APP_RELEASE_TAG="2.4.0"
+    APP_MARKETING_VERSION="2.4.0"
 fi
 
 mkdir -p "$MACOS_DIR"
@@ -39,6 +39,8 @@ SOURCES=(
     "HFUTCampusNet/CourseModels.swift"
     "HFUTCampusNet/EmptyClassroomModels.swift"
     "HFUTCampusNet/AcademicAndCardModels.swift"
+    "HFUTCampusNet/CampusCardBillExporter.swift"
+    "HFUTCampusNet/CampusCardExportDialog.swift"
     "HFUTCampusNet/LibraryBorrowModels.swift"
     "HFUTCampusNet/LibrarySearchService.swift"
     "HFUTCampusNet/CampusCalendarService.swift"

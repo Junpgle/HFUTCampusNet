@@ -180,8 +180,10 @@ public enum CourseExamForecastService {
     }
 
     private static func matches(courseName: String, courseCode: String?, examName: String, examCode: String?) -> Bool {
-        if let courseCode = normalized(courseCode), let examCode = normalized(examCode) {
-            return courseCode == examCode
+        if let courseCode = normalized(courseCode),
+           let examCode = normalized(examCode),
+           courseCode == examCode {
+            return true
         }
         guard let normalizedCourseName = normalized(courseName),
               let normalizedExamName = normalized(examName) else {
@@ -214,6 +216,7 @@ public struct GradeItem: Codable, Identifiable, Equatable {
     public var numericScore: Double?    // 数值化分数（五级制自动折算：优95/良85/中75/及格65/不及格50，通过/不通过不计入）
     public var detailText: String       // 成绩分项明细，例如 "期末考试:93 · 平时成绩:95"
     public var passed: Bool             // 是否及格
+    public var majorRank: Int?          // 专业排名（来自学生一张表个人成果）
 
     public init(
         termName: String,
@@ -225,7 +228,8 @@ public struct GradeItem: Codable, Identifiable, Equatable {
         gpa: Double?,
         scoreText: String,
         detailText: String,
-        passed: Bool
+        passed: Bool,
+        majorRank: Int? = nil
     ) {
         let cleanCourse = courseName.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanLesson = lessonCode.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -241,6 +245,7 @@ public struct GradeItem: Codable, Identifiable, Equatable {
         self.numericScore = GradeItem.parseNumericScore(from: self.scoreText)
         self.detailText = detailText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.passed = passed
+        self.majorRank = majorRank
     }
 
     public static func parseNumericScore(from text: String) -> Double? {
@@ -625,10 +630,25 @@ public struct SemesterMilestoneInfo: Equatable {
     }
 }
 
+/// 学年绩点专业排名（来自学生一张表 - 个人成果）
+public struct AcademicYearGpaRank: Codable, Identifiable, Equatable {
+    public var id: String { academicYear }
+    public var academicYear: String   // 学年，例如 "2025-2026"
+    public var totalGpaPoints: String // 总绩点（ZJD，例如 "109.8"）
+    public var majorRank: Int         // 专业排名（ZYPM，例如 50）
+
+    public init(academicYear: String, totalGpaPoints: String, majorRank: Int) {
+        self.academicYear = academicYear.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.totalGpaPoints = totalGpaPoints.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.majorRank = majorRank
+    }
+}
+
 /// 教务学术数据总缓存（包含考试安排、全学期成绩单、培养方案完成度、本学期教材与评教状态）
 public struct AcademicDataSnapshot: Codable, Equatable {
     public var exams: [ExamItem]
     public var termGroups: [TermGradeGroup]
+    public var yearGpaRanks: [AcademicYearGpaRank]
     public var programCompletion: ProgramCompletionSummary?
     public var textbooks: [CourseTextbookItem]
     public var surveys: [LessonSurveyItem]
@@ -637,6 +657,7 @@ public struct AcademicDataSnapshot: Codable, Equatable {
     public init(
         exams: [ExamItem] = [],
         termGroups: [TermGradeGroup] = [],
+        yearGpaRanks: [AcademicYearGpaRank] = [],
         programCompletion: ProgramCompletionSummary? = nil,
         textbooks: [CourseTextbookItem] = [],
         surveys: [LessonSurveyItem] = [],
@@ -644,6 +665,7 @@ public struct AcademicDataSnapshot: Codable, Equatable {
     ) {
         self.exams = exams
         self.termGroups = termGroups
+        self.yearGpaRanks = yearGpaRanks
         self.programCompletion = programCompletion
         self.textbooks = textbooks
         self.surveys = surveys
@@ -653,6 +675,7 @@ public struct AcademicDataSnapshot: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case exams
         case termGroups
+        case yearGpaRanks
         case programCompletion
         case textbooks
         case surveys
@@ -663,6 +686,7 @@ public struct AcademicDataSnapshot: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.exams = (try? c.decode([ExamItem].self, forKey: .exams)) ?? []
         self.termGroups = (try? c.decode([TermGradeGroup].self, forKey: .termGroups)) ?? []
+        self.yearGpaRanks = (try? c.decode([AcademicYearGpaRank].self, forKey: .yearGpaRanks)) ?? []
         self.programCompletion = try? c.decode(ProgramCompletionSummary.self, forKey: .programCompletion)
         self.textbooks = (try? c.decode([CourseTextbookItem].self, forKey: .textbooks)) ?? []
         self.surveys = (try? c.decode([LessonSurveyItem].self, forKey: .surveys)) ?? []
