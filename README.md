@@ -39,6 +39,16 @@
 | :---: | :---: |
 | <img src="docs/screenshots/stats-network.png" width="440" alt="校园网流量统计"> | <img src="docs/screenshots/stats-electricity.png" width="440" alt="宿舍用电与电费统计"> |
 
+### 4. macOS 原生系统通知与弹窗提醒
+关键状态变化自动通过 macOS 通知中心静默触达，重要变动支持原生弹窗直达详情，无需频繁打开窗口查看：
+- **新考试安排提醒**：同步到新的考试日程时及时推送考试时间、倒计时与考场地点，并支持通过弹窗一键「查看考试安排」；
+- **校园网自动重连通知**：断线重连或唤醒恢复认证后，同步反馈当前已用流量与账户余额；
+- **明日自习留座提醒**：晚间自动检查当前自习室次日排课情况，全天无课时提醒书本可直接留原位。
+
+| 系统通知中心推送 | 新考试安排原生弹窗 |
+| :---: | :---: |
+| <img src="docs/screenshots/notifications.jpg" width="380" alt="macOS 系统通知推送"> | <img src="docs/screenshots/exam-alert.jpg" width="340" alt="新考试安排原生弹窗"> |
+
 ---
 
 ## 🌟 核心特性
